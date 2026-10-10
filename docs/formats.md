@@ -301,6 +301,23 @@ with the original's addresses.
   `BigPad_Overlay_Xbox` holds the leader lines for its labels) and a
   Vibration tick box (`FrontEnd/checkbox`: `OFF`, `ON`). Replays, Profiles,
   Language and Credits pages exist too; the disc has no credits text.
+- `Career.xml`: root attributes `mMaxSkillForAmateur` (7),
+  `mNumUnlockables` and `mTimePercentage` (1.3); `SkillLevelPoints`
+  (`SkillLevel1..7`), `CertificateSkillLevels` (Amateur 0, Professional 4,
+  Superstar 7, Unknown 8), `PositionPoints` and `TrickPoints`
+  (`Position0..7`, both 25/20/16/10/8/5/1/0), `TrackOrder` with an
+  `Amateur`/`Open`/`Professional` child of `Round0..4` track names, and
+  `RiderAvailability` with one child per rider (`Dana_Creech`) holding 0/1
+  for `Amateur`, `Open`, `Professional` and `Custom`. `Unlockable*` entries
+  with `mATV="1"` free the ATV in `mData` at `mCondition` gold medals.
+  `Attrib_*` tables look unused. From the career code in `default.xbe`:
+  each race of 8 ranks the field by finishing order and by trick score and
+  adds both points tables; the player's trick score goes onto their skill
+  points twice (once, capped at `SkillLevel[mMaxSkillForAmateur]`, in
+  Amateur); a rider not home by `mTimePercentage` of the winner's time
+  doesn't finish; a top-3 championship finish opens the next one
+  (Amateur, then Open shown as Qualifying, Professional, Custom). The
+  status screens are `Career_Status_Amateur`, `_Pro` and `_Pro2`.
 
 ## Still unknown
 

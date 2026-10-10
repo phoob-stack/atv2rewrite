@@ -75,6 +75,32 @@ pub fn child(xml: &str, entry: &str, child: &str) -> Option<HashMap<String, Stri
     Some(parse_attrs(body[at..at + end].trim_end_matches('/')))
 }
 
+/// The attributes of the `<Root>` element itself.
+pub fn root(xml: &str) -> Option<HashMap<String, String>> {
+    let at = xml.find("<Root")? + "<Root".len();
+    let end = xml[at..].find('>')?;
+    Some(parse_attrs(xml[at..at + end].trim_end_matches('/')))
+}
+
+/// The child elements of top-level `<entry>`, each with only its own
+/// attributes (`Career.xml`'s `RiderAvailability` holds one per rider).
+pub fn children(xml: &str, entry: &str) -> Vec<Entry> {
+    let open = format!("<{entry}");
+    let Some(start) = xml.match_indices(&open).map(|(i, _)| i).find(|&i| {
+        xml[i + open.len()..].starts_with(|c: char| c.is_whitespace() || c == '>')
+    }) else {
+        return Vec::new();
+    };
+    let body = &xml[start..];
+    let Some(head_end) = body.find('>') else { return Vec::new() };
+    if body[..head_end].ends_with('/') {
+        return Vec::new();
+    }
+    let body = &body[head_end + 1..];
+    let body = &body[..body.find(&format!("</{entry}>")).unwrap_or(body.len())];
+    entries(&format!("<Root>{body}</Root>"))
+}
+
 pub(crate) fn parse_attrs(mut s: &str) -> HashMap<String, String> {
     let mut m = HashMap::new();
     while let Some(eq) = s.find('=') {
@@ -120,5 +146,21 @@ mod tests {
         assert_eq!(look["Z"], "1.25");
         assert_eq!(super::child(xml, "FollowFar", "PosOffset").unwrap()["Y"], "2.7");
         assert!(super::child(xml, "FollowFar", "LookOffset").is_none());
+    }
+
+    #[test]
+    fn children_of_entry() {
+        let xml = r#"<Root>
+   <RiderAvailability>
+      <Doug_Gust Amateur="0" Open="0" Professional="1"/>
+      <Troll Amateur="1"/>
+   </RiderAvailability>
+   <Other/>
+</Root>"#;
+        let c = super::children(xml, "RiderAvailability");
+        assert_eq!(c.len(), 2);
+        assert_eq!((c[0].name.as_str(), c[0].get("Professional")), ("Doug_Gust", Some("1")));
+        assert_eq!(c[1].get("Open"), None);
+        assert!(super::children(xml, "Other").is_empty());
     }
 }

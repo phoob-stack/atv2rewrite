@@ -4,6 +4,8 @@
 //! Arcade skips track select (it races `Setup/Arcade.xml`'s rounds);
 //! Open Freestyle picks a time limit on it instead of laps. Options holds
 //! the Audio, Camera and Controller pages (see [`crate::settings`]).
+//! Career picks a championship, then rider and ATV, and comes back to the
+//! championship's status page between rounds (see [`crate::career`]).
 
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
@@ -12,7 +14,8 @@ use atv_formats::setup::{self, Entry};
 use atv_formats::GameSource;
 
 use crate::freestyle::{self, limit_label, MEDALS, TIME_LIMITS};
-use crate::hud::track_title;
+use crate::career::{self, Career, Champ, Run};
+use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::{AppState, Mode, Selection};
@@ -161,6 +164,9 @@ pub enum Screen {
     Audio,
     Camera,
     Controller,
+    CareerChamp,
+    CareerStatus,
+    CareerComplete,
 }
 
 /// The Options menu's rows, and the page each opens.
@@ -184,6 +190,10 @@ pub struct FrontEnd {
     pub track: usize,
     /// The Options menu's cursor.
     option: usize,
+    /// The championship being set up.
+    champ: Champ,
+    /// Where to come back to from a race, instead of the usual.
+    pub return_to: Option<Screen>,
 }
 
 impl FrontEnd {
@@ -223,10 +233,22 @@ const MUG_GAP: f32 = 64.0;
 const MUG_X: f32 = 64.0;
 const MUG_Y: f32 = 92.0;
 
-fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>) {
-    // Back from a race: straight to the main menu, cursors on the last pick.
-    if fe.built.is_some() {
-        fe.screen = Screen::Main;
+fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>, career: Res<Career>) {
+    // Back from a race: straight to the main menu, cursors on the last pick;
+    // a career goes on to its championship's status.
+    if let Some(screen) = fe.return_to.take() {
+        fe.screen = screen;
+    } else if fe.built.is_some() {
+        fe.screen = match &career.run {
+            Some(r) if sel.mode == Mode::Career => {
+                if r.over() {
+                    Screen::CareerComplete
+                } else {
+                    Screen::CareerStatus
+                }
+            }
+            _ => Screen::Main,
+        };
     }
     fe.built = None;
     fe.mode = sel.mode;
@@ -247,6 +269,7 @@ fn navigate(
     mut next: ResMut<NextState<AppState>>,
     mut exit: MessageWriter<AppExit>,
     mut settings: ResMut<Settings>,
+    (mut career, rules): (ResMut<Career>, Res<career::Rules>),
 ) {
     let Some(nav) = read_nav(&keys, &pads) else { return };
     if fe.built != Some(fe.screen) {
@@ -276,6 +299,11 @@ fn navigate(
                     sel.mode = fe.mode;
                     fe.screen = Screen::Rider;
                 }
+                Some("CAREER") => {
+                    fe.mode = Mode::Career;
+                    sel.mode = Mode::Career;
+                    fe.screen = Screen::CareerChamp;
+                }
                 Some("OPTIONS") => fe.screen = Screen::Options,
                 Some("QUIT GAME") => {
                     exit.write(AppExit::Success);
@@ -298,6 +326,7 @@ fn navigate(
                     }
                     fe.screen = Screen::Quad;
                 }
+                Nav::Back if fe.mode == Mode::Career => fe.screen = Screen::CareerChamp,
                 Nav::Back => fe.screen = Screen::Main,
             }
         }
@@ -309,10 +338,20 @@ fn navigate(
                 }
             }
             Nav::Accept | Nav::Start => {
+                if list.as_ref().is_some_and(|l| l.disabled.get(l.selected) == Some(&true)) {
+                    return;
+                }
                 if let Some(q) = roster.quads.get(fe.quad) {
                     sel.quad = q.name.clone();
                 }
-                if fe.mode == Mode::Arcade {
+                if fe.mode == Mode::Career {
+                    let rider = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider));
+                    let name = rider.map_or(sel.rider.to_uppercase(), |r| r.name.clone());
+                    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos());
+                    career.start(fe.champ, (&name, &sel.rider), &sel.quad, &career_pool(&roster, &rules, fe.champ), seed);
+                    career.save();
+                    fe.screen = Screen::CareerStatus;
+                } else if fe.mode == Mode::Arcade {
                     // Arcade starts on its first round.
                     if let Some(t) = roster.arcade.first() {
                         sel.round = 0;
@@ -402,14 +441,95 @@ fn navigate(
             }
             _ => {}
         },
+        Screen::CareerChamp => match nav {
+            Nav::Up | Nav::Down => {
+                if let Some(l) = list.as_mut() {
+                    l.step(nav);
+                }
+            }
+            Nav::Accept | Nav::Start => {
+                let Some(l) = list.as_ref() else { return };
+                match champ_items(&career).get(l.selected) {
+                    Some((_, None)) => {
+                        if let Some(r) = &career.run {
+                            sel.rider = r.rider.clone();
+                            sel.quad = r.quad.clone();
+                        }
+                        fe.screen = Screen::CareerStatus;
+                    }
+                    Some((_, Some(c))) if career.is_open(*c) => {
+                        fe.champ = *c;
+                        fe.screen = Screen::Rider;
+                    }
+                    _ => {}
+                }
+            }
+            Nav::Back => fe.screen = Screen::Main,
+            _ => {}
+        },
+        Screen::CareerStatus => match nav {
+            Nav::Accept | Nav::Start => {
+                let Some(run) = &career.run else { return };
+                if run.over() {
+                    fe.screen = Screen::CareerComplete;
+                    return;
+                }
+                let Some(track) = rules.tracks[run.champ.index()].get(run.round) else { return };
+                sel.mode = Mode::Career;
+                sel.track = track.clone();
+                sel.round = run.round;
+                sel.laps = career::LAPS;
+                sel.rider = run.rider.clone();
+                sel.quad = run.quad.clone();
+                sel.field = run.opponents();
+                next.set(AppState::Loading);
+            }
+            Nav::Back => fe.screen = Screen::Main,
+            _ => {}
+        },
+        Screen::CareerComplete => {
+            if matches!(nav, Nav::Accept | Nav::Start | Nav::Back) {
+                career.run = None;
+                career.save();
+                fe.screen = Screen::Main;
+            }
+        }
     }
 }
 
+/// The championship menu: carrying on with one in progress, then the three.
+fn champ_items(career: &Career) -> Vec<(String, Option<Champ>)> {
+    let mut items = Vec::new();
+    if let Some(r) = career.run.as_ref().filter(|r| !r.over()) {
+        items.push((format!("CONTINUE {}", r.champ.label()), None));
+    }
+    items.extend(Champ::ALL.map(|c| (c.label().to_string(), Some(c))));
+    items
+}
+
+/// The riders a championship may draw its field from, as (name, model).
+fn career_pool(roster: &Roster, rules: &career::Rules, champ: Champ) -> Vec<(String, String)> {
+    let allowed = &rules.riders[champ.index()];
+    let pool: Vec<(String, String)> = roster
+        .riders
+        .iter()
+        .filter(|r| allowed.iter().any(|a| a.replace('_', " ").eq_ignore_ascii_case(&r.name)))
+        .map(|r| (r.name.clone(), r.model.clone()))
+        .collect();
+    if pool.len() >= career::FIELD - 1 {
+        pool
+    } else {
+        roster.riders.iter().filter(|r| r.ai).map(|r| (r.name.clone(), r.model.clone())).collect()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn rebuild(
     mut commands: Commands,
     mut fe: ResMut<FrontEnd>,
     roster: Res<Roster>,
     settings: Res<Settings>,
+    (career, rules): (Res<Career>, Res<career::Rules>),
     ui: Option<Res<UiAssets>>,
     roots: Query<Entity, With<ScreenRoot>>,
 ) {
@@ -427,6 +547,7 @@ fn rebuild(
         Mode::TimeTrial => ("TimeTrial_Rider", "TimeTrial_ATV", "TimeTrial_Track"),
         Mode::Arcade => ("Arcade_Rider", "Arcade_ATV", "SingleRace_Track"),
         Mode::Freestyle => ("Freestyle_Open_Rider", "Freestyle_Open_ATV", "Freestyle_Open"),
+        Mode::Career => ("Profile_Rider", "Career_ATV", "SingleRace_Track"),
     };
     let label = fe.mode.label();
     let (key, watermark) = match fe.screen {
@@ -439,6 +560,9 @@ fn rebuild(
         Screen::Audio => ("Options_Sound", "OPTIONS"),
         Screen::Camera => ("Options_Camera", "OPTIONS"),
         Screen::Controller => ("Options_Controller", "OPTIONS"),
+        Screen::CareerChamp => ("Career_Newgame", "CAREER"),
+        Screen::CareerStatus => (career.run.as_ref().map_or("Career_Status_Amateur", |r| r.champ.status_screen()), "CAREER"),
+        Screen::CareerComplete => ("Career_Complete", "CAREER"),
     };
     let (bg, title) = roster.screen(key);
 
@@ -495,9 +619,9 @@ fn rebuild(
                 Mode::SingleRace => 2,
                 Mode::TimeTrial => 3,
                 Mode::Freestyle => 4,
+                Mode::Career => 1,
             };
-            // Career isn't built yet.
-            let mut off = vec!["CAREER"];
+            let mut off = vec![];
             if roster.arcade.is_empty() {
                 off.push("ARCADE");
             }
@@ -529,7 +653,14 @@ fn rebuild(
         Screen::Quad => {
             let names: Vec<String> = roster.quads.iter().map(|q| q.name.to_uppercase()).collect();
             let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            let list = MenuList::new(&refs, 200.0).with_row(26.0).select(fe.quad);
+            let mut list = MenuList::new(&refs, 200.0).with_row(26.0).select(fe.quad);
+            if fe.mode == Mode::Career {
+                // Career's unlockable ATVs come with gold medals.
+                let locked: Vec<String> = rules.locked_atvs(career.golds()).into_iter().map(|(a, _)| a.to_uppercase()).collect();
+                let locked: Vec<&str> = locked.iter().map(String::as_str).collect();
+                list = list.disable(&locked);
+                fe.quad = list.selected;
+            }
             kids.push(menu(&mut commands, &ui, list, 40.0, 80.0));
             kids.push(bio_panel(&mut commands, &ui, 270.0, 250.0, &["TOP SPEED", "ACCELERATION", "STABILITY", "HANDLING", "AIR RATING"], false));
         }
@@ -593,6 +724,49 @@ fn rebuild(
             kids.push(commands.spawn((placed((n, img), 400.0, 84.0), VibrationBox)).id());
             kids.push(controls_table(&mut commands, &ui));
         }
+        Screen::CareerChamp => {
+            let items = champ_items(&career);
+            let names: Vec<&str> = items.iter().map(|(n, _)| n.as_str()).collect();
+            let locked: Vec<&str> = items.iter().filter(|(_, c)| c.is_some_and(|c| !career.is_open(c))).map(|(n, _)| n.as_str()).collect();
+            let list = MenuList::new(&names, 320.0).with_row(36.0).disable(&locked);
+            kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 120.0));
+            let level = rules.skill_level(career.skill_points);
+            let lines = [
+                format!("SKILL LEVEL {level}   -   {} SKILL POINTS", career.skill_points),
+                format!("CERTIFICATE  {}", rules.certificate(career.skill_points)),
+                format!("GOLD MEDALS  {}", career.golds()),
+            ];
+            for (i, l) in lines.iter().enumerate() {
+                kids.push(hint(&mut commands, &ui, l, 300.0 + 18.0 * i as f32));
+            }
+            if !locked.is_empty() {
+                kids.push(hint(&mut commands, &ui, "FINISH IN THE TOP 3 OF A CHAMPIONSHIP TO OPEN THE NEXT", 370.0));
+            }
+        }
+        Screen::CareerStatus | Screen::CareerComplete => {
+            if let Some(run) = &career.run {
+                let complete = fe.screen == Screen::CareerComplete || run.over();
+                let head = if complete {
+                    format!("{} CHAMPIONSHIP  -  YOU FINISHED {}", run.champ.label(), ordinal(run.player_place()))
+                } else {
+                    let track = rules.tracks[run.champ.index()].get(run.round).map_or(String::new(), |t| track_title(t));
+                    format!("ROUND {} OF {}  -  {}", run.round + 1, career::ROUNDS, track)
+                };
+                kids.push(commands.spawn((BitmapText::new(FontId::Menu, 14.0, head), ui_at(40.0, 80.0))).id());
+                kids.push(standings_table(&mut commands, run, 40.0, 116.0));
+                if complete {
+                    let next = Champ::ALL.get(run.champ.index() + 1).filter(|c| career.is_open(**c));
+                    let msg = match next {
+                        Some(c) if run.player_place() <= 3 => format!("{} CHAMPIONSHIP OPEN", c.label()),
+                        _ if run.player_place() > 3 => "FINISH IN THE TOP 3 TO OPEN THE NEXT CHAMPIONSHIP".to_string(),
+                        _ => "ALL CHAMPIONSHIPS OPEN".to_string(),
+                    };
+                    kids.push(hint(&mut commands, &ui, &msg, 380.0));
+                } else if let Some(tex) = rules.tracks[run.champ.index()].get(run.round).and_then(|t| ui.tracks.get(&t.to_ascii_lowercase())) {
+                    kids.push(commands.spawn(placed(tex.node(220.0, 220.0), 380.0, 116.0)).id());
+                }
+            }
+        }
     }
 
     // Button hints along the bottom.
@@ -600,7 +774,10 @@ fn rebuild(
         Screen::Title => &[],
         Screen::Main => &[("controlbuttoncross", "SELECT")],
         Screen::Audio | Screen::Camera => &[("controlbuttoncross", "OK")],
+        Screen::CareerChamp => &[("controlbuttoncross", "SELECT"), ("controlbuttoncircle", "BACK")],
         Screen::Controller => &[("controlbuttoncross", "CHANGE"), ("controlbuttoncircle", "BACK")],
+        Screen::CareerStatus => &[("controlbuttoncross", "RACE"), ("controlbuttoncircle", "BACK")],
+        Screen::CareerComplete => &[("controlbuttoncross", "OK")],
         _ => &[("controlbuttoncross", "SELECT"), ("controlbuttoncircle", "BACK")],
     };
     let footer = commands
@@ -649,6 +826,33 @@ fn volume_bar(commands: &mut Commands, ui: &UiAssets, which: usize, left: f32, t
 /// sprite: the 16 segments run from x = 3 to 124.
 fn lit_width(level: u8) -> f32 {
     if level == 0 { 0.0 } else { 3.0 + 121.0 * f32::from(level.min(VOLUME_STEPS)) / f32::from(VOLUME_STEPS) }
+}
+
+/// The championship table: place, rider and points, the player in gold.
+fn standings_table(commands: &mut Commands, run: &Run, left: f32, top: f32) -> Entity {
+    commands
+        .spawn(Node { position_type: PositionType::Absolute, left: px(left), top: px(top), flex_direction: FlexDirection::Column, row_gap: px(10), ..default() })
+        .with_children(|t| {
+            for (i, e) in [None].into_iter().chain(run.standings().into_iter().map(Some)).enumerate() {
+                let color = match e {
+                    None => Color::srgb(0.75, 0.82, 0.95),
+                    Some(e) if e.player => Color::srgb(1.0, 0.85, 0.3),
+                    Some(_) => Color::WHITE,
+                };
+                let cells = match e {
+                    None => ["".to_string(), "RIDER".to_string(), "POINTS".to_string()],
+                    Some(e) => [ordinal(i), e.name.clone(), e.points.to_string()],
+                };
+                t.spawn(Node { column_gap: px(10), ..default() }).with_children(|r| {
+                    for (text, width) in cells.into_iter().zip([44.0, 200.0, 70.0]) {
+                        r.spawn(Node { width: px(width), ..default() }).with_children(|c| {
+                            c.spawn(BitmapText::new(FontId::Small, 9.0, text).color(color));
+                        });
+                    }
+                });
+            }
+        })
+        .id()
 }
 
 fn hint(commands: &mut Commands, ui: &UiAssets, text: &str, top: f32) -> Entity {
@@ -883,7 +1087,7 @@ fn show_loading(mut commands: Commands, ui: Option<Res<UiAssets>>, sel: Res<Sele
                 n.position_type = PositionType::Absolute;
                 f.spawn((n, img));
                 let t = match sel.mode {
-                    Mode::Arcade => format!("ROUND {}  LOADING {}", sel.round + 1, track_title(&sel.track)),
+                    Mode::Arcade | Mode::Career => format!("ROUND {}  LOADING {}", sel.round + 1, track_title(&sel.track)),
                     _ => format!("LOADING {}", track_title(&sel.track)),
                 };
                 let w = ui.font(FontId::Menu).width(&t, 14.0);

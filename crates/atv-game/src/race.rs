@@ -26,6 +26,10 @@ pub struct RaceProgress {
     pub lap_fraction: f32,
     /// Arcade mode's checkpoint clock, if this race has one.
     pub arcade: Option<ArcadeClock>,
+    /// Race time after which a rider still out on the course doesn't
+    /// finish (career's `mTimePercentage` of the winner's time).
+    pub cutoff: Option<f32>,
+    pub dnf: bool,
 }
 
 /// Arcade's countdown: the race starts with `mArcadeStartTime` seconds
@@ -81,6 +85,8 @@ impl RaceProgress {
             wrong_way: 0.0,
             lap_fraction: 0.0,
             arcade: None,
+            cutoff: None,
+            dnf: false,
         }
     }
 
@@ -93,9 +99,9 @@ impl RaceProgress {
         self.arcade.as_ref().is_some_and(|a| a.out_of_time)
     }
 
-    /// Finished, or out of time.
+    /// Finished, out of time, or past the cutoff.
     pub fn over(&self) -> bool {
-        self.finished.is_some() || self.out_of_time()
+        self.finished.is_some() || self.out_of_time() || self.dnf
     }
 
     /// Whether the next pass of checkpoint 1 completes a lap.
@@ -116,6 +122,9 @@ impl RaceProgress {
             self.countdown -= dt;
         } else if !self.over() {
             self.clock += dt;
+            if self.cutoff.is_some_and(|c| self.clock >= c) {
+                self.dnf = true;
+            }
             if let Some(a) = self.arcade.as_mut() {
                 a.left -= dt;
                 if a.left <= 0.0 {

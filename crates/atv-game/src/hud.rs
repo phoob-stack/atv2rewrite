@@ -7,8 +7,9 @@
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
 
+use crate::career::{self, Award, Career, Run};
 use crate::freestyle::{limit_label, Session, MEDALS};
-use crate::frontend::Roster;
+use crate::frontend::{FrontEnd, Roster, Screen};
 use crate::opponents::{Opponents, Standings};
 use crate::race::{fmt_time, RaceProgress};
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets};
@@ -404,7 +405,34 @@ fn update_meter(
 }
 
 /// `1ST`, `2ND`, ...
-fn ordinal(n: usize) -> String {
+/// The career field's finishing order (indices into the run's field) from
+/// the running order: the player, then each computer rider by its place;
+/// anyone missing from the race comes last.
+fn finishing_order(run: &Run, dnf: bool, (standings, opponents): (Option<&Standings>, Option<&Opponents>)) -> Vec<usize> {
+    let mut placed: Vec<(usize, usize)> = run
+        .field
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let place = if e.player && dnf {
+                // Didn't finish: last of those placed.
+                99
+            } else if e.player {
+                standings.map_or(1, |s| s.player)
+            } else {
+                opponents
+                    .and_then(|o| o.racers.iter().position(|r| r.model.eq_ignore_ascii_case(&e.model)))
+                    .and_then(|k| standings?.opponents.get(k).map(|o| o.0))
+                    .unwrap_or(100 + i)
+            };
+            (place, i)
+        })
+        .collect();
+    placed.sort();
+    placed.into_iter().map(|(_, i)| i).collect()
+}
+
+pub fn ordinal(n: usize) -> String {
     let suffix = match (n % 10, n % 100) {
         (_, 11..=13) => "TH",
         (1, _) => "ST",
@@ -488,6 +516,8 @@ fn update_banners(
             "TIME UP".to_string()
         } else if p.out_of_time() {
             "OUT OF TIME".to_string()
+        } else if p.dnf {
+            "DID NOT FINISH".to_string()
         } else if p.finished.is_some() {
             "FINISHED".to_string()
         } else if lap_done && p.lap() == p.laps {
@@ -523,6 +553,7 @@ fn race_menus(
     mut next: ResMut<NextState<AppState>>,
     mut finished_for: Local<f32>,
     field: (Option<Res<Standings>>, Option<Res<Opponents>>),
+    (mut career, rules, mut fe): (ResMut<Career>, Res<career::Rules>, ResMut<FrontEnd>),
 ) {
     let (Some(ui), Some(p)) = (ui, progress) else { return };
     let field = (field.0.as_deref(), field.1.as_deref());
@@ -538,9 +569,21 @@ fn race_menus(
         // Escape or Start pauses (Backspace is the quick restart).
         if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start)) && !over {
             virt.pause();
-            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field);
+            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None));
         } else if *finished_for > 2.5 && menus.is_empty() {
-            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field);
+            let award = (selection.mode == Mode::Career).then(|| {
+                let run = career.run.clone()?;
+                let order = finishing_order(&run, p.dnf, field);
+                let mut tricks = vec![0; run.field.len()];
+                if let (Some(i), Some(s)) = (run.field.iter().position(|e| e.player), session.as_deref()) {
+                    tricks[i] = s.score;
+                }
+                let award = career.score(&rules, &selection.track, &order, &tricks);
+                career.save();
+                award
+            });
+            let award = award.flatten();
+            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), career.run.as_ref()));
         }
         return;
     };
@@ -568,7 +611,11 @@ fn race_menus(
                     next.set(AppState::Loading);
                 }
             }
-            "QUIT RACE" | "QUIT" | "MAIN MENU" => next.set(AppState::FrontEnd),
+            "CHAMPIONSHIP STATUS" => next.set(AppState::FrontEnd),
+            "QUIT RACE" | "QUIT" | "MAIN MENU" => {
+                fe.return_to = Some(Screen::Main);
+                next.set(AppState::FrontEnd);
+            }
             _ => {}
         },
         _ => {}
@@ -585,6 +632,7 @@ fn spawn_race_menu(
     sel: &Selection,
     roster: &Roster,
     (standings, opponents): (Option<&Standings>, Option<&Opponents>),
+    (award, run): (Option<&Award>, Option<&Run>),
 ) {
     // Place and the winner when there were computer riders.
     let place = standings.filter(|s| s.racers > 1 && p.finished.is_some());
@@ -602,6 +650,7 @@ fn spawn_race_menu(
         (true, Mode::Arcade) if p.out_of_time() => ("OUT OF TIME".into(), &["TRY AGAIN", "MAIN MENU"]),
         (true, Mode::Arcade) if last_round => ("ARCADE COMPLETED".into(), &["MAIN MENU"]),
         (true, Mode::Arcade) => (format!("ROUND {} COMPLETE", sel.round + 1), &["NEXT ROUND", "RACE AGAIN", "MAIN MENU"]),
+        (true, Mode::Career) => (format!("ROUND {} COMPLETE", sel.round + 1), &["CHAMPIONSHIP STATUS", "MAIN MENU"]),
         (true, _) => ("RACE RESULTS".into(), &["RACE AGAIN", "MAIN MENU"]),
     };
     let list = MenuList::new(items, 220.0);
@@ -609,7 +658,14 @@ fn spawn_race_menu(
     let rows = match (results, freestyle.is_some()) {
         (false, _) => 0,
         (true, true) => 7,
-        (true, false) => p.lap_times.len() + 1 + usize::from(p.arcade.is_some() && p.finished.is_some()) + usize::from(place.is_some()) + usize::from(winner.is_some()),
+        (true, false) => {
+            p.lap_times.len()
+                + 1
+                + usize::from(p.arcade.is_some() && p.finished.is_some())
+                + usize::from(place.is_some())
+                + usize::from(winner.is_some())
+                + award.map_or(0, |a| 3 + usize::from(a.new_level.is_some()) + usize::from(a.gold) + a.unlocked.len())
+        }
     };
     let ph = 120.0 + 18.0 * rows as f32 + 34.0 * items.len() as f32;
     let pw = 340.0;
@@ -635,6 +691,7 @@ fn spawn_race_menu(
                     let sub = match sel.mode {
                         Mode::Freestyle => format!("{}  -  {}", track_title(&sel.track), limit_label(sel.time_limit)),
                         Mode::Arcade => format!("ROUND {}/{}  -  {}", sel.round + 1, roster.arcade.len(), track_title(&sel.track)),
+                        Mode::Career => format!("ROUND {}/{}  -  {}", sel.round + 1, career::ROUNDS, track_title(&sel.track)),
                         _ => format!("{}  -  {}", track_title(&sel.track), sel.quad.to_uppercase()),
                     };
                     box_.spawn(BitmapText::new(FontId::Small, 9.0, sub).color(Color::srgb(0.75, 0.85, 1.0)));
@@ -668,9 +725,26 @@ fn spawn_race_menu(
                                 let gold = best == Some(*t);
                                 row(rows, &format!("LAP {}", i + 1), &fmt_time(*t), gold);
                             }
-                            row(rows, "TOTAL", &fmt_time(p.finished.unwrap_or(p.clock)), false);
+                            let total = if p.dnf { "DNF".to_string() } else { fmt_time(p.finished.unwrap_or(p.clock)) };
+                            row(rows, "TOTAL", &total, false);
                             if let Some(a) = p.arcade.as_ref().filter(|_| p.finished.is_some()) {
                                 row(rows, "TIME LEFT", &fmt_time(a.left), false);
+                            }
+                            if let Some(a) = award {
+                                row(rows, "RACE POINTS", &format!("+{}", a.position_points), false);
+                                row(rows, "TRICK POINTS", &format!("+{}", a.trick_points), false);
+                                let standing = run.map_or(String::new(), |r| ordinal(r.player_place()));
+                                row(rows, "CHAMPIONSHIP", &standing, false);
+                                row(rows, "SKILL POINTS", &format!("+{}", a.skill_points), false);
+                                if let Some(l) = a.new_level {
+                                    row(rows, "SKILL LEVEL", &format!("UP TO {l}"), true);
+                                }
+                                if a.gold {
+                                    row(rows, "GOLD MEDAL", "", true);
+                                }
+                                for atv in &a.unlocked {
+                                    row(rows, "UNLOCKED", &atv.to_uppercase(), true);
+                                }
                             }
                         });
                     }
