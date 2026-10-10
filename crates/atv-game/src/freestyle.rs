@@ -417,10 +417,10 @@ impl Session {
         }
     }
 
+    /// Banks points: freestyle's score, and in a race the rider's trick
+    /// points for a career.
     fn award(&mut self, points: u32) {
-        if self.freestyle {
-            self.score += points;
-        }
+        self.score += points;
     }
 
     /// The trick these buttons and this direction pull, if the rider's
@@ -891,6 +891,15 @@ mod tests {
         assert_eq!(s.popups.last().map(|p| p.kind), Some(PopupKind::Bail));
         // In the recovery part it counts.
         s.active = Some(ActiveTrick { def: 0, t: 0.7, held: 0.0, released: true });
+        s.land(1.0, Vec3::ZERO);
+        assert_eq!(s.score, 100);
+    }
+
+    #[test]
+    fn races_bank_trick_points_too() {
+        let mut s = session();
+        s.freestyle = false;
+        s.jump.tricks = vec![(0, 0)];
         s.land(1.0, Vec3::ZERO);
         assert_eq!(s.score, 100);
     }
