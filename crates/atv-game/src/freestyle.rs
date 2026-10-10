@@ -292,7 +292,7 @@ pub enum Ground {
     Bicycle,
 }
 
-#[derive(Resource)]
+#[derive(Resource, Clone)]
 pub struct Session {
     pub freestyle: bool,
     /// Seconds, or unlimited.
@@ -621,17 +621,33 @@ impl Session {
 }
 
 /// Held trick buttons and the stick direction, from keyboard and pads.
-pub fn read_tricks(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> (u8, Option<Dir>) {
+/// `slot`: in split screen, the player (0-based): player 1 has the number
+/// row and WASD, player 2 the number pad and the arrows, and each has their
+/// own pad; alone, every key and pad counts.
+pub fn read_tricks(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, slot: Option<usize>) -> (u8, Option<Dir>) {
+    let (buttons, [right, left, up, down]): (Vec<KeyCode>, [&[KeyCode]; 4]) = match slot {
+        None => (TRICK_KEYS.iter().flatten().copied().collect(), [
+            &[KeyCode::ArrowRight, KeyCode::KeyD],
+            &[KeyCode::ArrowLeft, KeyCode::KeyA],
+            &[KeyCode::ArrowUp, KeyCode::KeyW, KeyCode::KeyI],
+            &[KeyCode::ArrowDown, KeyCode::KeyS, KeyCode::KeyK],
+        ]),
+        Some(0) => (TRICK_KEYS.iter().map(|k| k[0]).collect(), [&[KeyCode::KeyD], &[KeyCode::KeyA], &[KeyCode::KeyW], &[KeyCode::KeyS]]),
+        Some(1) => (TRICK_KEYS.iter().map(|k| k[1]).collect(), [&[KeyCode::ArrowRight], &[KeyCode::ArrowLeft], &[KeyCode::ArrowUp], &[KeyCode::ArrowDown]]),
+        Some(_) => (Vec::new(), [&[], &[], &[], &[]]),
+    };
+    let pads = || pads.iter().enumerate().filter(|(n, _)| slot.is_none_or(|s| s == *n)).map(|(_, p)| p);
     let mut mask = 0u8;
-    for (i, ks) in TRICK_KEYS.iter().enumerate() {
-        if ks.iter().any(|k| keys.pressed(*k)) || pads.iter().any(|p| p.pressed(TRICK_PAD[i])) {
+    for (i, pad_button) in TRICK_PAD.iter().enumerate() {
+        let key = TRICK_KEYS[i].iter().any(|k| buttons.contains(k) && keys.pressed(*k));
+        if key || pads().any(|p| p.pressed(*pad_button)) {
             mask |= 1 << i;
         }
     }
     let key = |k: &[KeyCode]| if k.iter().any(|k| keys.pressed(*k)) { 1.0 } else { 0.0 };
-    let mut x: f32 = key(&[KeyCode::ArrowRight, KeyCode::KeyD]) - key(&[KeyCode::ArrowLeft, KeyCode::KeyA]);
-    let mut y: f32 = key(&[KeyCode::ArrowUp, KeyCode::KeyW, KeyCode::KeyI]) - key(&[KeyCode::ArrowDown, KeyCode::KeyS, KeyCode::KeyK]);
-    for pad in pads {
+    let mut x: f32 = key(right) - key(left);
+    let mut y: f32 = key(up) - key(down);
+    for pad in pads() {
         x += pad.get(GamepadAxis::LeftStickX).unwrap_or(0.0);
         y += pad.get(GamepadAxis::LeftStickY).unwrap_or(0.0);
     }

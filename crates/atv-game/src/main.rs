@@ -257,7 +257,8 @@ fn parse_args() -> anyhow::Result<Args> {
                     "status" => Screen::CareerStatus,
                     "freestyle" => Screen::FreestyleType,
                     "challenges" => Screen::Challenges,
-                    "multiplayer" => Screen::MpPlayers,
+                    "multiplayer" => Screen::MpMode,
+                    "players" => Screen::MpPlayers,
                     other => anyhow::bail!("unknown screen {other} (title, main, rider, atv, track)"),
                 });
             }
@@ -527,9 +528,13 @@ fn setup(
         Mode::SingleRace if sel.players > 1 => mp::FIELD - 1,
         Mode::SingleRace => args.opponents,
         Mode::Career => sel.field.len(),
+        // Freestyle Battle: the players only.
+        Mode::Freestyle => sel.players - 1,
         _ => 0,
     };
-    opponents::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, &roster, &sel, &scene.world, &collision, field);
+    // Tricks and freestyle scoring; split-screen players get one each.
+    let session = Session::new(&game.0, &sel, &scene.world);
+    opponents::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, &roster, &sel, (&scene.world, &collision), &session, field);
     info!(
         "loaded {}: {} world meshes, {} props, {} collision tris, {} checkpoints",
         sel.track,
@@ -622,7 +627,6 @@ fn setup(
         progress = progress.with_arcade(ArcadeClock::new(info.arcade_start, info.worst_lap, checkpoints.len(), &race::arcade_gates(&scene.world)));
     }
     commands.insert_resource(progress);
-    let session = Session::new(&game.0, &sel, &scene.world);
     commands.insert_resource(StuntClips::load(&game.0, &session.tricks));
     commands.insert_resource(Wreck::default());
     commands.insert_resource(session);
@@ -805,7 +809,7 @@ fn drive(
     if let Some(c) = controls.as_mut() {
         c.0 = input;
     }
-    let (mut buttons, mut dir) = freestyle::read_tricks(&keys, &pads);
+    let (mut buttons, mut dir) = freestyle::read_tricks(&keys, &pads, (race.players > 1).then_some(0));
     if args.autodrive && session.active.is_none() && !v.grounded() {
         // The autopilot shows off a different trick every so often.
         let k = (session.time * 0.7) as usize;

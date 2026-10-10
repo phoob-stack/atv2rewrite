@@ -173,7 +173,8 @@ pub enum Screen {
     /// Open Freestyle or the challenges.
     FreestyleType,
     Challenges,
-    /// Split screen: how many play.
+    /// Split screen: Single Race or Freestyle Battle, then how many play.
+    MpMode,
     MpPlayers,
 }
 
@@ -311,11 +312,7 @@ fn navigate(
                 }
             }
             Nav::Accept | Nav::Start => match list.as_ref().map(|l| l.current().to_string()).as_deref() {
-                Some("MULTIPLAYER") => {
-                    fe.mode = Mode::SingleRace;
-                    sel.mode = Mode::SingleRace;
-                    fe.screen = Screen::MpPlayers;
-                }
+                Some("MULTIPLAYER") => fe.screen = Screen::MpMode,
                 item => {
                     // Everything else is one player.
                     fe.players = 1;
@@ -595,6 +592,24 @@ fn navigate(
             Nav::Back => fe.screen = Screen::FreestyleType,
             _ => {}
         },
+        Screen::MpMode => match nav {
+            Nav::Up | Nav::Down => {
+                if let Some(l) = list.as_mut() {
+                    l.step(nav);
+                }
+            }
+            Nav::Accept | Nav::Start => {
+                let Some(l) = list.as_ref() else { return };
+                if l.disabled.get(l.selected) == Some(&true) {
+                    return;
+                }
+                fe.mode = if l.selected == 1 { Mode::Freestyle } else { Mode::SingleRace };
+                sel.mode = fe.mode;
+                fe.screen = Screen::MpPlayers;
+            }
+            Nav::Back => fe.screen = Screen::Main,
+            _ => {}
+        },
         Screen::MpPlayers => match nav {
             Nav::Up | Nav::Down => {
                 if let Some(l) = list.as_mut() {
@@ -608,7 +623,7 @@ fn navigate(
                 fe.picking = 0;
                 fe.screen = Screen::Rider;
             }
-            Nav::Back => fe.screen = Screen::Main,
+            Nav::Back => fe.screen = Screen::MpMode,
             _ => {}
         },
     }
@@ -669,9 +684,16 @@ fn rebuild(
         Mode::Challenge => ("Freestyle_Open_Rider", "Freestyle_Challenge_ATV", "Freestyle_Challenge"),
     };
     let split = fe.players > 1;
-    let (rider_key, atv_key, track_key) =
-        if split { ("Multiplayer_SingleRace_Rider", "Multiplayer_SingleRace_ATV", "Multiplayer_SingleRace_Track") } else { (rider_key, atv_key, track_key) };
-    let label = if split { "MULTIPLAYER" } else { fe.mode.label() };
+    let (rider_key, atv_key, track_key) = match (split, fe.mode) {
+        (true, Mode::Freestyle) => ("Multiplayer_Freestyle_Rider", "Multiplayer_Freestyle_ATV", "Multiplayer_Freestyle"),
+        (true, _) => ("Multiplayer_SingleRace_Rider", "Multiplayer_SingleRace_ATV", "Multiplayer_SingleRace_Track"),
+        _ => (rider_key, atv_key, track_key),
+    };
+    let label = match (split, fe.mode) {
+        (true, Mode::Freestyle) => "FREESTYLE BATTLE",
+        (true, _) => "MULTIPLAYER",
+        _ => fe.mode.label(),
+    };
     let (key, watermark) = match fe.screen {
         Screen::Title => ("Main_Menu", ""),
         Screen::Main => ("Main_Menu", ""),
@@ -687,7 +709,8 @@ fn rebuild(
         Screen::CareerComplete => ("Career_Complete", "CAREER"),
         Screen::FreestyleType => ("Freestyle_Picktype", "FREESTYLE"),
         Screen::Challenges => ("Freestyle_Challenge", "FREESTYLE"),
-        Screen::MpPlayers => ("Multiplayer_Num_Players", "MULTIPLAYER"),
+        Screen::MpMode => ("Multiplayer_New_Game", ""),
+        Screen::MpPlayers => ("Multiplayer_Num_Players", label),
     };
     let (bg, title) = roster.screen(key);
 
@@ -882,7 +905,15 @@ fn rebuild(
         Screen::MpPlayers => {
             let list = MenuList::new(&["TWO PLAYERS", "THREE PLAYERS", "FOUR PLAYERS"], 320.0).with_row(36.0).select(fe.players.clamp(2, 4) - 2);
             kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 170.0));
-            kids.push(hint(&mut commands, &ui, "COMPUTER RIDERS MAKE THE FIELD UP TO FOUR", 330.0));
+            let note = if fe.mode == Mode::Freestyle { "MOST POINTS BEFORE THE TIME RUNS OUT WINS" } else { "COMPUTER RIDERS MAKE THE FIELD UP TO FOUR" };
+            kids.push(hint(&mut commands, &ui, note, 330.0));
+        }
+        Screen::MpMode => {
+            let list = MenuList::new(&["SINGLE RACE", "FREESTYLE BATTLE", "CHAMPIONSHIP"], 320.0)
+                .with_row(36.0)
+                .select(usize::from(fe.mode == Mode::Freestyle))
+                .disable(&["CHAMPIONSHIP"]);
+            kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 170.0));
         }
         Screen::FreestyleType => {
             let list = MenuList::new(&["OPEN FREESTYLE", "FREESTYLE CHALLENGE"], 320.0).with_row(36.0).select(usize::from(fe.mode == Mode::Challenge));

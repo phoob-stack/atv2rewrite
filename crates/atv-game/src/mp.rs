@@ -8,12 +8,17 @@
 //! own view. The race is over once every player is home, or a minute
 //! after the first one.
 //!
+//! Freestyle Battle is Open Freestyle for the same players with no
+//! computer riders: each player has their own trick session, and the most
+//! points when the time runs out wins.
+//!
 //! [`opponents::Racer::human`]: crate::opponents::Racer::human
 
 use bevy::camera::Viewport;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
+use crate::freestyle::Session;
 use crate::frontend::Roster;
 use crate::hud::ordinal;
 use crate::opponents::{Opponents, Standings};
@@ -67,6 +72,17 @@ pub fn spawn_views(commands: &mut Commands, view: impl Bundle + Clone, players: 
         ));
     }
     commands.spawn((Camera2d, Camera { order: 10, clear_color: ClearColorConfig::None, ..default() }, Overlay, scoped.clone()));
+}
+
+/// Freestyle Battle: each player's (1-based) score.
+pub fn battle_scores(p1: &Session, opp: &Opponents) -> Vec<(usize, u32)> {
+    std::iter::once((1, p1.score)).chain(opp.racers.iter().filter_map(|r| Some((r.human?, r.session.as_ref()?.score)))).collect()
+}
+
+/// Player `n`'s place by score (players level share a place).
+pub fn place(scores: &[(usize, u32)], n: usize) -> usize {
+    let mine = scores.iter().find(|s| s.0 == n).map_or(0, |s| s.1);
+    1 + scores.iter().filter(|s| s.1 > mine).count()
 }
 
 /// Whether every player is home, or the others have had long enough.
@@ -143,14 +159,35 @@ fn spawn_hud(mut commands: Commands, opponents: Res<Opponents>, cams: Query<(Ent
     }
 }
 
-fn update_hud(opponents: Option<Res<Opponents>>, standings: Option<Res<Standings>>, p1: Option<Res<RaceProgress>>, mut readouts: Query<(&Readout, &mut BitmapText)>) {
+fn update_hud(
+    opponents: Option<Res<Opponents>>,
+    standings: Option<Res<Standings>>,
+    p1: Option<Res<RaceProgress>>,
+    session: Option<Res<Session>>,
+    mut readouts: Query<(&Readout, &mut BitmapText)>,
+) {
     let (Some(opp), Some(p1)) = (opponents, p1) else { return };
+    let battle = session.as_deref().filter(|s| s.freestyle);
+    let scores = battle.map(|s| battle_scores(s, &opp)).unwrap_or_default();
     for (r, mut t) in &mut readouts {
         let n = match r {
             Readout::Lap(n) | Readout::Place(n) | Readout::Time(n) | Readout::Speed(n) | Readout::Banner(n) => *n,
         };
         let Some((i, racer)) = opp.racers.iter().enumerate().find(|(_, r)| r.human == Some(n)) else { continue };
         let p = &racer.progress;
+        if let (Some(p1s), Some(s)) = (battle, racer.session.as_ref()) {
+            let text = match r {
+                Readout::Lap(_) => format!("SCORE {}", s.score),
+                Readout::Place(_) => format!("{} OF {}", ordinal(place(&scores, n)), scores.len()),
+                Readout::Time(_) => fmt_time(p1s.time_left(p1.clock).unwrap_or(p1.clock)),
+                Readout::Speed(_) => format!("{:.0} MPH", racer.vehicle.speed_mph().abs()),
+                Readout::Banner(_) if p1s.over(p1.clock) => "TIME UP".into(),
+                // The latest trick call-out.
+                Readout::Banner(_) => s.popups.last().filter(|pp| s.time - pp.at < 2.2).map_or(String::new(), |pp| pp.text.clone()),
+            };
+            set_text(&mut t, &text);
+            continue;
+        }
         let text = match r {
             Readout::Lap(_) => format!("LAP {}/{}", p.lap(), p.laps),
             Readout::Place(_) => standings.as_ref().and_then(|s| s.opponents.get(i)).map_or(String::new(), |o| format!("{} OF {}", ordinal(o.0), opp.racers.len() + 1)),
@@ -176,6 +213,14 @@ mod tests {
         assert_eq!(rect(1, 2), (0.0, 0.5, 1.0, 0.5));
         assert_eq!(rect(1, 3), (0.5, 0.0, 0.5, 0.5));
         assert_eq!(rect(3, 4), (0.5, 0.5, 0.5, 0.5));
+    }
+
+    #[test]
+    fn battle_places() {
+        let scores = [(1, 500), (2, 900), (3, 500)];
+        assert_eq!(place(&scores, 2), 1);
+        assert_eq!(place(&scores, 1), 2);
+        assert_eq!(place(&scores, 3), 2);
     }
 
     #[test]
