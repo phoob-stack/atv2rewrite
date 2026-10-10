@@ -374,3 +374,22 @@ the ROW spatial tree and effect records, and the material record fields.
   `clamp(1 - on, 0.3, 1)` and pitch `0.85 + 1.8 * r`. Another branch
   (a vehicle value at `+0x2b0` below 0.6) changes the mix and isn't
   ported.
+- Banks load into slots: 0 Vehicles, 1 Riders, 2 SpotFX, 3 the track's
+  ambient or crowd bank. One-shots go through `0x92e30` (bank, index,
+  volume, pitch).
+- SpotFX (3 clips): 0 the menu cursor moving, 1 select (and, it seems,
+  back), 2 a pop-up panel opening or closing; all at
+  `mFrontEndSpotFXVol`, pitch 1.
+- Riders (34 clips): `0x94690` plays one when a thrown rider's body hits
+  something with an impulse over 2.5 while going faster than 2.2347, at
+  most once a second unless the hit is twice as hard as the last. Female
+  riders (`mIsMale` 0) draw from 0-13 (table `0x1d28f4`), male from 14-32
+  (`0x1d2930`), re-rolling the last one played; volume and pitch 1. Clip
+  33 is never used.
+- Quad knocks: `0x94480` plays Vehicles clips from the table
+  `[25, 29, 30, 17, 18, 23]` (`0x1d28c0`) when the vehicle's impact value
+  passes 0.3, with a 0.25 s gap unless twice as hard: the first 3 up to
+  impact 8, the first 4 up to 14, all 6 above; volume `impact / 8` (or
+  `/ 14`) `+ 0.7` capped at 1, halved for some hit directions; pitch
+  `1 + rand(0.5)`. The rewrite uses the chassis' closing speed over 2 m/s
+  for the impact.

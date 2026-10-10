@@ -5,6 +5,12 @@
 //! ambient banks. The engine follows the original's update (0x93c60): two
 //! looping Vehicles-bank samples, "on" (2) and "off" (1), whose volume
 //! and pitch track the revs and throttle.
+//!
+//! One-shots, as the original plays them: the SpotFX bank in the menus
+//! (0 cursor, 1 select or back) at `mFrontEndSpotFXVol`; a Riders-bank
+//! grunt when a thrown rider hits the ground hard (0x94690: female clips
+//! 0-13, male 14-32, never the same twice running); and a Vehicles-bank
+//! knock when the quad's body hits something (0x94480).
 
 use std::sync::Arc;
 
@@ -25,8 +31,10 @@ impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<Sound>()
             .add_audio_source::<Sound>()
+            .add_systems(PreUpdate, load_banks.run_if(resource_exists::<Game>).run_if(not(resource_exists::<Banks>)))
             .add_systems(OnEnter(AppState::Race), start_race_audio)
-            .add_systems(Update, engine_and_wheels.run_if(in_state(AppState::Race)));
+            .add_systems(Update, (engine_and_wheels, crash_sounds).run_if(in_state(AppState::Race)))
+            .add_systems(Update, menu_sounds.run_if(in_state(AppState::FrontEnd)));
     }
 }
 
@@ -122,13 +130,20 @@ impl Decodable for Sound {
     }
 }
 
-/// Sound.xml and the Vehicles bank, read once.
-struct SoundData {
+/// Sound.xml and the always-loaded banks, read once.
+#[derive(Resource)]
+struct Banks {
     setup: SoundSetup,
     vehicles: Vec<Arc<Pcm>>,
+    riders: Vec<Arc<Pcm>>,
+    spotfx: Vec<Arc<Pcm>>,
 }
 
-impl SoundData {
+fn load_banks(mut commands: Commands, game: Res<Game>) {
+    commands.insert_resource(Banks::load(&game.0));
+}
+
+impl Banks {
     fn load(game: &GameSource) -> Self {
         let setup = game
             .read("/Setup/Sound.xml")
@@ -138,7 +153,9 @@ impl SoundData {
                 SoundSetup::default()
             });
         let vehicles = bank(game, "SOUND\\VEHICLES");
-        SoundData { setup, vehicles }
+        let riders = bank(game, "SOUND\\RIDERS");
+        let spotfx = bank(game, "SOUND\\SPOTFX");
+        Banks { setup, vehicles, riders, spotfx }
     }
 }
 
@@ -213,10 +230,10 @@ fn start_race_audio(
     game: Res<Game>,
     sel: Res<Selection>,
     settings: Res<Settings>,
-    mut data: Local<Option<SoundData>>,
+    data: Option<Res<Banks>>,
     mut sounds: ResMut<Assets<Sound>>,
 ) {
-    let data = data.get_or_insert_with(|| SoundData::load(&game.0));
+    let Some(data) = data else { return };
     let env = sel.track.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
     let setup = &data.setup;
     let scoped = DespawnOnExit(AppState::Race);
@@ -314,6 +331,114 @@ fn engine_and_wheels(
         };
         sink.set_volume(Volume::Linear(vol * gain(settings.effects)));
         sink.set_speed(pitch);
+    }
+}
+
+/// Plays a clip once.
+fn one_shot(commands: &mut Commands, sounds: &mut Assets<Sound>, pcm: &Arc<Pcm>, volume: f32, pitch: f32) {
+    let sound = Sound { parts: Arc::new([pcm.clone()]), loop_from: 1 };
+    commands.spawn((AudioPlayer(sounds.add(sound)), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)).with_speed(pitch)));
+}
+
+/// SpotFX in the menus: a tick for the cursor, a clunk to select or go
+/// back.
+fn menu_sounds(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&bevy::input::gamepad::Gamepad>,
+    banks: Option<Res<Banks>>,
+    settings: Res<Settings>,
+    mut sounds: ResMut<Assets<Sound>>,
+) {
+    use crate::ui::{read_nav, Nav};
+    let (Some(banks), Some(nav)) = (banks, read_nav(&keys, &pads)) else { return };
+    let index = match nav {
+        Nav::Up | Nav::Down | Nav::Left | Nav::Right => 0,
+        Nav::Accept | Nav::Start | Nav::Back => 1,
+    };
+    if let Some(pcm) = banks.spotfx.get(index) {
+        let volume = banks.setup.mix_level("mFrontEndSpotFXVol", 0.4) * gain(settings.effects);
+        one_shot(&mut commands, &mut sounds, pcm, volume, 1.0);
+    }
+}
+
+/// Riders-bank clips by voice (0x94690's tables).
+const FEMALE_VOICES: std::ops::Range<usize> = 0..14;
+const MALE_VOICES: std::ops::Range<usize> = 14..33;
+/// Vehicles-bank knocks, softest first (0x94480's table).
+const KNOCKS: [usize; 6] = [25, 29, 30, 17, 18, 23];
+/// The original's knock threshold (0.3) is in its own impact units; this
+/// is the chassis closing speed (m/s) under which a scrape stays quiet.
+const KNOCK_MIN: f32 = 2.0;
+
+#[derive(Default)]
+struct CrashVoices {
+    /// Seconds since the last grunt and knock, and how hard each was.
+    grunt: (f32, f32),
+    knock: (f32, f32),
+    last_voice: Option<usize>,
+    seed: u32,
+}
+
+impl CrashVoices {
+    fn rand(&mut self, n: usize) -> usize {
+        self.seed = self.seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        (self.seed >> 16) as usize % n.max(1)
+    }
+}
+
+/// Grunts from a thrown rider and knocks from the quad's body.
+#[allow(clippy::too_many_arguments)]
+fn crash_sounds(
+    mut commands: Commands,
+    time: Res<Time>,
+    banks: Option<Res<Banks>>,
+    wreck: Option<ResMut<crate::crash::Wreck>>,
+    sel: Res<Selection>,
+    settings: Res<Settings>,
+    mut sounds: ResMut<Assets<Sound>>,
+    mut state: Local<CrashVoices>,
+) {
+    let (Some(banks), Some(mut wreck)) = (banks, wreck) else { return };
+    let dt = time.delta_secs();
+    state.grunt.0 += dt;
+    state.knock.0 += dt;
+    let effects = gain(settings.effects);
+    // A bailed rider hitting the ground: impulse over 2.5 while moving,
+    // at most once a second unless it's twice as hard as the last.
+    if let Some((impulse, speed)) = wreck.thump.take()
+        && impulse > 2.5
+        && speed > 2.2347
+        && (state.grunt.0 > 1.0 || impulse > state.grunt.1 * 2.0)
+    {
+        let voices = if sel.rider.to_ascii_lowercase().starts_with("female") { FEMALE_VOICES } else { MALE_VOICES };
+        let mut pick = voices.start + state.rand(voices.len());
+        for _ in 0..8 {
+            if Some(pick) != state.last_voice {
+                break;
+            }
+            pick = voices.start + state.rand(voices.len());
+        }
+        if let Some(pcm) = banks.riders.get(pick) {
+            debug!("rider voice {pick} (impulse {impulse:.1})");
+            one_shot(&mut commands, &mut sounds, pcm, effects, 1.0);
+            state.last_voice = Some(pick);
+            state.grunt = (0.0, impulse);
+        }
+    }
+    // The quad's body hitting something: harder knocks draw on more of
+    // the table, every 0.25 s at most unless twice as hard.
+    let knock = std::mem::take(&mut wreck.knock);
+    if knock > KNOCK_MIN && (state.knock.0 > 0.25 || knock > state.knock.1 * 2.0) {
+        let (choices, scale) = if knock <= 8.0 { (3, 8.0) } else if knock <= 14.0 { (4, 14.0) } else { (6, 14.0) };
+        let i = KNOCKS[state.rand(choices)];
+        if let Some(pcm) = banks.vehicles.get(i) {
+            let volume = (knock / scale + 0.7).min(1.0) * effects;
+            let pitch = 1.0 + state.rand(1000) as f32 / 2000.0;
+            debug!("knock {i} (impact {knock:.1})");
+            one_shot(&mut commands, &mut sounds, pcm, volume, pitch);
+            state.knock = (0.0, knock);
+        }
     }
 }
 
