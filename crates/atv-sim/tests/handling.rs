@@ -231,3 +231,146 @@ fn leans_in_the_air() {
     println!("nose after leaning forward in the air: {:?}", v.forward());
     assert!(v.forward().y < -0.1);
 }
+
+/// Flat ground plus extra triangles.
+fn flat_with(extra: Vec<[Vec3; 3]>) -> TrackCollision {
+    let s = 2000.0;
+    let mut tris = vec![
+        [
+            Vec3::new(-s, 0.0, -s),
+            Vec3::new(s, 0.0, -s),
+            Vec3::new(s, 0.0, s),
+        ],
+        [
+            Vec3::new(-s, 0.0, -s),
+            Vec3::new(s, 0.0, s),
+            Vec3::new(-s, 0.0, s),
+        ],
+    ];
+    tris.extend(extra);
+    TrackCollision::new(tris, 8.0)
+}
+
+/// A quad (two triangles) from four corners.
+fn quad(a: Vec3, b: Vec3, c: Vec3, d: Vec3) -> [[Vec3; 3]; 2] {
+    [[a, b, c], [a, c, d]]
+}
+
+#[test]
+fn lands_a_kicker_on_its_wheels() {
+    let Some(p) = params() else { return };
+    // A 1.5 m kicker 8 m wide across the -Z direction (forward), with a
+    // sheer back face.
+    let (w, z0, z1, h) = (4.0, -40.0, -46.0, 1.5);
+    let mut extra = Vec::new();
+    extra.extend(quad(
+        Vec3::new(-w, 0.0, z0),
+        Vec3::new(w, 0.0, z0),
+        Vec3::new(w, h, z1),
+        Vec3::new(-w, h, z1),
+    ));
+    extra.extend(quad(
+        Vec3::new(-w, h, z1),
+        Vec3::new(w, h, z1),
+        Vec3::new(w, 0.0, z1),
+        Vec3::new(-w, 0.0, z1),
+    ));
+    let world = flat_with(extra);
+    let mut v = Vehicle::new(p, Vec3::new(0.0, 0.6, 40.0), Quat::IDENTITY);
+    run(&mut v, &world, Input::default(), 1.0);
+    let go = Input {
+        throttle: 1.0,
+        ..Default::default()
+    };
+    let (mut air, mut longest, mut landed_at) = (0.0f32, 0.0f32, None);
+    let mut lowest = f32::MAX;
+    for i in 0..(10.0 * 60.0) as usize {
+        v.step(&go, 1.0 / 60.0, &world);
+        let t = i as f32 / 60.0;
+        assert!(v.up().y > 0.0, "flipped over at t={t:.2}");
+        if v.position.z < z1 - 2.0 {
+            lowest = lowest.min(v.position.y);
+        }
+        if v.grounded() {
+            if air > 0.3 && landed_at.is_none() {
+                landed_at = Some(t);
+                println!(
+                    "landed after {air:.2}s at {:.0} mph, nose {:.2}",
+                    v.speed_mph(),
+                    v.forward().y
+                );
+            }
+            air = 0.0;
+        } else {
+            air += 1.0 / 60.0;
+            longest = longest.max(air);
+        }
+        if landed_at.is_some_and(|l| t > l + 2.0) {
+            break;
+        }
+    }
+    println!("longest air {longest:.2}s, lowest centre of mass after the kicker {lowest:.2}");
+    // Gravity is 2.8x while rising (INAIRGRAVUPSCALE), so plain ramp jumps
+    // are short; preload is what gives big air.
+    assert!(longest > 0.3, "barely left the ground");
+    assert!(landed_at.is_some(), "never landed");
+    assert!(lowest > 0.1, "chassis went into the ground");
+    assert!(v.up().y > 0.95 && v.wheels.iter().all(|w| w.contact));
+}
+
+#[test]
+fn survives_a_drop_without_pogoing() {
+    let Some(p) = params() else { return };
+    let world = flat();
+    let mut v = Vehicle::new(p, Vec3::new(0.0, 6.0, 0.0), Quat::IDENTITY);
+    let mut hit = false;
+    let mut rebound = 0.0f32;
+    let mut lowest = f32::MAX;
+    for _ in 0..(4.0 * 60.0) as usize {
+        v.step(&Input::default(), 1.0 / 60.0, &world);
+        lowest = lowest.min(v.position.y);
+        if v.grounded() {
+            hit = true;
+        }
+        if hit {
+            rebound = rebound.max(v.position.y);
+        }
+    }
+    println!(
+        "lowest {lowest:.2}, highest after touchdown {rebound:.2}, rest {:.2}",
+        v.position.y
+    );
+    assert!(lowest > 0.1, "chassis went into the ground");
+    assert!(rebound < 0.8, "bounced back up to {rebound:.2}");
+    assert!(v.up().y > 0.99 && v.velocity.length() < 0.1);
+}
+
+#[test]
+fn does_not_drive_through_walls() {
+    let Some(p) = params() else { return };
+    let z = -30.0;
+    let wall = quad(
+        Vec3::new(-10.0, 0.0, z),
+        Vec3::new(10.0, 0.0, z),
+        Vec3::new(10.0, 3.0, z),
+        Vec3::new(-10.0, 3.0, z),
+    );
+    let world = flat_with(wall.to_vec());
+    let mut v = Vehicle::new(p, Vec3::new(0.0, 0.6, 60.0), Quat::IDENTITY);
+    let go = Input {
+        throttle: 1.0,
+        ..Default::default()
+    };
+    let mut fastest = 0.0f32;
+    for _ in 0..(8.0 * 60.0) as usize {
+        v.step(&go, 1.0 / 60.0, &world);
+        fastest = fastest.max(v.speed_mph());
+        assert!(v.position.y < 2.0, "climbed the wall");
+    }
+    println!(
+        "hit the wall at up to {fastest:.0} mph, stopped at z={:.2}",
+        v.position.z
+    );
+    assert!(fastest > 50.0);
+    assert!(v.position.z > z, "went through the wall");
+}
