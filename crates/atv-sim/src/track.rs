@@ -44,9 +44,9 @@ pub fn collision_from_world(world: &World) -> TrackCollision {
             tris.push([0, 1, 2].map(|k| to_sim(m.vertices[t[k] as usize].pos)));
         }
         for p in &m.patches {
-            let (pos, _, idx) = p.tessellate(PATCH_STEPS);
-            for t in idx.chunks_exact(3) {
-                tris.push([0, 1, 2].map(|k| to_sim(pos[t[k] as usize])));
+            let t = p.tessellate(PATCH_STEPS);
+            for tri in t.indices.chunks_exact(3) {
+                tris.push([0, 1, 2].map(|k| to_sim(t.pos[tri[k] as usize])));
             }
         }
     }

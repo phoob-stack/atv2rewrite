@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use atv_formats::anim::{Animation, Skeleton};
 use atv_formats::{bog::Texture, rom::Model, row::World, GameSource};
 use clap::{Parser, Subcommand};
 
@@ -81,6 +82,15 @@ fn check(game: &GameSource) -> Result<()> {
                     format!("{} meshes, {t} tris, {pc} patches, {} props", w.meshes.len(), w.instances.len())
                 })
                 .map_err(Into::into)
+        } else if lower.ends_with(".bas") {
+            Skeleton::parse(&data).map(|s| format!("{} bones", s.bones.len())).map_err(Into::into)
+        } else if lower.ends_with(".bac") {
+            match Animation::parse(&data) {
+                Ok(a) => Ok(format!("{} bones x {} frames", a.bone_count, a.frame_count)),
+                // The bike stunt clips and punch_floor use another layout.
+                Err(_) if lower.contains("_bike.") || lower.contains("punch_floor") => continue,
+                Err(e) => Err(e.into()),
+            }
         } else if lower.ends_with(".bog") {
             match Texture::parse(&data) {
                 Ok(t) => Ok(format!("{}x{} {:?}", t.width, t.height, t.format)),

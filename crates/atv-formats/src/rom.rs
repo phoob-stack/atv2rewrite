@@ -15,6 +15,9 @@
 //! node: i32 x5 header, u32 tri_count, u32 patch_count, u32 0, u32 vertex_count,
 //!       i32 -1 x3, u32 indices[tri_count*3], Vertex[vertex_count],
 //!       Patch[patch_count]
+//! vertex (56 B): pos, normal, uv, 4 floats, u32 ARGB, u32 bone
+//! patch (672 B): u32 mode, 0, 0; X[16], Y[16], Z[16]; UVs; u32 ARGB[4]
+//!       at word 148; i32 bone[16] at word 152 (-1 when unskinned)
 //! ```
 
 use crate::bin::Reader;
@@ -25,13 +28,16 @@ pub struct Vertex {
     pub pos: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
-    /// Four floats that are zero in every model seen so far.
+    /// Four floats: a second (overlay) UV pair, then two unused. Zero in
+    /// most models; riders use the pair for their mud layer.
     pub extra: [f32; 4],
     /// Vertex colour as stored (0xAARRGGBB).
     pub color: u32,
+    /// Skeleton bone the vertex follows (riders; 0 in unskinned models).
+    pub bone: u32,
 }
 
-/// Bicubic Bezier patch (used for curved bodywork).
+/// Bicubic Bezier patch (curved bodywork, and most of each track's road).
 #[derive(Debug, Clone)]
 pub struct Patch {
     pub header: [u32; 3],
@@ -41,8 +47,23 @@ pub struct Patch {
     /// header[0] == 1 store all 16; others store only the four corners,
     /// which are spread bilinearly here.
     pub uv: [[f32; 2]; 16],
-    /// Corner colours (0xAARRGGBB).
+    /// Second (overlay) layer texture coordinates, laid out like `uv`.
+    /// Only track patches have one; models leave it zero.
+    pub uv2: [[f32; 2]; 16],
+    /// Corner colours (0xAARRGGBB) at control points 0, 3, 15 and 12, i.e.
+    /// (u,v) = (0,0), (1,0), (1,1), (0,1) on the tessellated grid.
     pub corner_color: [u32; 4],
+    /// Skeleton bone per control point (row-major) for riders; -1 in
+    /// unskinned models.
+    pub bones: [i32; 16],
+}
+
+/// A tessellated patch: an (n+1) x (n+1) vertex grid, row-major.
+pub struct Tessellation {
+    pub pos: Vec<[f32; 3]>,
+    pub uv: Vec<[f32; 2]>,
+    pub uv2: Vec<[f32; 2]>,
+    pub indices: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -164,8 +185,8 @@ impl Model {
                     uv: r.vec2()?,
                     extra: r.f32s::<4>()?,
                     color: r.u32()?,
+                    bone: r.u32()?,
                 };
-                r.u32()?;
                 vertices.push(v);
             }
             let mut patches = Vec::with_capacity(npatch);
@@ -178,9 +199,13 @@ impl Model {
                 let uv = r.f32s::<32>()?;
                 r.seek(start + 148 * 4);
                 let corner_color = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
+                let mut bones = [-1i32; 16];
+                for b in &mut bones {
+                    *b = r.i32()?;
+                }
                 r.seek(start + PATCH_SIZE);
                 let control = std::array::from_fn(|i| [xs[i], ys[i], zs[i]]);
-                patches.push(Patch { header, control, uv: Patch::uvs(header[0], &uv), corner_color });
+                patches.push(Patch { header, control, uv: Patch::uvs(header[0], &uv), uv2: [[0.0; 2]; 16], corner_color, bones });
             }
             nodes.push(Node { header, indices, vertices, patches });
         }
@@ -205,50 +230,42 @@ impl Patch {
         })
     }
 
-    /// Evaluates the patch on an (n+1) x (n+1) grid; returns positions, uvs
-    /// and triangle indices.
-    pub fn tessellate(&self, n: usize) -> (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>) {
+    /// Evaluates the patch on an (n+1) x (n+1) grid (u along control-point
+    /// columns, v along rows).
+    pub fn tessellate(&self, n: usize) -> Tessellation {
         fn bern(t: f32) -> [f32; 4] {
             let s = 1.0 - t;
             [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t]
         }
-        let mut pos = Vec::new();
-        let mut uv = Vec::new();
+        fn eval<const D: usize>(net: &[[f32; D]; 16], bu: &[f32; 4], bv: &[f32; 4]) -> [f32; D] {
+            let mut p = [0.0f32; D];
+            for (row, wv) in bv.iter().enumerate() {
+                for (col, wu) in bu.iter().enumerate() {
+                    let c = net[row * 4 + col];
+                    for k in 0..D {
+                        p[k] += c[k] * wu * wv;
+                    }
+                }
+            }
+            p
+        }
+        let mut t = Tessellation { pos: Vec::new(), uv: Vec::new(), uv2: Vec::new(), indices: Vec::new() };
         for j in 0..=n {
-            let v = j as f32 / n as f32;
-            let bv = bern(v);
+            let bv = bern(j as f32 / n as f32);
             for i in 0..=n {
-                let u = i as f32 / n as f32;
-                let bu = bern(u);
-                let mut p = [0.0f32; 3];
-                for (row, wv) in bv.iter().enumerate() {
-                    for (col, wu) in bu.iter().enumerate() {
-                        let c = self.control[row * 4 + col];
-                        for k in 0..3 {
-                            p[k] += c[k] * wu * wv;
-                        }
-                    }
-                }
-                pos.push(p);
-                let mut t = [0.0f32; 2];
-                for (row, wv) in bv.iter().enumerate() {
-                    for (col, wu) in bu.iter().enumerate() {
-                        let c = self.uv[row * 4 + col];
-                        t[0] += c[0] * wu * wv;
-                        t[1] += c[1] * wu * wv;
-                    }
-                }
-                uv.push(t);
+                let bu = bern(i as f32 / n as f32);
+                t.pos.push(eval(&self.control, &bu, &bv));
+                t.uv.push(eval(&self.uv, &bu, &bv));
+                t.uv2.push(eval(&self.uv2, &bu, &bv));
             }
         }
-        let mut idx = Vec::new();
         let w = (n + 1) as u32;
         for j in 0..n as u32 {
             for i in 0..n as u32 {
                 let a = j * w + i;
-                idx.extend_from_slice(&[a, a + 1, a + w, a + 1, a + w + 1, a + w]);
+                t.indices.extend_from_slice(&[a, a + 1, a + w, a + 1, a + w + 1, a + w]);
             }
         }
-        (pos, uv, idx)
+        t
     }
 }
