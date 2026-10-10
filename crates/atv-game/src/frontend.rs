@@ -77,6 +77,8 @@ pub struct Roster {
     pub tracks: Vec<String>,
     /// Tracks open from the start (`mAvailable="1"` in `Tracks.xml`).
     pub open_tracks: Vec<String>,
+    /// Tracks the attract demo races on (`mAvailableForDemo="1"`).
+    pub demo_tracks: Vec<String>,
     /// Arcade's rounds, in order (the ones on this disc, up to the
     /// original's fifteen).
     pub arcade: Vec<String>,
@@ -183,6 +185,7 @@ impl Roster {
             })
             .collect();
         let open_tracks = track_entries.iter().filter(|e| e.get("mAvailable") == Some("1")).map(|e| e.name.clone()).collect();
+        let demo_tracks = track_entries.iter().filter(|e| e.get("mAvailableForDemo") == Some("1")).map(|e| e.name.clone()).collect();
         let tracks: Vec<String> = track_entries.into_iter().map(|e| e.name).collect();
         let arcade = setup::entries(&read("/Setup/Arcade.xml"))
             .into_iter()
@@ -193,7 +196,7 @@ impl Roster {
         let freestyle_medals = TIME_LIMITS.iter().map(|&l| freestyle::medal_targets(game, l)).collect();
         let tricks = freestyle::load_tricks(game).0;
         let book = trickbook::book(&tricks);
-        Self { riders, quads, tracks, open_tracks, arcade, freestyle_medals, tricks, book, info, screens: setup::entries(&read("/Setup/Frontend.xml")) }
+        Self { riders, quads, tracks, open_tracks, demo_tracks, arcade, freestyle_medals, tricks, book, info, screens: setup::entries(&read("/Setup/Frontend.xml")) }
     }
 
     pub fn info(&self, track: &str) -> TrackInfo {
@@ -320,12 +323,17 @@ impl FrontEnd {
     pub fn at(screen: Screen) -> Self {
         Self { screen, ..default() }
     }
+
+    /// Press Start is up, with no message box over it.
+    pub fn waiting_on_title(&self) -> bool {
+        self.screen == Screen::Title && self.built == Some(Screen::Title) && self.popup.is_none()
+    }
 }
 
 #[derive(Component)]
 struct ScreenRoot;
 #[derive(Component)]
-struct Blink;
+pub(crate) struct Blink;
 #[derive(Component)]
 struct MugCursor;
 #[derive(Component)]
@@ -2338,7 +2346,7 @@ fn update_track_panel(
     }
 }
 
-fn blink(time: Res<Time>, mut q: Query<&mut Visibility, With<Blink>>) {
+pub(crate) fn blink(time: Res<Time>, mut q: Query<&mut Visibility, With<Blink>>) {
     for mut v in &mut q {
         v.set_if_neq(if (time.elapsed_secs() * 1.5).fract() < 0.65 { Visibility::Inherited } else { Visibility::Hidden });
     }

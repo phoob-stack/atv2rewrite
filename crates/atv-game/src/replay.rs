@@ -272,7 +272,8 @@ pub struct Broadcast {
 
 /// Once a one-player race or session is over, the director takes the
 /// camera (0x82cd0, in the style and mode `CameraDirector.xml` gives: all
-/// its cameras, moving between riders).
+/// its cameras, moving between riders), and in the attract demo it films
+/// the whole race.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn broadcast(
     mut commands: Commands,
@@ -285,8 +286,11 @@ fn broadcast(
     mut transforms: Query<&mut Transform>,
     sky: Query<Entity, With<SkyDome>>,
     mut riders: Query<&mut Visibility, With<Rider>>,
+    demo: Option<Res<crate::demo::Demo>>,
 ) {
     let (Some(p), Some(player)) = (progress, player.as_deref()) else { return };
+    // The attract demo is filmed from the start, every rider a computer's.
+    let players = usize::from(demo.is_none());
     let mut live = match live {
         Some(live) => live,
         None => {
@@ -294,7 +298,7 @@ fn broadcast(
                 Some(s) if s.freestyle => s.over(p.clock),
                 _ => p.over(),
             };
-            if over && sel.players <= 1 {
+            if (over && sel.players <= 1) || demo.is_some() {
                 let mut director = director::Director::default();
                 director.load(&game.0, &sel.track, settings.camera);
                 commands.insert_resource(Broadcast { director, target: 0 });
@@ -318,7 +322,7 @@ fn broadcast(
         stick: Vec2::ZERO,
         real_dt: real.delta_secs(),
     };
-    scene.target = live.director.pick_rider(&scene, 1, dt);
+    scene.target = live.director.pick_rider(&scene, players, dt);
     live.target = scene.target;
     let shot = live.director.shot(&scene, dt);
     let Some((cam, mut proj)) = cams.iter_mut().next() else { return };

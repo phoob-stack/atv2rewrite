@@ -26,11 +26,13 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::Race), spawn_hud)
+        // The attract demo shows its own page, and has no menus.
+        let no_demo = not(resource_exists::<crate::demo::Demo>);
+        app.add_systems(OnEnter(AppState::Race), spawn_hud.run_if(no_demo.clone()))
             .add_systems(OnExit(AppState::Race), unpause)
             .add_systems(
                 Update,
-                (update_gauge, update_readouts, update_meter, update_banners, race_menus).run_if(in_state(AppState::Race)),
+                (update_gauge, update_readouts, update_meter, update_banners, race_menus.run_if(no_demo)).run_if(in_state(AppState::Race)),
             );
     }
 }

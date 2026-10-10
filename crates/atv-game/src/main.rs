@@ -24,6 +24,7 @@ mod career;
 mod challenge;
 mod convert;
 mod crash;
+mod demo;
 mod effects;
 mod freestyle;
 mod frontend;
@@ -457,6 +458,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(challenges)
         .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin, mp::MpPlugin, knock::KnockPlugin, water::WaterPlugin, unlocks::UnlocksPlugin))
         .add_plugins(replay::ReplayPlugin)
+        .add_plugins(demo::DemoPlugin)
         .add_plugins(effects::EffectsPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
@@ -533,7 +535,7 @@ fn setup(
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
-    (career, rules): (Res<career::Career>, Res<career::Rules>),
+    (career, rules, demo): (Res<career::Career>, Res<career::Rules>, Option<Res<demo::Demo>>),
 ) {
     set_ui_camera(&mut commands, &mut ui_cams, false);
     let scoped = DespawnOnExit(AppState::Race);
@@ -570,7 +572,12 @@ fn setup(
     let generic = game.0.read("/Cars/Generic/Generic.params").map(|b| String::from_utf8_lossy(&b).into_owned());
     let own = game.0.read(&format!("/Cars/{q}/{q}.params", q = sel.quad)).ok();
     let own = own.map(|b| String::from_utf8_lossy(&b).into_owned());
-    let params = VehicleParams::from_files(&generic.unwrap_or_default(), own.as_deref());
+    let mut params = VehicleParams::from_files(&generic.unwrap_or_default(), own.as_deref());
+    if demo.is_some() {
+        // The demo's computer rider gets a computer rider's handling.
+        let ability = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider)).map_or(0.6, |r| r.stats[0] / 5.0);
+        atv_sim::ai::tune_for_ai(&mut params, ability.clamp(0.0, 1.0));
+    }
     let wheel_x: Vec<f32> = params.wheels.iter().map(|w| w.offset[0]).collect();
     let vehicle = Vehicle::new(params, start.0, start.1);
 
@@ -601,6 +608,8 @@ fn setup(
     let field = match sel.mode {
         // Split screen: the other humans, and computer riders to make four.
         Mode::SingleRace if sel.players > 1 => mp::FIELD - 1,
+        // The demo fills the grid (the track's mMaxPlayers, at most 8).
+        Mode::SingleRace if demo.is_some() => 7,
         Mode::SingleRace => args.opponents,
         Mode::Career => sel.field.len(),
         // The original's arcade state machine seats 1 player and 7 AI.
@@ -835,6 +844,7 @@ fn drive(
     crash_clips: Option<Res<CrashClips>>,
     mut restart: ResMut<NextState<AppState>>,
     (mut boost, boost_rules): (Option<ResMut<boost::Boost>>, Option<Res<boost::BoostRules>>),
+    (demo, mut opponents): (Option<Res<demo::Demo>>, Option<ResMut<opponents::Opponents>>),
 ) {
     let (Some(mut race), Some(mut player), Some(mut progress), Some(mut session)) = (race, player, progress, session) else { return };
     let dt = time.delta_secs();
@@ -855,6 +865,10 @@ fn drive(
     } else if !progress.started() || (over && (freestyle || race.course || progress.out_of_time() || progress.dnf)) {
         // Brake to a stop (braking at a standstill would reverse).
         Input { brake: if over && v.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
+    } else if let Some(opp) = opponents.as_mut().filter(|_| demo.is_some()) {
+        // The attract demo: a computer rider has player 1's seat.
+        held = progress.finished.is_none() && boost.as_ref().is_some_and(|b| b.on || b.meter >= 1.0);
+        opp.drive_player(v, dt)
     } else if let Some(spot) = session.next_spot(v.position).filter(|_| args.autodrive && freestyle) {
         // Freestyle's autopilot goes exploring.
         trk::steer_towards(v, spot)
@@ -950,8 +964,13 @@ fn drive(
         let (p, r) = race.safe;
         v.reset(p + Vec3::Y * 0.5, r);
         race.upside_down = 0.0;
+    } else if let Some((p, r)) = opponents.as_mut().filter(|_| demo.is_some() && !crashed).and_then(|o| o.respot_player()) {
+        // The demo's computer rider gives up where the others would.
+        let ground = race.collision.raycast(p + Vec3::Y * 3.0, Vec3::NEG_Y, 20.0).map_or(p.y, |h| h.point.y);
+        v.reset(p.with_y(ground + 0.6), r);
+        race.upside_down = 0.0;
     }
-    if keys.just_pressed(KeyCode::Backspace) {
+    if keys.just_pressed(KeyCode::Backspace) && demo.is_none() {
         // The quick restart: as Restart on the pause menu, so the computer
         // riders, the score and the clocks start over too.
         restart.set(AppState::Loading);
