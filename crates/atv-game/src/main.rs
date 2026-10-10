@@ -338,8 +338,13 @@ fn main() -> anyhow::Result<()> {
         players: args.players,
         others: Vec::new(),
     };
-    if args.players > 1 {
-        selection.others = mp::default_picks(&roster, &selection.rider, &selection.quad, args.players);
+    // Split screen is Single Race and Freestyle (Battle) only.
+    if selection.players > 1 && !matches!(args.mode, Mode::SingleRace | Mode::Freestyle) {
+        eprintln!("--players is for single races and freestyle; playing alone");
+        selection.players = 1;
+    }
+    if selection.players > 1 {
+        selection.others = mp::default_picks(&roster, &selection.rider, &selection.quad, selection.players);
     }
     if args.mode == Mode::Challenge {
         selection.track = challenge::TRACK.into();

@@ -108,7 +108,7 @@ then preselects), `--screen title|main|rider|atv|track` (open on that
 front-end screen), `--mode race|timetrial|arcade|freestyle` with
 `--minutes N` (freestyle limit, 0 = unlimited) or `--round N` (arcade round),
 `--opponents N` (computer riders in a single race, default 5),
-`--players N` (split-screen race for N players),
+`--players N` (split screen for N players, in a single race or freestyle),
 `--autodrive` (autopilot chases checkpoints and throws tricks), `--camera
 x,y,z,tx,ty,tz` (free-fly camera in game coordinates: WASD, Q/E, Shift, right
 mouse to look), `--screenshot out.png --after 8` (saves a frame and exits),
