@@ -359,7 +359,7 @@ impl<'a> Loader<'a> {
             return t.clone();
         }
         let loaded = self.texture_paths.get(&name.to_ascii_lowercase()).cloned().and_then(|path| {
-            let tex = Texture::parse(&self.game.read(&path).ok()?).ok()?;
+            let (tex, _) = crate::hd::texture(self.game, &path).ok()?;
             let size = Extent3d { width: tex.width, height: tex.height, depth_or_array_layers: 1 };
             let (img, alpha) = if shadow {
                 let mut img = Image::new(
@@ -421,7 +421,7 @@ impl<'a> Loader<'a> {
             return t.clone();
         }
         let loaded = self.texture_paths.get(&key).cloned().and_then(|path| {
-            let tex = Texture::parse(&self.game.read(&path).ok()?).ok()?;
+            let (tex, _) = crate::hd::texture(self.game, &path).ok()?;
             let size = Extent3d { width: tex.width, height: tex.height, depth_or_array_layers: 1 };
             let mut img = Image::new(
                 size,

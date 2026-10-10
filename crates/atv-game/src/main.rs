@@ -12,6 +12,7 @@
 
 mod convert;
 mod frontend;
+mod hd;
 mod hud;
 mod race;
 mod rider;
@@ -60,6 +61,9 @@ struct Args {
     direct: bool,
     /// Front-end screen to open on.
     screen: Option<Screen>,
+    /// HD texture pack folder (default: the one the launcher builds).
+    hd: Option<PathBuf>,
+    use_hd: bool,
 }
 
 #[derive(States, Default, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -135,6 +139,8 @@ fn parse_args() -> anyhow::Result<Args> {
         laps: 3,
         direct: false,
         screen: None,
+        hd: None,
+        use_hd: true,
     };
     let mut frontend = false;
     let mut it = std::env::args().skip(1);
@@ -164,6 +170,8 @@ fn parse_args() -> anyhow::Result<Args> {
             "--screenshot" => a.screenshot = Some(PathBuf::from(val())),
             "--after" => a.screenshot_after = val().parse()?,
             "--autodrive" => a.autodrive = true,
+            "--hd" => a.hd = Some(PathBuf::from(val())),
+            "--no-hd" => a.use_hd = false,
             "--fullscreen" => a.fullscreen = true,
             "--resolution" => {
                 let v = val();
@@ -193,6 +201,7 @@ fn parse_args() -> anyhow::Result<Args> {
 fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
     let game = Game(Arc::new(GameSource::open(&args.game)?));
+    hd::init(args.hd.clone(), args.use_hd);
     let roster = Roster::load(&game.0);
     let selection = Selection { track: args.track.clone(), quad: args.quad.clone(), rider: args.rider.clone(), laps: args.laps.clamp(1, 9) };
     let first = if args.direct { AppState::Loading } else { AppState::FrontEnd };

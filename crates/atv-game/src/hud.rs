@@ -285,8 +285,8 @@ fn update_banners(
         match name.filter(|_| !quiet) {
             Some(name) => {
                 let s = ui.countdown.get(name);
-                if img.rect != Some(s.rect) {
-                    img.rect = Some(s.rect);
+                if img.rect != Some(ui.countdown.tex.image_rect(s.rect)) {
+                    img.rect = Some(ui.countdown.tex.image_rect(s.rect));
                     node.width = px(s.rect.width());
                     node.height = px(s.rect.height());
                 }

@@ -15,7 +15,6 @@ use bevy::ui::widget::NodeImageMode;
 use bevy::window::PrimaryWindow;
 
 use atv_formats::bed::{Sprite, SpriteSheet};
-use atv_formats::bog::Texture;
 use atv_formats::GameSource;
 
 /// Screen height the original UI was laid out for.
@@ -43,7 +42,11 @@ fn fit_ui_scale(windows: Query<&Window, With<PrimaryWindow>>, mut scale: ResMut<
 #[derive(Clone)]
 pub struct UiTex {
     pub image: Handle<Image>,
+    /// Size in texels of the disc's version of the page; sprite sheets and
+    /// layout work in these.
     pub size: Vec2,
+    /// Image pixels per texel: above 1 when the page came from an HD pack.
+    pub px: f32,
 }
 
 impl UiTex {
@@ -52,13 +55,18 @@ impl UiTex {
         (Node { width: px(w), height: px(h), ..default() }, ImageNode::new(self.image.clone()).with_mode(NodeImageMode::Stretch))
     }
 
-    /// A pixel region of the page, drawn `scale` units per texel.
+    /// A texel region of the page, drawn `scale` units per texel.
     pub fn region(&self, rect: Rect, scale: f32) -> (Node, ImageNode) {
         let size = rect.size() * scale;
         (
             Node { width: px(size.x), height: px(size.y), ..default() },
-            ImageNode { image: self.image.clone(), rect: Some(rect), image_mode: NodeImageMode::Stretch, ..default() },
+            ImageNode { image: self.image.clone(), rect: Some(self.image_rect(rect)), image_mode: NodeImageMode::Stretch, ..default() },
         )
+    }
+
+    /// A texel region in the image's own pixels.
+    pub fn image_rect(&self, rect: Rect) -> Rect {
+        Rect { min: rect.min * self.px, max: rect.max * self.px }
     }
 }
 
@@ -208,7 +216,7 @@ fn layout_bitmap_text(
                         height: px(sz.y),
                         ..default()
                     },
-                    ImageNode { image: font.tex.image.clone(), rect: Some(rect), color: t.color, image_mode: NodeImageMode::Stretch, ..default() },
+                    ImageNode { image: font.tex.image.clone(), rect: Some(font.tex.image_rect(rect)), color: t.color, image_mode: NodeImageMode::Stretch, ..default() },
                 ));
             }
         });
@@ -303,10 +311,11 @@ struct PageLoader<'a> {
 }
 
 impl PageLoader<'_> {
-    fn pixels(&self, path: &str) -> Result<(u32, u32, Vec<u8>)> {
+    /// A page's pixels and its image pixels per texel (see [`UiTex::px`]).
+    fn pixels(&self, path: &str) -> Result<(u32, u32, Vec<u8>, f32)> {
         let path = format!("/{}.bog", path.trim_start_matches('/'));
-        let tex = Texture::parse(&self.game.read(&path).map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?)?;
-        Ok((tex.width, tex.height, tex.to_rgba8()))
+        let (tex, scale) = crate::hd::texture(self.game, &path)?;
+        Ok((tex.width, tex.height, tex.to_rgba8(), scale))
     }
 
     fn add(&mut self, w: u32, h: u32, rgba: Vec<u8>) -> UiTex {
@@ -317,12 +326,13 @@ impl PageLoader<'_> {
             TextureFormat::Rgba8UnormSrgb,
             RenderAssetUsages::RENDER_WORLD,
         );
-        UiTex { image: self.images.add(image), size: Vec2::new(w as f32, h as f32) }
+        UiTex { image: self.images.add(image), size: Vec2::new(w as f32, h as f32), px: 1.0 }
     }
 
     fn tex(&mut self, path: &str) -> Result<UiTex> {
-        let (w, h, px) = self.pixels(path)?;
-        Ok(self.add(w, h, px))
+        let (w, h, px, scale) = self.pixels(path)?;
+        let tex = self.add(w, h, px);
+        Ok(UiTex { size: tex.size / scale, px: scale, ..tex })
     }
 
     fn bed(&self, path: &str) -> Result<SpriteSheet> {
@@ -358,11 +368,13 @@ impl PageLoader<'_> {
     /// round to its red end (top right).
     fn preload_steps(&mut self, hud: &Sheet) -> Result<Vec<Handle<Image>>> {
         const STEPS: usize = 24;
-        let (w, _h, px) = self.pixels("Sprites/HUDTPAGE")?;
+        let (w, _h, px, k) = self.pixels("Sprites/HUDTPAGE")?;
+        // Worked in image pixels, which are texels unless the page is HD.
         let arc = hud.get("PRELOAD").rect;
+        let arc = Rect { min: arc.min * k, max: arc.max * k };
         let slot = hud.get("DIAL_PRELOAD").rect;
         let dial = hud.get("DIAL");
-        let hub = dial.pivot.unwrap_or(dial.rect.center()) - slot.min;
+        let hub = (dial.pivot.unwrap_or(dial.rect.center()) - slot.min) * k;
         let (x0, y0) = (arc.min.x as u32, arc.min.y as u32);
         let (aw, ah) = (arc.width() as u32, arc.height() as u32);
         // Clockwise angle from straight up, around the hub.
