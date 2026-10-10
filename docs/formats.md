@@ -389,9 +389,10 @@ with the original's addresses.
   `WAITING_FOR_REST` ("Waiting For Other Competitors") shows on a finished
   player's view.
   The multiplayer Championship has rider and ATV screens
-  (`Multiplayer_Career_Rider`/`_ATV`) but no setup data of its own; the
-  rewrite runs a career championship's `TrackOrder` with its position
-  points.
+  (`Multiplayer_Career_Rider`/`_ATV`), then runs the custom championship's
+  state machine (`ID_MULTIPLAYER_MODE_CHAMPIONSHIP` starts `CustomChampSM`
+  at 0x98520): Choose Your Tracks, and Point Distribution once Custom is
+  open (see the custom championship above).
 
 ## Still unknown
 

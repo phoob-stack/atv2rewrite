@@ -202,8 +202,8 @@ pub enum Screen {
     /// Split screen: Single Race or Freestyle Battle, then how many play.
     MpMode,
     MpPlayers,
-    /// The split-screen championship: which one, then its standings.
-    MpChamp,
+    /// The split-screen championship's standings (its tracks are picked
+    /// on the Custom pages).
     MpChampStatus,
     /// Every trick, a page each.
     TrickBook,
@@ -495,10 +495,9 @@ fn navigate(
                         fe.rider = i;
                     }
                     fe.screen = Screen::Rider;
-                } else if fe.mp_champ && fe.players > 1 {
-                    fe.screen = Screen::MpChamp;
-                } else if fe.mode == Mode::Career && fe.champ == Champ::Custom {
-                    // Its tracks start out as last set (none at first).
+                } else if (fe.mp_champ && fe.players > 1) || (fe.mode == Mode::Career && fe.champ == Champ::Custom) {
+                    // Custom and the split-screen championship pick their
+                    // tracks; they start out as last set (none at first).
                     if fe.custom.rows.is_empty() {
                         fe.custom = CustomSetup::new(&custom_tracks(&roster, &rules));
                     }
@@ -721,24 +720,6 @@ fn navigate(
             Nav::Back => fe.screen = Screen::FreestyleType,
             _ => {}
         },
-        Screen::MpChamp => match nav {
-            Nav::Up | Nav::Down => {
-                if let Some(l) = list.as_mut() {
-                    l.step(nav);
-                }
-            }
-            Nav::Accept | Nav::Start => {
-                let champ = Champ::ALL[list.as_ref().map_or(0, |l| l.selected).min(2)];
-                let name = |model: &str| roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(model)).map_or(model.to_uppercase(), |r| r.name.clone());
-                let players: Vec<(String, String)> =
-                    std::iter::once(&sel.rider).chain(sel.others.iter().map(|o| &o.0)).take(fe.players).map(|m| (name(m), m.clone())).collect();
-                let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos());
-                mp_champ.start(Plan::set(&rules, champ), &players, &sel.quad, &career_pool(&roster, &rules, champ), seed);
-                fe.screen = Screen::MpChampStatus;
-            }
-            Nav::Back => fe.screen = Screen::Quad,
-            _ => {}
-        },
         Screen::MpChampStatus => match nav {
             Nav::Accept | Nav::Start => {
                 let Some(run) = &mp_champ.run else { return };
@@ -775,8 +756,17 @@ fn navigate(
                 Nav::Accept if cs.editing => cs.editing = false,
                 Nav::Accept if !on_continue => cs.toggle(),
                 Nav::Accept | Nav::Start | Nav::Extra => {
-                    if ready {
-                        cs.editing = false;
+                    if !ready {
+                        return;
+                    }
+                    cs.editing = false;
+                    // The split-screen championship skips the points split
+                    // until Custom is open, as the original does.
+                    if fe.mp_champ && fe.players > 1 && !career.is_open(Champ::Custom) {
+                        let plan = Plan { split: None, ..fe.custom.plan() };
+                        start_mp_champ(&mut mp_champ, plan, &roster, &rules, &sel, fe.players);
+                        fe.screen = Screen::MpChampStatus;
+                    } else {
                         fe.screen = Screen::CustomPoints;
                     }
                     return;
@@ -795,6 +785,10 @@ fn navigate(
             Nav::Left | Nav::Right => {
                 fe.custom.step_split(nav == Nav::Right);
                 fe.built = None;
+            }
+            Nav::Accept | Nav::Start if fe.mp_champ && fe.players > 1 => {
+                start_mp_champ(&mut mp_champ, fe.custom.plan(), &roster, &rules, &sel, fe.players);
+                fe.screen = Screen::MpChampStatus;
             }
             Nav::Accept | Nav::Start => {
                 start_career(&mut career, fe.custom.plan(), &roster, &rules, &sel);
@@ -860,6 +854,14 @@ fn start_career(career: &mut Career, plan: Plan, roster: &Roster, rules: &career
     let pool = career_pool(roster, rules, plan.champ);
     career.start(plan, (&name, &sel.rider), &sel.quad, &pool, seed);
     career.save();
+}
+
+/// Starts the split-screen championship for the players' picks.
+fn start_mp_champ(mp_champ: &mut MpChamp, plan: Plan, roster: &Roster, rules: &career::Rules, sel: &Selection, players: usize) {
+    let name = |model: &str| roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(model)).map_or(model.to_uppercase(), |r| r.name.clone());
+    let picks: Vec<(String, String)> = std::iter::once(&sel.rider).chain(sel.others.iter().map(|o| &o.0)).take(players).map(|m| (name(m), m.clone())).collect();
+    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos());
+    mp_champ.start(plan, &picks, &sel.quad, &career_pool(roster, rules, Champ::Custom), seed);
 }
 
 /// The tracks Choose Your Tracks lists: the championships' fifteen, in
@@ -941,12 +943,11 @@ fn rebuild(
         Screen::Challenges => ("Freestyle_Challenge", "FREESTYLE"),
         Screen::MpMode => ("Multiplayer_New_Game", ""),
         Screen::MpPlayers => ("Multiplayer_Num_Players", label),
-        Screen::MpChamp => ("Career_Newgame", "CHAMPIONSHIP"),
         Screen::MpChampStatus => (mp_champ.run.as_ref().map_or("Career_Status_Amateur", |r| r.champ.status_screen()), "CHAMPIONSHIP"),
         Screen::ArcadeNew => ("Arcade_Newgame", "ARCADE"),
         Screen::TrickBook => ("Trickbook", ""),
-        Screen::CustomTracks => ("Career_Custom_Tracks", "CAREER"),
-        Screen::CustomPoints => ("Career_Custom_Points_Distrib", "CAREER"),
+        Screen::CustomTracks => ("Career_Custom_Tracks", if split { "CHAMPIONSHIP" } else { "CAREER" }),
+        Screen::CustomPoints => ("Career_Custom_Points_Distrib", if split { "CHAMPIONSHIP" } else { "CAREER" }),
     };
     let (bg, title) = roster.screen(key);
 
@@ -1204,12 +1205,6 @@ fn rebuild(
                 kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, l).color(c), ui_at(x, top))).id());
                 top += 15.0;
             }
-        }
-        Screen::MpChamp => {
-            let names = Champ::ALL.map(Champ::label);
-            let list = MenuList::new(&names, 320.0).with_row(36.0);
-            kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 150.0));
-            kids.push(hint(&mut commands, &ui, "FIVE ROUNDS AGAINST EACH OTHER AND THE CHAMPIONSHIP'S RIDERS", 330.0));
         }
         Screen::MpChampStatus => {
             if let Some(run) = &mp_champ.run {
