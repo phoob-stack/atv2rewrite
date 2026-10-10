@@ -54,6 +54,31 @@ the original's rules:
   * Impact: `head_over_heels` (speed² ≤ 800) or `crash_front_1`,
     `fall_wheelie` / `fall_high_wheelie`, or `fall_side_A`.
   * A right-side fall plays the clip mirrored.
+* **Water** (sensors `0xd7f60`, set up with -1 m at `0x1edd0` and
+  `0x2d510`; the rider at `0x2cca0` and `0x2ca40`; the respot at `0x26e30`).
+  Deep water is the track's `waterbox` boxes (see formats.md), measured
+  from the quad's centre of mass:
+  * Coming down faster than 0.08 m a frame (4.8 m/s) less than 3 m over
+    a box's top, the seated rider braces with `Plunge`.
+  * With its centre 1 m under the top, the quad is in the water: the rider
+    comes off (crash type 5) and treads water (`Tread_water`, looped), and
+    the quad is dragged by `-10 × velocity` and `-5 × spin` (`0x5ba70`).
+  * A thrown rider who goes 1 m under a top treads water too.
+  * 1.5 s after the quad or the rider went in, the original starts its
+    respot (`0x25f20`), which fades for 0.5 s; here the quad is put back
+    at 2 s.
+  * The floating rider is pulled up by `50 × (0.3 − h − 0.5 × rising
+    speed)` and slowed at 25 a second (`0x2ca40`). The original measures
+    `h` from the box top and only pulls a body a metre under it; here `h`
+    is the height over the water you can see, which floats the pelvis
+    0.2 m under it.
+  * While the rider treads water the follow camera stops above the water
+    and turns to watch (the original's camera here isn't worked out).
+  * Only player 1 crashes into water so far; computer riders and players
+    2-4 drive on along the bed.
+  * The original treads water even when only the quad went in, the rider
+    still on the bank; the rewrite keeps such a rider lying where they
+    fell, with the same respot.
 * **Getting up** (`0x2bbb0`). After going head over heels the rider rolls
   about on the back (`movement_on_back_*`). After a face-first crash the
   rider pushes up (`push_up*`, `reach_out`). Then the quad is put back at
@@ -101,7 +126,8 @@ Loose_Mud 5. Plain Mud has none, only less grip (0.45).
 * Knock-over props (cones, signs, barriers, crates) and their `.hsc` hulls:
   they don't collide yet. Static props collide through their `.ink` meshes.
 * Crash parts of the original that aren't ported yet:
-  * crashes into water (`Plunge`, `Tread_water`)
+  * water crashes for computer riders and players 2-4, and the splash and
+    ripples
   * hits from other riders (causes 3 and 4)
   * the rider's own head contact (cause 2)
   * computer riders crashing (they are respotted as before)

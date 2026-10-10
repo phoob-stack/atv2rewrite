@@ -1,10 +1,14 @@
 //! Rivers, ponds and the sea: how deep a quad is wading. The track's water
 //! meshes aren't solid (the quad drives on the bed under them), so their
 //! level surfaces are kept apart to measure against. Quads wading through
-//! throw up spray.
+//! throw up spray. Deep water is the original's own: the track's
+//! `waterbox` locators.
 
 use bevy::prelude::*;
 
+use atv_formats::rom::Locator;
+use atv_formats::row::World;
+use atv_sim::track::to_sim;
 use atv_sim::TrackCollision;
 
 use crate::{AppState, Player};
@@ -36,14 +40,51 @@ struct Droplet {
 const DROPLET_LIFE: f32 = 0.7;
 const MAX_DROPLETS: usize = 400;
 
-/// The track's water surfaces.
+/// The track's water surfaces, and its water boxes.
 #[derive(Resource)]
-pub struct Water(pub TrackCollision);
+pub struct Water(pub TrackCollision, pub Vec<WaterBox>);
+
+/// One of the original's water volumes (built at 0x101030 from a
+/// `waterbox` locator): an upright box whose top is the water's surface.
+/// Anything over its footprint, however far down, is measured against it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterBox {
+    centre: Vec3,
+    /// The box's sideways and lengthways axes, and half its size along each.
+    axes: [Vec3; 2],
+    half: [f32; 2],
+    top: f32,
+}
+
+impl WaterBox {
+    pub fn from_locator(l: &Locator) -> Self {
+        let r = &l.rotation;
+        WaterBox {
+            centre: to_sim(l.pos),
+            axes: [to_sim([r[0], r[1], r[2]]), to_sim([r[6], r[7], r[8]])],
+            half: [l.scale[0] * 0.5, l.scale[2] * 0.5],
+            top: l.pos[1] + l.scale[1] * 0.5,
+        }
+    }
+
+    fn covers(&self, at: Vec3) -> bool {
+        let d = at - self.centre;
+        (0..2).all(|i| self.axes[i].dot(d).abs() < self.half[i])
+    }
+}
+
+/// The track's water boxes.
+pub fn boxes(world: &World) -> Vec<WaterBox> {
+    world.locators.iter().filter(|l| l.name.to_ascii_lowercase().starts_with("waterbox")).map(WaterBox::from_locator).collect()
+}
 
 /// Height of the quad's centre of mass over the bottoms of its wheels.
 const RIDE_HEIGHT: f32 = 0.5;
 /// Deeper than this (metres) the wheels throw up deep-water sounds.
 pub const DEEP: f32 = 0.4;
+/// A quad or a thrown rider whose centre is this far under the surface is
+/// in the water (the original's water sensors, 0xd7f60, set up with -1 m).
+pub const UNDER: f32 = 1.0;
 
 impl Water {
     /// How far under the surface a quad centred at `at` has its wheels
@@ -53,6 +94,20 @@ impl Water {
         self.0
             .raycast(at + Vec3::Y * 3.0, Vec3::NEG_Y, 6.0)
             .map_or(0.0, |h| (h.point.y - bottom).clamp(0.0, 3.0))
+    }
+
+    /// The height of the deep water's surface over or under `at`: the
+    /// highest top of the water boxes over it (0xd7f60 counts a quad in the
+    /// water if it's under any of them).
+    pub fn surface(&self, at: Vec3) -> Option<f32> {
+        self.1.iter().filter(|b| b.covers(at)).map(|b| b.top).reduce(f32::max)
+    }
+
+    /// The height of the water you can see over or under `at`, if there's
+    /// any; else the deep water's [`Water::surface`]. (The boxes are placed
+    /// by hand, and their tops can sit metres off the water's mesh.)
+    pub fn level(&self, at: Vec3) -> Option<f32> {
+        self.0.raycast(at + Vec3::Y * 20.0, Vec3::NEG_Y, 60.0).map(|h| h.point.y).or_else(|| self.surface(at))
     }
 }
 
@@ -149,13 +204,31 @@ mod tests {
     #[test]
     fn wading_depth() {
         let s = 50.0;
-        let pond = Water(TrackCollision::new(
-            vec![[Vec3::new(-s, 1.0, -s), Vec3::new(s, 1.0, -s), Vec3::new(0.0, 1.0, s)]],
-            8.0,
-        ));
+        let pond = Water(
+            TrackCollision::new(vec![[Vec3::new(-s, 1.0, -s), Vec3::new(s, 1.0, -s), Vec3::new(0.0, 1.0, s)]], 8.0),
+            Vec::new(),
+        );
         // Wheels 0.3 m under the surface; above it; and far off the pond.
         assert!((pond.depth(Vec3::new(0.0, 1.2, 0.0)) - 0.3).abs() < 1e-5);
         assert_eq!(pond.depth(Vec3::new(0.0, 2.0, 0.0)), 0.0);
         assert_eq!(pond.depth(Vec3::new(200.0, 0.0, 0.0)), 0.0);
+        assert_eq!(pond.level(Vec3::new(0.0, -10.0, 0.0)), Some(1.0));
+    }
+
+    #[test]
+    fn water_boxes() {
+        // A box 10 m wide and 40 m long turned a quarter round, its top at
+        // 2 m; a smaller one inside it, its top at 3 m.
+        let quarter = [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 0.0];
+        let lake = Locator { name: "waterbox".into(), pos: [0.0, -8.0, 0.0], scale: [10.0, 20.0, 40.0], rotation: quarter };
+        let pool = Locator { name: "WaterBox".into(), pos: [15.0, 0.0, 0.0], scale: [2.0, 6.0, 2.0], rotation: quarter };
+        let other = Locator { name: "Respot".into(), ..lake.clone() };
+        let world = World { fog_color: 0, materials: vec![], locators: vec![lake, pool, other], lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] };
+        let water = Water(TrackCollision::new(Vec::new(), 8.0), boxes(&world));
+        assert_eq!(water.1.len(), 2);
+        // Lengthways along X now; however deep, the top's the surface.
+        assert_eq!(water.surface(Vec3::new(18.0, -30.0, 0.0)), Some(2.0));
+        assert_eq!(water.surface(Vec3::new(15.0, 0.0, 0.0)), Some(3.0));
+        assert_eq!(water.surface(Vec3::new(0.0, 0.0, 6.0)), None);
     }
 }

@@ -63,7 +63,7 @@ use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
 use convert::{SkyDome, WheelVisual};
-use crash::{CrashClips, Wreck};
+use crash::{Cause, CrashClips, Wreck};
 use freestyle::{Session, StuntClips};
 use frontend::{FrontEnd, Roster, Screen};
 use opponents::OpponentRider;
@@ -730,7 +730,7 @@ fn setup(
     commands.insert_resource(attack::FightRules::load(&game.0));
     let stats = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider)).map_or([3.0; 4], |r| r.stats);
     commands.insert_resource(attack::Fighter::new(stats[3], stats[2]));
-    commands.insert_resource(water::Water(trk::water_surface(&scene.world)));
+    commands.insert_resource(water::Water(trk::water_surface(&scene.world), water::boxes(&scene.world)));
     commands.insert_resource(Race {
         collision,
         next_checkpoint: if in_challenge { 0 } else { usize::from(on_line && checkpoints.len() > 1) },
@@ -851,6 +851,7 @@ fn drive(
     mut restart: ResMut<NextState<AppState>>,
     (mut boost, boost_rules): (Option<ResMut<boost::Boost>>, Option<Res<boost::BoostRules>>),
     (demo, mut opponents): (Option<Res<demo::Demo>>, Option<ResMut<opponents::Opponents>>),
+    water: Option<Res<water::Water>>,
 ) {
     let (Some(mut race), Some(mut player), Some(mut progress), Some(mut session)) = (race, player, progress, session) else { return };
     let dt = time.delta_secs();
@@ -919,16 +920,20 @@ fn drive(
     let before = (v.velocity, v.angular_velocity);
     let air = v.air_time;
     v.step(&input, dt, &race.collision);
+    let surface = water.as_deref().and_then(|w| w.surface(v.position));
     if let Some(w) = wreck.as_mut() {
+        let wet = w.over_water(v, surface, dt);
+        v.in_water = wet;
         if crashed {
-            if w.advance(crash_clips.as_deref(), &race.collision, dt) {
+            if w.advance_in(crash_clips.as_deref(), &race.collision, water.as_deref(), wet, dt) {
                 w.fall = None;
                 let (p, r) = race.safe;
                 v.reset(p + Vec3::Y * 0.5, r);
                 race.upside_down = 0.0;
             }
         } else if progress.started() {
-            if let Some((cause, way)) = w.check(v, before, &race.collision, dt) {
+            let crash = if wet { Some((Cause::Water, crash::way_over(v, None))) } else { w.check(v, before, &race.collision, dt) };
+            if let Some((cause, way)) = crash {
                 // Which getting-up clip: any number that varies crash to crash.
                 let pick = ((v.position.x * 12.9898 + v.position.z * 78.233).sin() * 43758.547).fract().abs();
                 w.start(v, cause, way, pick);
@@ -956,7 +961,7 @@ fn drive(
     // Remember a safe spot; respot there on R, when stuck upside down, or
     // after falling out of the world.
     race.safe_timer += dt;
-    if v.grounded() && v.up().y > 0.9 && race.safe_timer > 1.0 {
+    if v.grounded() && v.up().y > 0.9 && race.safe_timer > 1.0 && !v.in_water {
         race.safe = (v.position, v.rotation);
         race.safe_timer = 0.0;
     }
@@ -1037,11 +1042,14 @@ fn stunts(
     time: Res<Time>,
     session: Option<Res<Session>>,
     (clips, fighter, fight_clips): (Option<Res<StuntClips>>, Option<Res<attack::Fighter>>, Option<Res<attack::FightClips>>),
+    (wreck, crash_clips): (Option<Res<Wreck>>, Option<Res<CrashClips>>),
     mut riders: Query<&mut Rider, Without<OpponentRider>>,
 ) {
     let (Some(s), Some(clips)) = (session, clips) else { return };
     let fight = fighter.zip(fight_clips).and_then(|(f, c)| f.pose(&c));
-    let stunt = fight.or_else(|| {
+    // Bracing for the water.
+    let plunge = wreck.zip(crash_clips).and_then(|(w, c)| w.plunge(&c));
+    let stunt = fight.or(plunge).or_else(|| {
         s.active.as_ref().and_then(|a| {
             let clip = clips.0.get(a.def)?.clone()?;
             Some((clip, a.t / s.tricks[a.def].total))
@@ -1068,6 +1076,7 @@ fn chase_camera(
     player: Option<Res<Player>>,
     race: Option<Res<Race>>,
     opponents: Option<Res<opponents::Opponents>>,
+    (wreck, water): (Option<Res<Wreck>>, Option<Res<water::Water>>),
     mut cams: Query<(&mut Transform, &mut ChaseCam, Option<&mp::Split>)>,
     mut riders: Query<(&Rider, &mut Visibility), Without<OpponentRider>>,
     mut rig: Local<Option<(CameraView, FollowCam)>>,
@@ -1080,6 +1089,16 @@ fn chase_camera(
     for (mut t, mut cam, split) in &mut cams {
         // Split screen: each view follows its own player's quad.
         let v = match split.map_or(0, |s| s.0) {
+            0 if let Some(body) = wreck.as_deref().and_then(Wreck::floating) => {
+                // The quad sinks; the camera stays over the water and
+                // watches the rider tread water.
+                let floor = water.as_deref().and_then(|w| w.level(t.translation)).map_or(f32::MIN, |s| s + 0.5);
+                t.translation.y = t.translation.y.max(floor);
+                let want = Transform::from_translation(t.translation).looking_at(body + Vec3::Y * 0.5, Vec3::Y).rotation;
+                cam.facing = cam.facing.slerp(want, 1.0 - (-follow.rot_stiffness[1] * time.delta_secs()).exp()).normalize();
+                t.rotation = cam.facing;
+                continue;
+            }
             0 => &player.0,
             slot => match opponents.as_deref().and_then(|o| o.human(slot + 1)) {
                 Some(r) => &r.vehicle,

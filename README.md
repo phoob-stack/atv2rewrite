@@ -216,6 +216,8 @@ back; left/right changes the lap count (or Open Freestyle's time limit) on
 track select.
 
 The quad respots automatically when it is upside down or falls off the world.
+Ride into deep water and the rider comes off and treads water (bracing on
+the way down after a drop), and the quad is put back two seconds later.
 Other options: `--frontend` (show the menus even with `--track`, which
 then preselects), `--screen title|main|rider|atv|track|tricks` (open on that
 front-end screen; also `profiles`, and `arcade` with `--mode arcade`), `--mode race|timetrial|arcade|freestyle` with

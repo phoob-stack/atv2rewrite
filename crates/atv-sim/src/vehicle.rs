@@ -30,6 +30,9 @@ const STEP: f32 = 1.0 / 120.0;
 const ORIGINAL_FRAME: f32 = 1.0 / 60.0;
 /// Seconds without wheel contact before the quad counts as airborne.
 const AIRBORNE_DELAY: f32 = 0.15;
+/// How hard deep water holds back the quad's motion and spin (0x5ba70).
+const WATER_DRAG: f32 = 10.0;
+const WATER_SPIN_DRAG: f32 = 5.0;
 const FLIP: Vec3 = Vec3::new(1.0, 1.0, -1.0);
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -128,6 +131,9 @@ pub struct Vehicle {
     /// Scales the drive force; the game's speed boost raises it (the
     /// original's torque modifier, 1.0 unless boosting).
     pub drive_scale: f32,
+    /// Set by the game while the quad is in deep water, which drags it to
+    /// a crawl (0x5ba70).
+    pub in_water: bool,
 
     // Game-frame rigid body.
     pos: Vec3,
@@ -228,6 +234,7 @@ impl Vehicle {
             preload: 0.0,
             air_time: 0.0,
             drive_scale: 1.0,
+            in_water: false,
             pos: Vec3::ZERO,
             rot: Mat3::IDENTITY,
             momentum: Vec3::ZERO,
@@ -339,6 +346,7 @@ impl Vehicle {
         self.landing_stab = 0.0;
         self.airborne = false;
         self.air_time = 0.0;
+        self.in_water = false;
         self.sync_out();
     }
 
@@ -375,6 +383,10 @@ impl Vehicle {
             self.ground_forces(h);
         } else {
             self.air_forces();
+        }
+        if self.in_water {
+            self.force -= self.vel * WATER_DRAG;
+            self.torque -= self.ang_vel * WATER_SPIN_DRAG;
         }
         self.preload_update(input.jump, h);
         self.landing_stabiliser(h);

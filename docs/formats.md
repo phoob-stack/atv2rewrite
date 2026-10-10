@@ -190,9 +190,16 @@ follow the same corner order. Shadow decal textures (`*_shad`, `*shadow*`)
 mark shadow as bright texels on black, or in alpha.
 Locators named `Start1`..`Start8` are the 2.5 m grid boxes; `Checkpoint N`,
 `Respot`, `waterbox` and weather zones (`snow .. mist .. tint ..`) are boxes
-too. Mesh blocks are currently found by validating candidate headers, which
-recovers 87-98% of each file's bytes; decoding the tree will make it exact
-and will give the visibility structure.
+too. A `waterbox` (matched case-insensitively, 0x101030) is deep water:
+its top, `pos.y + scale.y / 2`, is the surface, and anything over its
+footprint (`scale.x` by `scale.z` along the first and third rotation
+rows) counts, however far down. Forest's tops match its water meshes to
+0.1 m. Elsewhere they are placed by hand: measured at each box's centre,
+Dunes' and Swamp's run from 4 m over the water mesh to 13 m under it, and
+Stadium 2's pool box is 0.8 m under the water you see. Mesh blocks are
+currently found by validating candidate headers, which recovers 87-98% of
+each file's bytes; decoding the tree will make it exact and will give the
+visibility structure.
 
 ## BED sprite sheets and the 2D art
 
@@ -708,4 +715,5 @@ the ROW spatial tree and effect records, and the material record fields.
   measure wading depth against: wheels under it play the `Shallow_Water`
   surface sound (`Deep_Water`'s pitch past 0.4 m) instead of the ground's,
   and wash the dirt off. Mesh flag 0x2000 is not a water flag on its own:
-  Forest's shadow decals carry it too.
+  Forest's shadow decals carry it too. Deep water (crashes) goes by the
+  `waterbox` locators instead, as the original does.
