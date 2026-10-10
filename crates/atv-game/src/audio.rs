@@ -36,7 +36,8 @@ impl Plugin for AudioPlugin {
             .add_systems(PreUpdate, load_banks.run_if(resource_exists::<Game>).run_if(not(resource_exists::<Banks>)))
             .add_systems(OnEnter(AppState::Race), start_race_audio)
             .add_systems(Update, (engine_and_wheels, crash_sounds).run_if(in_state(AppState::Race)))
-            .add_systems(Update, menu_sounds.run_if(in_state(AppState::FrontEnd)));
+            .add_systems(Update, menu_sounds.run_if(in_state(AppState::FrontEnd)))
+            .add_systems(Update, pause_menu_sounds.run_if(in_state(AppState::Race)));
     }
 }
 
@@ -380,15 +381,53 @@ fn menu_sounds(
     settings: Res<Settings>,
     mut sounds: ResMut<Assets<Sound>>,
 ) {
-    use crate::ui::{read_nav, Nav};
-    let (Some(banks), Some(nav)) = (banks, read_nav(&keys, &pads)) else { return };
-    let index = match nav {
+    let (Some(banks), Some(nav)) = (banks, crate::ui::read_nav(&keys, &pads)) else { return };
+    spot_fx(&mut commands, &mut sounds, &banks, &settings, nav_sound(nav));
+}
+
+/// The same cursor and select sounds on the pause and results menus, and
+/// the pop-up panel sound as the pause menu opens and closes.
+#[allow(clippy::too_many_arguments)]
+fn pause_menu_sounds(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&bevy::input::gamepad::Gamepad>,
+    banks: Option<Res<Banks>>,
+    settings: Res<Settings>,
+    mut sounds: ResMut<Assets<Sound>>,
+    virt: Res<Time<Virtual>>,
+    menus: Query<(), With<crate::hud::RaceMenu>>,
+    mut was_paused: Local<bool>,
+) {
+    use crate::ui::Nav;
+    let paused = virt.is_paused();
+    let toggled = paused != *was_paused;
+    *was_paused = paused;
+    let Some(banks) = banks else { return };
+    let index = match crate::ui::read_nav(&keys, &pads) {
+        _ if toggled => 2,
+        // Start and Back close the pause menu: the panel sound covers it.
+        Some(Nav::Start | Nav::Back) => return,
+        Some(nav) if !menus.is_empty() => nav_sound(nav),
+        _ => return,
+    };
+    spot_fx(&mut commands, &mut sounds, &banks, &settings, index);
+}
+
+/// SpotFX 0 for cursor moves, 1 for select and back.
+fn nav_sound(nav: crate::ui::Nav) -> usize {
+    use crate::ui::Nav;
+    match nav {
         Nav::Up | Nav::Down | Nav::Left | Nav::Right => 0,
         Nav::Accept | Nav::Start | Nav::Back => 1,
-    };
+    }
+}
+
+fn spot_fx(commands: &mut Commands, sounds: &mut Assets<Sound>, banks: &Banks, settings: &Settings, index: usize) {
     if let Some(pcm) = banks.spotfx.get(index) {
+        debug!("spotfx {index}");
         let volume = banks.setup.mix_level("mFrontEndSpotFXVol", 0.4) * gain(settings.effects);
-        one_shot(&mut commands, &mut sounds, pcm, volume, 1.0);
+        one_shot(commands, sounds, pcm, volume, 1.0);
     }
 }
 

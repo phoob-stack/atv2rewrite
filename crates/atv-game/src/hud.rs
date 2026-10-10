@@ -77,7 +77,7 @@ struct LapBanner;
 #[derive(Component)]
 struct WrongWay;
 #[derive(Component)]
-struct RaceMenu {
+pub(crate) struct RaceMenu {
     results: bool,
 }
 
