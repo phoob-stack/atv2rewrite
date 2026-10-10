@@ -65,6 +65,14 @@ impl<'a> Reader<'a> {
     pub fn name(&mut self, len: usize) -> Result<String> {
         Ok(cstr(self.bytes(len)?))
     }
+    /// Reads a NUL-terminated string of any length.
+    pub fn cstr(&mut self) -> Result<String> {
+        let rest = self.data.get(self.pos..).ok_or(Error::Eof(self.what))?;
+        let len = rest.iter().position(|&c| c == 0).ok_or(Error::Eof(self.what))?;
+        let s = String::from_utf8_lossy(&rest[..len]).into_owned();
+        self.pos += len + 1;
+        Ok(s)
+    }
     /// Element count from the file, checked against the bytes left so a
     /// corrupt count fails cleanly instead of allocating gigabytes.
     pub fn count(&mut self, elem_size: usize) -> Result<usize> {

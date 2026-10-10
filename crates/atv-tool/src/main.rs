@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use atv_formats::anim::{Animation, Skeleton};
-use atv_formats::{bog::Texture, rom::Model, row::World, GameSource};
+use atv_formats::{bed::SpriteSheet, bog::Texture, rom::Model, row::World, GameSource};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -91,6 +91,8 @@ fn check(game: &GameSource) -> Result<()> {
                 Err(_) if lower.contains("_bike.") || lower.contains("punch_floor") => continue,
                 Err(e) => Err(e.into()),
             }
+        } else if lower.ends_with(".bed") {
+            SpriteSheet::parse(&data).map(|s| format!("{} sprites", s.entries.len())).map_err(Into::into)
         } else if lower.ends_with(".bog") {
             match Texture::parse(&data) {
                 Ok(t) => Ok(format!("{}x{} {:?}", t.width, t.height, t.format)),
