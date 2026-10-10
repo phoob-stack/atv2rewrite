@@ -4,7 +4,8 @@
 //! the track and settles where it lands. The original's `.hsc` hulls aren't
 //! needed for this: each prop is an upright cylinder from its model's
 //! bounding box, which is what a quad brushing past it sees. Hitting one
-//! knocks the quad, which plays its knock sounds.
+//! knocks the quad, which plays its knock sounds, and costs it the speed
+//! the original's contact between the two bodies takes (see [`slowdown`]).
 
 use bevy::prelude::*;
 
@@ -55,6 +56,23 @@ const KNOCK_SPEED: f32 = 2.234_722;
 const GRAVITY: f32 = 9.81;
 /// Longest physics step for a tumbling prop, seconds.
 const MAX_STEP: f32 = 1.0 / 60.0;
+/// A knock-over prop's body (0x2e100 over the defaults at 0xada50): mass
+/// 0.05 to a quad's 1 (`MASS` in the `.params`), hardness 0.3 to its 0.2.
+const PROP_MASS: f32 = 0.05;
+const PROP_HARDNESS: f32 = 0.3;
+/// The quad's `HARDNESS` (`Generic.params`).
+const QUAD_HARDNESS: f32 = 0.2;
+
+/// The velocity a quad of `mass` closing on a prop at `closing` m/s along
+/// `dir` loses. The original's contacts between bodies (made by 0xb29d0,
+/// solved by 0xb1ca0) bounce them apart with restitution the product of
+/// their hardnesses, so the quad gives up `(1 + e) × m_prop / (m_quad +
+/// m_prop)` of the closing speed along the contact: about 5%, a little
+/// less where the original's off-centre hit sets the prop spinning.
+fn slowdown(mass: f32, dir: Vec3, closing: f32) -> Vec3 {
+    let e = QUAD_HARDNESS * PROP_HARDNESS;
+    -dir * closing.max(0.0) * (1.0 + e) * PROP_MASS / (mass + PROP_MASS)
+}
 
 /// What a quad moving at `v` past a prop at `dir` (unit, horizontal,
 /// quad to prop) gives it: velocity and spin.
@@ -70,13 +88,13 @@ fn launch(v: Vec3, dir: Vec3) -> (Vec3, Vec3) {
 
 fn hit_props(
     mut commands: Commands,
-    player: Option<Res<Player>>,
+    mut player: Option<ResMut<Player>>,
     mut opponents: Option<ResMut<crate::opponents::Opponents>>,
     mut wreck: Option<ResMut<crate::crash::Wreck>>,
     mut props: Query<(Entity, &Transform, &Knockable, Option<&mut Tumble>)>,
     mut last: Local<Vec<Vec3>>,
 ) {
-    let Some(player) = player else { return };
+    let Some(player) = player.as_mut() else { return };
     // Each quad's path since last frame, so a fast quad at a low frame
     // rate can't step over a prop.
     let now: Vec<(Vec3, Vec3)> = std::iter::once(&player.0)
@@ -110,6 +128,13 @@ fn hit_props(
             }
             let dir = off.normalize_or(v.with_y(0.0).normalize_or(Vec3::X));
             let (velocity, spin) = launch(v, dir);
+            // The prop takes some of the quad's way.
+            let closing = (v - tumble.as_ref().map_or(Vec3::ZERO, |t| t.velocity)).dot(dir);
+            let quad_v = if quad == 0 { Some(&mut player.0) } else { opponents.as_mut().and_then(|o| o.racers.get_mut(quad - 1)).map(|r| &mut r.vehicle) };
+            if let Some(q) = quad_v {
+                let dv = slowdown(q.params.mass, dir, closing);
+                q.nudge(Vec3::ZERO, dv);
+            }
             // The original's props are physics bodies, so hitting one is a
             // knock on the quad like any other (0x1aeb0 sums every contact
             // into the impact 0x94480 sounds): over 5 mph, by how hard.
@@ -213,6 +238,15 @@ mod tests {
         assert!(v.z < -8.0 && v.y > 3.0);
         // Topples forwards: spinning about the quad's sideways axis.
         assert!(spin.x.abs() > 1.0 && spin.y.abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_prop_takes_a_little_speed() {
+        // Head on at 20 m/s: about 1 m/s lost, all along the contact.
+        let dv = slowdown(1.0, Vec3::NEG_Z, 20.0);
+        assert!((dv.z - 1.0097).abs() < 1e-3 && dv.x == 0.0 && dv.y == 0.0, "{dv}");
+        // Already moving apart: nothing.
+        assert_eq!(slowdown(1.0, Vec3::X, -3.0), Vec3::ZERO);
     }
 
     #[test]
