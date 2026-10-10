@@ -27,7 +27,9 @@ pub struct Scene {
 
 /// Distance from the model origin (ground under the wheels) up to the
 /// physics centre of mass; WHEELOFFSET in the params is relative to it.
-pub const COM_HEIGHT: f32 = 0.43;
+/// With the original suspension the front wheel centres settle 0.245 below
+/// the centre of mass, where the body model has them at 0.242.
+pub const COM_HEIGHT: f32 = 0.245;
 
 /// A wheel (or rear axle half) that follows the simulation.
 #[derive(Component)]

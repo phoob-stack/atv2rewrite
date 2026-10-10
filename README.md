@@ -10,7 +10,7 @@ or a folder the disc was extracted to.
 | Crate | What it does |
 |---|---|
 | `atv-formats` | Engine-free readers: Xbox disc filesystem, "Bark" archive + LZSS, BOG textures (DXT1/DXT5, swizzled ARGB, 8-bit palettized), ROM 1.26 models (meshes + Bezier patches), ROW 2.25 track worlds. |
-| `atv-sim` | Engine-free vehicle physics: reads the game's `.params` tuning files, raycast-wheel suspension and tyre model, auto gearbox, preload jumps, rider lean, and track collision built from the track's meshes and patches. |
+| `atv-sim` | Engine-free vehicle physics ported from the original game (see `docs/physics.md`): reads the game's `.params` tuning files, spring-strut wheels, body-level ground forces, auto gearbox, wheelies, preload jumps, air control, and track collision built from the track's meshes and patches. |
 | `atv-tool` | Command line: `list`, `extract <dir>`, `check` (parses every texture, model and track), `sim` (headless autopilot lap test). |
 | `atv-game` | The game (binary `atv2`): a drivable quad on any track, chase camera, keyboard and gamepad input, HUD. |
 
