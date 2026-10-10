@@ -9,10 +9,14 @@
 //! - exhaust puffs;
 //! - sparks (`Spark0`), which the exhaust spits while boosting.
 //!
+//! Quads and riders coming down into deep water splash (0xe6520), and the
+//! water's ripples (`Ripple`, 0x106df0) lie flat on its surface.
+//!
 //! Each frame (at 60 a second) the emitters roll a chance per wheel and
 //! per exhaust. Each wheel follows its own surface's line in
 //! `Setup/Materials.xml` (from the track collision); wheels off the track's
-//! own ground (on props) use the environment's main ground.
+//! own ground (on props) use the environment's main ground. Wheels in
+//! water, wading or sunk in deep water, throw nothing.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -27,8 +31,9 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::boost::Boost;
 use crate::convert::{Exhaust, WheelVisual};
+use crate::crash::{WaterFx, Wreck};
 use crate::opponents::Opponents;
-use crate::water::{depth, Water};
+use crate::water::{depth, Water, UNDER};
 use crate::{AppState, Game, Player, QuadBody, Selection};
 
 pub struct EffectsPlugin;
@@ -52,6 +57,11 @@ const DUST_FULL: f32 = 22.347_22;
 const MAX_TREAD: f32 = 22.347_22;
 /// Past this far from every camera nothing is thrown up.
 const FAR: f32 = 50.0;
+/// Coming down into deep water faster than this (0.08 m a frame), a quad
+/// splashes (0xd7f60).
+const SPLASH_SPEED: f32 = 4.8;
+/// The most ripples on the water at once (0x1d360c).
+const MAX_RIPPLES: usize = 256;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Pool {
@@ -60,9 +70,10 @@ enum Pool {
     Smoke,
     Exhaust,
     Sparks,
+    Splash,
 }
 
-const POOLS: [Pool; 5] = [Pool::Chunks, Pool::Dust, Pool::Smoke, Pool::Exhaust, Pool::Sparks];
+const POOLS: [Pool; 6] = [Pool::Chunks, Pool::Dust, Pool::Smoke, Pool::Exhaust, Pool::Sparks, Pool::Splash];
 
 /// A pool's settings, from the original's set-up calls.
 struct Spec {
@@ -89,6 +100,7 @@ impl Pool {
             Pool::Exhaust => Spec { max: 40, life: 0.3, scale: Vec2::splat(0.25), damping: 0.7, ..base },
             // The spark pool draws every spark the same size.
             Pool::Sparks => Spec { max: 50, life: 0.3, scale: Vec2::splat(0.02), gravity: -6.0, drag: 0.97, ..base },
+            Pool::Splash => Spec { max: 64, life: 2.0, gravity: -6.0, ..base },
         }
     }
 }
@@ -113,6 +125,8 @@ struct Particle {
     sprite: usize,
     /// The ground a chunk bounces off: normal and a point on it.
     ground: Option<(Vec3, Vec3)>,
+    /// Lives this many times the pool's life (splashes, 0xe6bc0).
+    life_scale: f32,
 }
 
 impl Particle {
@@ -132,13 +146,14 @@ impl Particle {
             end: Vec3::ONE,
             sprite,
             ground: None,
+            life_scale: 1.0,
         }
     }
 
     /// One step (0xf4b50, with the chunks' bounce from 0xf77c0 and the
     /// sparks' drag from 0xf7c20). False once it has lived its life.
     fn step(&mut self, spec: &Spec, dt: f32) -> bool {
-        self.age += dt;
+        self.age += dt / self.life_scale;
         if self.age > spec.life {
             return false;
         }
@@ -177,6 +192,88 @@ impl Particle {
         };
         rgb.extend(a.clamp(0.0, 1.0))
     }
+}
+
+/// A ripple lying flat on the water (0x1072c0): it waits out its delay,
+/// then grows and fades over its life.
+#[derive(Clone, Debug, PartialEq)]
+struct Ripple {
+    pos: Vec3,
+    /// Half its width, and how fast that grows, m/s.
+    size: f32,
+    grow: f32,
+    alpha: f32,
+    delay: f32,
+    age: f32,
+    life: f32,
+}
+
+impl Ripple {
+    fn new(pos: Vec3, size: f32, grow: f32, alpha: f32, delay: f32) -> Self {
+        Ripple { pos, size, grow, alpha, delay, age: 0.0, life: 2.0 }
+    }
+
+    /// One step (0x106f00). False once it has lived its life.
+    fn step(&mut self, dt: f32) -> bool {
+        if self.delay > 0.0 {
+            self.delay = (self.delay - dt).max(0.0);
+        } else {
+            self.age += dt;
+            self.size += self.grow * dt;
+        }
+        self.age < self.life
+    }
+
+    /// How opaque it is now (the original's fade isn't worked out: here
+    /// it fades evenly over its life). None while it waits.
+    fn opacity(&self) -> Option<f32> {
+        (self.delay <= 0.0 && self.age < self.life).then(|| self.alpha * (1.0 - self.age / self.life))
+    }
+}
+
+/// A splash where something came down into the water at `at` (on the
+/// surface), moving `motion` a 60 Hz frame, `radius` across (0xe6520):
+/// spray thrown up and out in a ring, four big ripples one after
+/// another, and small ripples spreading out further the harder it hit.
+fn splash(rng: &mut Rng, sprite: usize, at: Vec3, motion: Vec3, radius: f32) -> (Vec<Particle>, Vec<Ripple>) {
+    let tau = std::f32::consts::TAU;
+    let strength = (-5.0 * motion.y).min(1.0);
+    let mut spray = Vec::with_capacity(32);
+    for i in 0..32 {
+        let (s, c) = (i as f32 / 32.0 * tau).sin_cos();
+        let out = rng.unit() * 0.75 * radius;
+        let pos = at + Vec3::new(out * s, 0.0, out * c);
+        let vel = Vec3::new(1.2 * s + 3.0 * motion.x, (3.0 + rng.unit() * 4.0) * strength, 1.2 * c + 3.0 * motion.z);
+        spray.push(Particle {
+            rot: rng.unit() * tau,
+            spin: rng.pm(0.3),
+            size: 0.3 + rng.unit() * 0.1,
+            grow: 1.5 + rng.unit() * 0.5,
+            fade_out: 2.0,
+            alpha: 0.5,
+            life_scale: (strength + 1.0) * 0.5,
+            ..Particle::new(sprite, pos, vel)
+        });
+    }
+    let mut ripples: Vec<Ripple> =
+        [(0.0, 0.25), (0.11, 0.5), (0.22, 0.375), (0.33, 0.25)].iter().map(|&(delay, alpha)| Ripple::new(at, 0.25 * radius, 1.5, alpha, delay)).collect();
+    for i in 0..16 {
+        let (s, c) = (i as f32 / 16.0 * tau).sin_cos();
+        let out = rng.unit() * 8.0 * strength * radius;
+        ripples.push(Ripple::new(at + Vec3::new(out * s, 0.0, out * c), 0.0, 0.6, 0.4, 0.3 + rng.unit()));
+    }
+    (spray, ripples)
+}
+
+/// The rings a rider treading water sends out (0xe69e0, kind 1).
+fn stir(at: Vec3) -> [Ripple; 3] {
+    [0.0, 0.05, 0.1].map(|delay| Ripple::new(at, 0.0, 1.5, 0.4, delay))
+}
+
+/// How far a quad reaches from its centre to the outsides of its wheels:
+/// its size to the water (0x1c1b0 keeps it for the water sensor).
+fn reach(v: &Vehicle) -> f32 {
+    v.params.wheels.iter().map(|w| Vec3::from(w.offset).length() + w.radius).fold(0.0, f32::max)
 }
 
 #[derive(Default)]
@@ -220,6 +317,10 @@ struct Effects {
     /// Per quad (player 1 first, then each racer): the boost smoke left
     /// to puff (0x8ada0 refills it over a second off the boost).
     puff: Vec<f32>,
+    /// Per quad: whether it was in deep water last frame.
+    wet: Vec<bool>,
+    ripples: VecDeque<Ripple>,
+    ripple_mesh: Handle<Mesh>,
 }
 
 impl Effects {
@@ -234,6 +335,24 @@ impl Effects {
             list.pop_front();
         }
         list.push_back(p);
+    }
+
+    fn add_ripples(&mut self, ripples: impl IntoIterator<Item = Ripple>) {
+        for r in ripples {
+            if self.ripples.len() >= MAX_RIPPLES {
+                self.ripples.pop_front();
+            }
+            self.ripples.push_back(r);
+        }
+    }
+
+    fn splash(&mut self, at: Vec3, motion: Vec3, radius: f32) {
+        let sprite = self.sprite("Splash");
+        let (spray, ripples) = splash(&mut self.rng, sprite, at, motion, radius);
+        for p in spray {
+            self.add(Pool::Splash, p);
+        }
+        self.add_ripples(ripples);
     }
 }
 
@@ -289,7 +408,27 @@ fn load(
         commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material), Transform::default(), NoFrustumCulling, DespawnOnExit(AppState::Race)));
         handles.insert(pool, mesh);
     }
-    commands.insert_resource(Effects { surface, by_id, sprites, pools: HashMap::new(), meshes: handles, rng: Rng(0x2545_f491), puff: Vec::new() });
+    let ripple_material = materials.add(StandardMaterial {
+        base_color_texture: Some(image.clone()),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        cull_mode: None,
+        ..default()
+    });
+    let ripple_mesh = meshes.add(Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default()));
+    commands.spawn((Mesh3d(ripple_mesh.clone()), MeshMaterial3d(ripple_material), Transform::default(), NoFrustumCulling, DespawnOnExit(AppState::Race)));
+    commands.insert_resource(Effects {
+        surface,
+        by_id,
+        sprites,
+        pools: HashMap::new(),
+        meshes: handles,
+        rng: Rng(0x2545_f491),
+        puff: Vec::new(),
+        wet: Vec::new(),
+        ripples: VecDeque::new(),
+        ripple_mesh,
+    });
 }
 
 /// One quad's part in the effects this frame.
@@ -309,21 +448,44 @@ fn emit(
     boost: Option<Res<Boost>>,
     opponents: Option<Res<Opponents>>,
     water: Option<Res<Water>>,
+    wreck: Option<ResMut<Wreck>>,
     body: Query<Entity, With<QuadBody>>,
     exhausts: Query<&Exhaust>,
     wheels: Query<(&WheelVisual, &GlobalTransform)>,
     cams: Query<&GlobalTransform, With<Camera3d>>,
 ) {
+    let rider_fx = wreck.map(|mut w| std::mem::take(&mut w.water_fx)).unwrap_or_default();
     let (Some(mut fx), Some(player)) = (fx, player) else { return };
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
+    }
+    for e in rider_fx {
+        match e {
+            WaterFx::Splash { at, motion, radius } => fx.splash(at, motion, radius),
+            WaterFx::Stir(at) => fx.add_ripples(stir(at)),
+        }
     }
     let mut quads = vec![Quad { v: &player.0, body: body.single().ok(), boosting: boost.is_some_and(|b| b.on), human: true }];
     for r in opponents.iter().flat_map(|o| &o.racers) {
         quads.push(Quad { v: &r.vehicle, body: Some(r.body), boosting: r.boost.on, human: r.human.is_some() });
     }
     fx.puff.resize(quads.len(), 1.0);
+    fx.wet.resize(quads.len(), false);
+    // Each quad's water sensor (0xd7f60): coming down fast into deep water,
+    // it splashes where it went in.
+    for (k, q) in quads.iter().enumerate() {
+        let v = q.v;
+        let wet = water.as_deref().and_then(|w| w.surface(v.position)).is_some_and(|s| v.position.y - s <= -UNDER);
+        if wet
+            && !fx.wet[k]
+            && -v.velocity.y > SPLASH_SPEED
+            && let Some(level) = water.as_deref().and_then(|w| w.level(v.position))
+        {
+            fx.splash(v.position.with_y(level), v.velocity / FPS, reach(v));
+        }
+        fx.wet[k] = wet;
+    }
     let centres: HashMap<(Entity, usize), Vec3> =
         wheels.iter().flat_map(|(w, t)| w.wheels.iter().map(move |&i| ((w.owner, i), t.translation()))).collect();
     let cams: Vec<Vec3> = cams.iter().map(GlobalTransform::translation).collect();
@@ -336,7 +498,7 @@ fn emit(
         if let Some(ex) = exhaust {
             exhaust_smoke(&mut fx, k, q, ex, rate, dt);
         }
-        if rate <= 0.0 || depth(water.as_deref(), q.v.position) > 0.05 {
+        if rate <= 0.0 || fx.wet[k] || depth(water.as_deref(), q.v.position) > 0.05 {
             continue;
         }
         if let Some(e) = q.body {
@@ -538,6 +700,7 @@ fn step(time: Res<Time>, fx: Option<ResMut<Effects>>) {
         let spec = pool.spec();
         list.retain_mut(|p| p.step(&spec, dt));
     }
+    fx.ripples.retain_mut(|r| r.step(dt));
 }
 
 /// Rebuilds each pool's mesh: a sprite per particle, facing the nearest
@@ -585,6 +748,36 @@ fn draw(fx: Option<Res<Effects>>, cams: Query<&GlobalTransform, With<Camera3d>>,
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
         mesh.insert_indices(Indices::U32(idx));
     }
+    draw_ripples(&fx, &mut meshes);
+}
+
+/// The ripples: each a flat square on the water (0x107010), just above it.
+fn draw_ripples(fx: &Effects, meshes: &mut Assets<Mesh>) {
+    let Some(mut mesh) = meshes.get_mut(&fx.ripple_mesh) else { return };
+    let (_, min, max) = fx.sprites.get(fx.sprite("Ripple")).cloned().unwrap_or_default();
+    let (mut pos, mut uv, mut col, mut idx) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for r in &fx.ripples {
+        let Some(alpha) = r.opacity() else { continue };
+        let base = pos.len() as u32;
+        let s = r.size.max(0.0);
+        let at = r.pos + Vec3::Y * 0.03;
+        for (dx, dz, t) in [(-s, -s, min), (s, -s, Vec2::new(max.x, min.y)), (s, s, max), (-s, s, Vec2::new(min.x, max.y))] {
+            pos.push((at + Vec3::new(dx, 0.0, dz)).to_array());
+            uv.push(t.to_array());
+        }
+        col.extend([[1.0, 1.0, 1.0, alpha.clamp(0.0, 1.0)]; 4]);
+        idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    if idx.is_empty() {
+        pos.extend([[0.0; 3]; 3]);
+        uv.extend([[0.0; 2]; 3]);
+        col.extend([[0.0; 4]; 3]);
+        idx.extend([0, 1, 2]);
+    }
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    mesh.insert_indices(Indices::U32(idx));
 }
 
 #[cfg(test)]
@@ -634,6 +827,31 @@ mod tests {
         assert_eq!(r.count(3.0, 1.0 / 30.0), 6);
         let hits: usize = (0..6000).map(|_| r.count(0.25, 1.0 / 60.0)).sum();
         assert!((1300..1700).contains(&hits), "{hits}");
+    }
+
+    #[test]
+    fn splashes_harder_from_higher() {
+        let mut rng = Rng(7);
+        // Dropping 0.25 m a frame: a full splash.
+        let (spray, ripples) = splash(&mut rng, 3, Vec3::new(10.0, 2.0, 0.0), Vec3::new(0.1, -0.25, 0.0), 1.4);
+        assert_eq!((spray.len(), ripples.len()), (32, 20));
+        assert!(spray.iter().all(|p| p.sprite == 3 && p.life_scale == 1.0 && p.vel.y >= 3.0 && (p.pos - Vec3::new(10.0, 2.0, 0.0)).length() <= 1.05));
+        assert!(ripples.iter().all(|r| r.pos.y == 2.0 && (r.pos.x - 10.0).abs() <= 11.2));
+        // 0.1 m a frame: half as strong; the spray lives three quarters as long.
+        let (spray, ripples) = splash(&mut rng, 3, Vec3::ZERO, Vec3::new(0.0, -0.1, 0.0), 1.4);
+        assert!(spray.iter().all(|p| p.life_scale == 0.75 && p.vel.y <= 3.5));
+        assert!(ripples.iter().all(|r| r.pos.length() <= 5.6));
+    }
+
+    #[test]
+    fn ripples_wait_grow_and_fade() {
+        let mut r = Ripple::new(Vec3::ZERO, 0.25, 1.5, 0.5, 0.2);
+        assert!(r.step(0.1) && r.opacity().is_none() && r.size == 0.25);
+        assert!(r.step(0.1) && r.opacity() == Some(0.5));
+        assert!(r.step(1.0));
+        assert!((r.size - 1.75).abs() < 1e-5 && (r.opacity().unwrap() - 0.25).abs() < 1e-5);
+        assert!(!r.step(1.0));
+        assert_eq!(stir(Vec3::ONE).map(|r| r.delay), [0.0, 0.05, 0.1]);
     }
 
     #[test]

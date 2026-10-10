@@ -163,6 +163,18 @@ pub struct Wreck {
     pub thump: Option<(f32, f32)>,
     /// Seconds since the seated rider began bracing for the water.
     plunge: Option<f32>,
+    /// What the rider did in the water since the effects last looked.
+    pub water_fx: Vec<WaterFx>,
+}
+
+/// Something in the water for the effects to show.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WaterFx {
+    /// Something came down into the water: where it went in (on the
+    /// surface), how far it moved in a 60 Hz frame, and how big it is.
+    Splash { at: Vec3, motion: Vec3, radius: f32 },
+    /// The rider treading water stirs it up (0x2bbb0).
+    Stir(Vec3),
 }
 
 pub struct Fall {
@@ -214,6 +226,25 @@ const FLOAT_GRAVITY: f32 = atv_sim::vehicle::GRAVITY;
 /// Seconds in the water before the quad is put back: 1.5 until the
 /// original starts its respot (0x26e30), and its 0.5 s fade (0x25f20).
 const WET_TIME: f32 = 2.0;
+/// Treading water plays frames 2-46 of `Tread_water` once, then 46-68
+/// over and over, stirring the water each time round (0x2bbb0, state 6).
+const TREAD_START: f32 = 2.0;
+const TREAD_LOOP: (f32, f32) = (46.0, 68.0);
+/// How big a rider is to the splash (the original's rider radius isn't
+/// worked out).
+const RIDER_RADIUS: f32 = 0.5;
+
+/// The `Tread_water` frame `t` seconds in, and how many times the loop
+/// has started.
+fn tread_frame(t: f32) -> (f32, u32) {
+    let f = t.max(0.0) * ONE_SHOT_FPS;
+    let into = TREAD_LOOP.0 - TREAD_START;
+    if f < into {
+        return (TREAD_START + f, 0);
+    }
+    let len = TREAD_LOOP.1 - TREAD_LOOP.0;
+    (TREAD_LOOP.0 + (f - into) % len, ((f - into) / len) as u32 + 1)
+}
 
 impl Wreck {
     /// Checks the step just taken for a crash. `before` is the quad's
@@ -322,8 +353,15 @@ impl Wreck {
         f.age += dt;
         let frames = |name: &str| clips.and_then(|c| c.get(name)).map_or(1, |c| c.frames());
         let surface = water.and_then(|w| w.surface(f.body));
+        let level = |at: Vec3| water.and_then(|w| w.level(at)).map(|y| at.with_y(y));
         if !f.floating && surface.is_some_and(|s| s - f.body.y >= UNDER) {
-            // A thrown rider landing in deep water treads water too.
+            // A thrown rider landing in deep water treads water too, with
+            // a splash if they came down fast.
+            if -f.vel.y > PLUNGE_SPEED
+                && let Some(at) = level(f.body)
+            {
+                self.water_fx.push(WaterFx::Splash { at, motion: f.vel / 60.0, radius: RIDER_RADIUS });
+            }
             f.floating = true;
             f.clips = vec![clips_for(Cause::Water, Way::Front, 0.0, false, 0.0)[0]];
             f.clip = 0;
@@ -341,9 +379,13 @@ impl Wreck {
                 f.body += hit.normal * hit.t;
                 f.vel -= hit.normal * f.vel.dot(hit.normal).min(0.0);
             }
-            // Treading water over and over.
-            let len = (frames(f.clips[f.clip]) - 1).max(1) as f32 / ONE_SHOT_FPS;
-            f.t = (f.t + dt) % len;
+            let loops = tread_frame(f.t).1;
+            f.t += dt;
+            if tread_frame(f.t).1 > loops
+                && let Some(at) = level(f.body)
+            {
+                self.water_fx.push(WaterFx::Stir(at));
+            }
             return f.wet.is_some_and(|w| w >= WET_TIME);
         }
         f.vel.y -= 9.81 * dt;
@@ -395,8 +437,9 @@ impl Wreck {
     pub fn pose(&self, clips: &CrashClips) -> Option<(Arc<Clip>, f32)> {
         let f = self.fall.as_ref()?;
         let clip = clips.get(f.clips[f.clip])?;
-        let len = (clip.frames() - 1).max(1) as f32 / ONE_SHOT_FPS;
-        Some((clip, (f.t / len).clamp(0.0, 1.0)))
+        let last = (clip.frames() - 1).max(1) as f32;
+        let t = if f.floating { tread_frame(f.t).0 / last } else { f.t * ONE_SHOT_FPS / last };
+        Some((clip, t.clamp(0.0, 1.0)))
     }
 }
 
@@ -489,6 +532,18 @@ mod tests {
     }
 
     #[test]
+    fn treading_water_loops() {
+        assert_eq!(tread_frame(0.0), (2.0, 0));
+        let (f, n) = tread_frame(1.0);
+        assert!((f - 32.0).abs() < 1e-3 && n == 0);
+        // 44 frames in, the loop starts; every 22 frames it starts again.
+        let (f, n) = tread_frame(45.0 / 30.0);
+        assert!((f - 47.0).abs() < 1e-3 && n == 1, "{f} {n}");
+        let (f, n) = tread_frame(67.0 / 30.0);
+        assert!((f - 47.0).abs() < 1e-3 && n == 2, "{f} {n}");
+    }
+
+    #[test]
     fn thrown_into_the_water() {
         let (water, bed) = pond();
         let dt = 1.0 / 60.0;
@@ -499,7 +554,10 @@ mod tests {
             t += dt;
             assert!(t < 5.0);
         }
-        // Falls about 6.5 m into the water, then treads water.
+        // Falls about 6.5 m into the water with a splash, then treads water
+        // and stirs it.
+        assert!(matches!(w.water_fx[0], WaterFx::Splash { at, .. } if at.y == 0.0));
+        assert!(w.water_fx[1..].iter().all(|fx| matches!(fx, WaterFx::Stir(_))) && w.water_fx.len() == 2);
         let f = w.fall.as_ref().unwrap();
         assert!(f.floating);
         assert_eq!(f.clips, ["Tread_water"]);
