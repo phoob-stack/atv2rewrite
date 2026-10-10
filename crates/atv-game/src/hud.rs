@@ -527,12 +527,11 @@ fn update_banners(
     progress: Option<Res<RaceProgress>>,
     session: Option<Res<Session>>,
     ui: Option<Res<UiAssets>>,
-    time: Res<Time<Real>>,
     mut countdown: Query<(&mut ImageNode, &mut Node, &mut UiTransform, &mut Visibility), With<Countdown>>,
     mut banner: Query<&mut Visibility, (With<CheckpointBanner>, Without<Countdown>)>,
-    mut wrong: Query<&mut Visibility, (With<WrongWay>, Without<Countdown>, Without<CheckpointBanner>)>,
-    mut split: Query<&mut BitmapText, (With<SplitText>, Without<LapBanner>)>,
-    mut lap: Query<&mut BitmapText, (With<LapBanner>, Without<SplitText>)>,
+    mut wrong: Query<(&mut BitmapText, &mut Visibility), (With<WrongWay>, Without<Countdown>, Without<CheckpointBanner>, Without<SplitText>, Without<LapBanner>)>,
+    mut split: Query<&mut BitmapText, (With<SplitText>, Without<LapBanner>, Without<WrongWay>)>,
+    mut lap: Query<&mut BitmapText, (With<LapBanner>, Without<SplitText>, Without<WrongWay>)>,
     menus: Query<(), With<RaceMenu>>,
 ) {
     let (Some(p), Some(ui)) = (progress, ui) else { return };
@@ -608,9 +607,13 @@ fn update_banners(
         };
         set_text(&mut t, &s);
     }
-    if let Ok(mut vis) = wrong.single_mut() {
-        let blink = (time.elapsed_secs() * 3.0).fract() < 0.6;
-        vis.set_if_neq(if p.wrong_way > 1.5 && p.racing() && blink { Visibility::Inherited } else { Visibility::Hidden });
+    if let Ok((mut t, mut vis)) = wrong.single_mut() {
+        // The original's warnings, held steady (0x902f0).
+        let text = p.warning.clone().or_else(|| (p.wrong_way > crate::respot::WRONG_WAY).then(|| "WRONG WAY".to_string())).filter(|_| p.racing());
+        if let Some(text) = &text {
+            set_text(&mut t, text);
+        }
+        vis.set_if_neq(if text.is_some() { Visibility::Inherited } else { Visibility::Hidden });
     }
 }
 

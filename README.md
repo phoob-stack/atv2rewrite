@@ -227,6 +227,12 @@ back; left/right changes the lap count (or Open Freestyle's time limit) on
 track select.
 
 The quad respots automatically when it is upside down or falls off the world.
+In a race it is also put back, as in the original, when it drives into one
+of the track's respot zones, stays more than 10 m off the course for five
+seconds ("RETURN TO TRACK" counts down) or rides on for four seconds past a
+checkpoint it missed ("MISSED CHECKPOINT"), back to the furthest point of
+the course it reached. "WRONG WAY" shows after two seconds facing back down
+the course. The Stadium, freestyle and the challenges have none of this.
 Ride into deep water and the rider comes off and treads water (bracing on
 the way down after a drop, with a splash and ripples), and the quad is put
 back two seconds later.

@@ -38,6 +38,7 @@ mod mp;
 mod opponents;
 mod race;
 mod replay;
+mod respot;
 mod rider;
 mod settings;
 mod trickbook;
@@ -58,7 +59,9 @@ use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 use bevy::window::{MonitorSelection, WindowMode};
 
+use atv_formats::aid::AiPath;
 use atv_formats::GameSource;
+use atv_sim::ai::RacingLine;
 use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
@@ -213,6 +216,8 @@ struct Race {
     /// Times player 1 was put back on the track (a challenge fails on the
     /// first).
     respots: u32,
+    /// The original's automatic respots and warnings (races only).
+    marshal: Option<respot::Marshal>,
 }
 
 #[derive(Resource)]
@@ -734,11 +739,20 @@ fn setup(
     let stats = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider)).map_or([3.0; 4], |r| r.stats);
     commands.insert_resource(attack::Fighter::new(stats[3], stats[2]));
     commands.insert_resource(water::Water(trk::water_surface(&scene.world), water::boxes(&scene.world)));
+    let gates = if in_challenge { Vec::new() } else { race::lap_gates(&scene.world) };
+    // Races keep watch for riders off the course, along the AI line; the
+    // attract demo's computer rider has its own respots.
+    let racing = matches!(sel.mode, Mode::SingleRace | Mode::TimeTrial | Mode::Arcade | Mode::Career) && demo.is_none();
+    let marshal = racing
+        .then(|| game.0.read(&format!("/Levels/{t}/World/{t}.aid", t = sel.track)).ok())
+        .flatten()
+        .and_then(|b| AiPath::parse(&b).ok())
+        .and_then(|path| respot::Marshal::new(RacingLine::from_path(&path), &race::lap_gate_faces(&scene.world), respot::zones(&scene.world), roster.info(&sel.track).forced_respots, start.0));
     commands.insert_resource(Race {
         collision,
         next_checkpoint: if in_challenge { 0 } else { usize::from(on_line && checkpoints.len() > 1) },
         checkpoints,
-        gates: if in_challenge { Vec::new() } else { race::lap_gates(&scene.world) },
+        gates,
         course: in_challenge,
         players: sel.players,
         start,
@@ -746,6 +760,7 @@ fn setup(
         safe_timer: 0.0,
         upside_down: 0.0,
         respots: 0,
+        marshal,
     });
     commands.insert_resource(Player(vehicle));
     commands.init_resource::<Controls>();
@@ -965,6 +980,26 @@ fn drive(
     }
     let live = progress.started() && !over;
     session.step(v, buttons, dir, dt, live);
+
+    // The original's automatic respots, with the rider on the quad.
+    let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
+    let gates = race.gates.len();
+    let r = &mut *race;
+    if let Some(m) = r.marshal.as_mut() {
+        let racing = progress.racing();
+        if racing && !crashed && m.watch(v.position, v.forward(), r.next_checkpoint % gates.max(1), gates, dt) {
+            let (p, rot) = m.respot(&r.collision);
+            v.reset(p, rot);
+            r.safe = (p, rot);
+            r.safe_timer = 0.0;
+            r.upside_down = 0.0;
+            r.respots += 1;
+        }
+        if racing {
+            progress.wrong_way = m.backwards;
+        }
+        progress.warning = m.warning().filter(|_| racing);
+    }
 
     // Remember a safe spot; respot there on R, when stuck upside down, or
     // after falling out of the world.
