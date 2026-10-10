@@ -216,10 +216,12 @@ fn falloff(d: f32) -> f32 {
     (8.0 / (d.max(0.0) + 8.0)).powi(2)
 }
 
-#[derive(Component)]
+/// Wheel noise: player 1's quad, or another racer's (index) by distance.
+#[derive(Component, Clone)]
 struct WheelLoop {
     volume: f32,
     pitch: f32,
+    racer: Option<usize>,
 }
 
 enum Role {
@@ -306,8 +308,11 @@ fn start_race_audio(
         let index = VEHICLE_SAMPLES.iter().find(|(n, _)| n.eq_ignore_ascii_case(&s.sample)).map(|&(_, i)| i);
         if let Some(pcm) = index.and_then(|i| data.vehicles.get(i)) {
             let volume = s.volume * setup.mix_level("mSurfaceVol", 1.0);
-            let wheel = WheelLoop { volume, pitch: s.pitch };
-            play(Sound::looped(pcm.clone()), 0.0, Some(Role::Wheel(wheel)));
+            let wheel = WheelLoop { volume, pitch: s.pitch, racer: None };
+            play(Sound::looped(pcm.clone()), 0.0, Some(Role::Wheel(wheel.clone())));
+            for racer in 0..opponents.as_ref().map_or(0, |o| o.racers.len()) {
+                play(Sound::looped(pcm.clone()), 0.0, Some(Role::Wheel(WheelLoop { racer: Some(racer), ..wheel.clone() })));
+            }
         }
     }
     commands.insert_resource(mix);
@@ -342,15 +347,25 @@ fn engine_and_wheels(
     let v = &player.0;
     let r = (v.revs / v.params.max_revs.max(1.0)).clamp(0.0, 1.0);
     let [on, off] = engine_mix(r, v.throttle, mix.pitch_zero, mix.pitch_span);
-    let contact = v.wheels.iter().filter(|w| w.contact).count() as f32 / v.wheels.len().max(1) as f32;
-    let pace = (v.velocity.length() / 20.0).clamp(0.0, 1.0);
     for (mut sink, engine, wheel, other) in &mut sinks {
         let (vol, pitch) = match (engine, wheel, other) {
             (Some(e), ..) => {
                 let (vol, pitch) = if e.on { on } else { off };
                 (vol * mix.engine, pitch)
             }
-            (_, Some(w), _) => (w.volume * mix.engine * pace * contact, w.pitch * (0.8 + 0.4 * pace)),
+            (_, Some(w), _) => {
+                let q = match w.racer {
+                    None => v,
+                    Some(i) => match opponents.as_ref().and_then(|opp| opp.racers.get(i)) {
+                        Some(r) => &r.vehicle,
+                        None => continue,
+                    },
+                };
+                let contact = q.wheels.iter().filter(|w| w.contact).count() as f32 / q.wheels.len().max(1) as f32;
+                let pace = (q.velocity.length() / 20.0).clamp(0.0, 1.0);
+                let near = falloff(q.position.distance(v.position));
+                (w.volume * mix.engine * pace * contact * near, w.pitch * (0.8 + 0.4 * pace))
+            }
             (.., Some(o)) => {
                 let Some(q) = opponents.as_ref().and_then(|opp| opp.racers.get(o.racer)).map(|r| &r.vehicle) else { continue };
                 let r = (q.revs / q.params.max_revs.max(1.0)).clamp(0.0, 1.0);
