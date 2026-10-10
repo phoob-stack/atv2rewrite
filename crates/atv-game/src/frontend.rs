@@ -96,15 +96,13 @@ pub struct Roster {
 pub struct TrackInfo {
     /// Arcade's starting clock, seconds.
     pub arcade_start: f32,
-    /// The AI's slowest lap, seconds; arcade's checkpoints share it out.
-    pub worst_lap: f32,
     /// Sand, snow or ordinary ground (`mTyreType`): tyres and dirt.
     pub ground: crate::convert::Ground,
 }
 
 impl Default for TrackInfo {
     fn default() -> Self {
-        Self { arcade_start: 40.0, worst_lap: 100.0, ground: crate::convert::Ground::Road }
+        Self { arcade_start: 40.0, ground: crate::convert::Ground::Road }
     }
 }
 
@@ -179,7 +177,6 @@ impl Roster {
             .map(|e| {
                 (e.name.clone(), TrackInfo {
                     arcade_start: e.num("mArcadeStartTime").filter(|v| *v > 0.0).unwrap_or(d.arcade_start),
-                    worst_lap: e.num("mAIWorstLapTime").filter(|v| *v > 0.0).unwrap_or(d.worst_lap),
                     ground: crate::convert::Ground::from_tyre_type(e.get("mTyreType").unwrap_or("")),
                 })
             })
@@ -634,7 +631,8 @@ fn navigate(
                         sel.round = fe.arcade_round;
                         sel.failed = 0;
                         sel.track = t.clone();
-                        sel.laps = 3;
+                        // One lap, as the original's ArcadeSM sets (0x95e70).
+                        sel.laps = 1;
                         next.set(AppState::Loading);
                     }
                 } else {

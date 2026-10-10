@@ -33,12 +33,13 @@ pub struct RaceProgress {
 }
 
 /// Arcade's countdown: the race starts with `mArcadeStartTime` seconds
-/// (Tracks.xml) and the arcade checkpoints (`Checkpoint N arcade`
-/// locators) and the line each add time. Running out ends the race.
+/// (Tracks.xml, 0x7e610) and each arcade checkpoint adds the seconds its
+/// locator names (`Checkpoint 3 Arcade 30`, 0x648f0). Running out ends the
+/// race.
 #[derive(Debug, Clone)]
 pub struct ArcadeClock {
     pub left: f32,
-    /// Checkpoint index (0 = the line) and the seconds it adds.
+    /// Checkpoint index and the seconds it adds.
     gates: Vec<(usize, f32)>,
     /// Race time and seconds of the last extension.
     pub last_bonus: Option<(f32, f32)>,
@@ -46,23 +47,8 @@ pub struct ArcadeClock {
 }
 
 impl ArcadeClock {
-    /// `gates`: indices of the arcade checkpoints in lap order (without the
-    /// line). Each gate, and the line, adds the share of `lap_time` it takes
-    /// to reach the next one (the disc gives no per-gate figure; this is the
-    /// track's slowest AI lap time spread over the lap).
-    pub fn new(start: f32, lap_time: f32, checkpoints: usize, gates: &[usize]) -> Self {
-        let n = checkpoints.max(1);
-        let mut all: Vec<usize> = std::iter::once(0).chain(gates.iter().copied().filter(|&g| g > 0 && g < n)).collect();
-        all.sort_unstable();
-        all.dedup();
-        let gates = all
-            .iter()
-            .enumerate()
-            .map(|(i, &g)| {
-                let next = all.get(i + 1).copied().unwrap_or(n);
-                (g, lap_time * (next - g) as f32 / n as f32)
-            })
-            .collect();
+    /// `gates`: from [`arcade_gates`].
+    pub fn new(start: f32, gates: Vec<(usize, f32)>) -> Self {
         Self { left: start, gates, last_bonus: None, out_of_time: false }
     }
 }
@@ -177,21 +163,38 @@ impl RaceProgress {
     }
 }
 
-/// Indices into [`atv_sim::track::checkpoints`] of the checkpoints that
-/// also have an arcade locator (`Checkpoint 3 arcade`; Forest 3 spells it
-/// `acade`).
-pub fn arcade_gates(world: &atv_formats::row::World) -> Vec<usize> {
+/// The arcade checkpoints, as indices into [`atv_sim::track::checkpoints`],
+/// and the seconds each adds: the number after `Arcade` in the locator's
+/// name (`Checkpoint 3 Arcade 30`, read by 0x65c50), added up over every
+/// locator with that number (Swamp 2 has each of its four twice, and the
+/// original counts each). The start line adds nothing.
+///
+/// The original matches `Arcade` by case, which leaves out Dunes 3's and
+/// Glacier 3's `arcade 30` and Forest 3's `Acade 30`; with those gone,
+/// rounds 11, 12 and 15 can't be won in time, so here any case and the
+/// misspelling count.
+pub fn arcade_gates(world: &atv_formats::row::World) -> Vec<(usize, f32)> {
     let number = |name: &str| -> Option<u32> { name.trim().to_ascii_lowercase().strip_prefix("checkpoint ")?.split_whitespace().next()?.parse().ok() };
     let mut all: Vec<u32> = world.locators.iter().filter_map(|l| number(&l.name)).collect();
     all.sort_unstable();
     all.dedup();
-    let arcade: Vec<u32> = world
-        .locators
-        .iter()
-        .filter(|l| l.name.to_ascii_lowercase().contains("cade"))
-        .filter_map(|l| number(&l.name))
-        .collect();
-    all.iter().enumerate().filter(|(_, n)| arcade.contains(n)).map(|(i, _)| i).collect()
+    // As `atol` reads it: the digits after any spaces; 0 is no time.
+    let seconds = |name: &str| -> Option<f32> {
+        let name = name.to_ascii_lowercase();
+        let rest = name[name.find("cade")? + "cade".len()..].trim_start();
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse::<u32>().ok().filter(|&s| s > 0).map(|s| s as f32)
+    };
+    let mut gates: Vec<(usize, f32)> = Vec::new();
+    for l in &world.locators {
+        let Some((i, secs)) = (|| Some((all.binary_search(&number(&l.name)?).ok()?, seconds(&l.name)?)))() else { continue };
+        match gates.iter_mut().find(|g| g.0 == i) {
+            Some(g) => g.1 += secs,
+            None => gates.push((i, secs)),
+        }
+    }
+    gates.sort_by_key(|g| g.0);
+    gates
 }
 
 /// `m:ss.hh`, as the original shows race and lap times.
@@ -226,20 +229,27 @@ mod tests {
 
     #[test]
     fn arcade_clock() {
-        // 10 checkpoints, gates at 3 and 7: the line buys 3/10 of a lap,
-        // gate 3 buys 4/10 and gate 7 the last 3/10.
-        let mut p = RaceProgress::new(1, true).with_arcade(ArcadeClock::new(5.0, 100.0, 10, &[3, 7]));
+        let mut p = RaceProgress::new(1, true).with_arcade(ArcadeClock::new(5.0, vec![(3, 30.0), (7, 20.0)]));
         p.tick(RaceProgress::COUNTDOWN + 0.01);
         p.tick(1.0);
         p.reach(3);
-        assert!((p.arcade.as_ref().unwrap().left - 44.0).abs() < 0.01);
+        assert!((p.arcade.as_ref().unwrap().left - 34.0).abs() < 0.01);
         p.reach(4);
-        assert!((p.arcade.as_ref().unwrap().left - 44.0).abs() < 0.01, "plain checkpoints add nothing");
+        assert!((p.arcade.as_ref().unwrap().left - 34.0).abs() < 0.01, "plain checkpoints add nothing");
         p.tick(50.0);
         assert!(p.out_of_time() && !p.racing());
         let clock = p.clock;
         p.tick(1.0);
         assert_eq!(p.clock, clock, "the clock stops once out of time");
+    }
+
+    #[test]
+    fn arcade_seconds_from_names() {
+        let locator = |name: &str| atv_formats::rom::Locator { name: name.to_string(), pos: [0.0; 3], scale: [1.0; 3], rotation: [0.0; 9] };
+        let names = ["Startpoint 1", "Checkpoint 2", "Checkpoint 3 Arcade 30", "checkpoint 4 Arcade 15", "Checkpoint 5 arcade 30", "Checkpoint 6 Acade 30", "Checkpoint 7 Arcade 20", "Checkpoint 7 Arcade 20", "Checkpoint 8 Arcade 0"];
+        let world = atv_formats::row::World { fog_color: 0, materials: vec![], locators: names.map(locator).to_vec(), lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] };
+        // Checkpoints 2..8 are indices 0..6; a repeated one adds twice.
+        assert_eq!(arcade_gates(&world), vec![(1, 30.0), (2, 15.0), (3, 30.0), (4, 30.0), (5, 40.0)]);
     }
 
     #[test]
