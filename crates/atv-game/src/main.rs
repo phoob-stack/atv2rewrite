@@ -2,13 +2,20 @@
 //! the player's own copy of the game.
 //!
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
-//!             [--rider Male1]
+//!             [--rider Male1] [--laps 3] [--frontend [--screen rider]]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
 //!             [--resolution 1280x720] [--fullscreen]
+//!
+//! Without `--track` the game opens on its front end; with it, it goes
+//! straight into a race (`--frontend` shows the menus anyway, preselected).
 
 mod convert;
+mod frontend;
+mod hud;
+mod race;
 mod rider;
+mod ui;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -28,7 +35,10 @@ use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
 use convert::{SkyDome, WheelVisual};
+use frontend::{FrontEnd, Roster, Screen};
+use race::RaceProgress;
 use rider::Rider;
+use ui::UiAssets;
 
 #[derive(Resource, Clone)]
 struct Args {
@@ -45,6 +55,31 @@ struct Args {
     autodrive: bool,
     resolution: (u32, u32),
     fullscreen: bool,
+    laps: u32,
+    /// Go straight into a race (a track was given) instead of the menus.
+    direct: bool,
+    /// Front-end screen to open on.
+    screen: Option<Screen>,
+}
+
+#[derive(States, Default, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum AppState {
+    #[default]
+    FrontEnd,
+    /// The loading screen, shown for a few frames before a race loads.
+    Loading,
+    Race,
+}
+
+/// What the next race uses: picked in the front end or given on the
+/// command line.
+#[derive(Resource, Clone, Debug)]
+struct Selection {
+    track: String,
+    quad: String,
+    /// Rider model folder under `Characters`.
+    rider: String,
+    laps: u32,
 }
 
 #[derive(Resource, Clone)]
@@ -84,9 +119,6 @@ struct FlyCam {
     pitch: f32,
 }
 
-#[derive(Component)]
-struct Hud;
-
 fn parse_args() -> anyhow::Result<Args> {
     let mut a = Args {
         game: std::env::var_os("ATV2_GAME").map(PathBuf::from).unwrap_or_default(),
@@ -100,13 +132,33 @@ fn parse_args() -> anyhow::Result<Args> {
         autodrive: false,
         resolution: (1280, 720),
         fullscreen: false,
+        laps: 3,
+        direct: false,
+        screen: None,
     };
+    let mut frontend = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut val = || it.next().unwrap_or_default();
         match arg.as_str() {
             "--game" => a.game = PathBuf::from(val()),
-            "--track" => a.track = val(),
+            "--track" => {
+                a.track = val();
+                a.direct = true;
+            }
+            "--laps" => a.laps = val().parse()?,
+            "--frontend" => frontend = true,
+            "--screen" => {
+                frontend = true;
+                a.screen = Some(match val().to_ascii_lowercase().as_str() {
+                    "title" => Screen::Title,
+                    "main" => Screen::Main,
+                    "rider" => Screen::Rider,
+                    "atv" | "quad" => Screen::Quad,
+                    "track" => Screen::Track,
+                    other => anyhow::bail!("unknown screen {other} (title, main, rider, atv, track)"),
+                });
+            }
             "--quad" => a.quad = val(),
             "--rider" => a.rider = val(),
             "--screenshot" => a.screenshot = Some(PathBuf::from(val())),
@@ -129,6 +181,9 @@ fn parse_args() -> anyhow::Result<Args> {
             other => anyhow::bail!("unknown argument {other}"),
         }
     }
+    if frontend {
+        a.direct = false;
+    }
     if a.game.as_os_str().is_empty() {
         anyhow::bail!("pass --game <your ATV 2 disc image or extracted folder> (or set ATV2_GAME)");
     }
@@ -138,6 +193,10 @@ fn parse_args() -> anyhow::Result<Args> {
 fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
     let game = Game(Arc::new(GameSource::open(&args.game)?));
+    let roster = Roster::load(&game.0);
+    let selection = Selection { track: args.track.clone(), quad: args.quad.clone(), rider: args.rider.clone(), laps: args.laps.clamp(1, 9) };
+    let first = if args.direct { AppState::Loading } else { AppState::FrontEnd };
+    let front_end = FrontEnd::at(args.screen.unwrap_or_default());
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
@@ -156,16 +215,65 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(Time::<Fixed>::from_hz(120.0))
         .insert_resource(args)
         .insert_resource(game)
-        .add_systems(Startup, setup)
-        .add_systems(FixedUpdate, drive)
-        .add_systems(Update, (sync_quad, animate_rider, rider::pose_riders, chase_camera, fly_camera, follow_sky, hud, auto_screenshot).chain())
+        .insert_resource(roster)
+        .insert_resource(selection)
+        .insert_resource(front_end)
+        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin))
+        .insert_state(first)
+        .add_systems(Startup, (load_ui, ui_camera))
+        .add_systems(OnEnter(AppState::Race), setup)
+        .add_systems(OnExit(AppState::Race), teardown)
+        .add_systems(FixedUpdate, drive.run_if(in_state(AppState::Race)))
+        .add_systems(
+            Update,
+            (sync_quad, animate_rider, rider::pose_riders, chase_camera, fly_camera, follow_sky).chain().run_if(in_state(AppState::Race)),
+        )
+        .add_systems(Update, auto_screenshot)
         .run();
     Ok(())
 }
 
+fn load_ui(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Image>>) {
+    match UiAssets::load(&game.0, &mut images) {
+        Ok(ui) => commands.insert_resource(ui),
+        Err(e) => error!("failed to load the game's 2D art: {e:#}"),
+    }
+}
+
+/// Draws the menus and loading screen; the race brings its own camera.
+#[derive(Component)]
+struct UiCamera;
+
+fn ui_camera(mut commands: Commands) {
+    commands.spawn((Camera2d, UiCamera, IsDefaultUiCamera));
+}
+
+/// The race camera takes over drawing the UI (the HUD) while racing.
+fn set_ui_camera(commands: &mut Commands, cams: &mut Query<(Entity, &mut Camera), With<UiCamera>>, on: bool) {
+    for (e, mut c) in cams {
+        c.is_active = on;
+        if on {
+            commands.entity(e).insert(IsDefaultUiCamera);
+        } else {
+            commands.entity(e).remove::<IsDefaultUiCamera>();
+        }
+    }
+}
+
+fn teardown(mut commands: Commands, mut cams: Query<(Entity, &mut Camera), With<UiCamera>>) {
+    commands.remove_resource::<Race>();
+    commands.remove_resource::<Player>();
+    commands.remove_resource::<Controls>();
+    commands.remove_resource::<RaceProgress>();
+    set_ui_camera(&mut commands, &mut cams, true);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn setup(
     mut commands: Commands,
     args: Res<Args>,
+    sel: Res<Selection>,
+    mut ui_cams: Query<(Entity, &mut Camera), With<UiCamera>>,
     game: Res<Game>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -174,48 +282,54 @@ fn setup(
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
 ) {
+    set_ui_camera(&mut commands, &mut ui_cams, false);
+    let scoped = DespawnOnExit(AppState::Race);
     let mut loader = convert::Loader::new(&game.0, &mut meshes, &mut materials, &mut images);
-    let scene = match loader.spawn_track(&mut commands, &args.track) {
+    let scene = match loader.spawn_track(&mut commands, &sel.track) {
         Ok(s) => s,
         Err(e) => {
-            error!("failed to load track {}: {e:#}", args.track);
+            error!("failed to load track {}: {e:#}", sel.track);
+            commands.queue(|w: &mut World| w.resource_mut::<NextState<AppState>>().set(AppState::FrontEnd));
             return;
         }
     };
+    for &e in &scene.roots {
+        commands.entity(e).insert(scoped.clone());
+    }
     let collision = trk::collision_from_world(&scene.world);
     let start = trk::start_pose(&scene.world, &collision, 1);
     let checkpoints = trk::checkpoints(&scene.world);
 
     let generic = game.0.read("/Cars/Generic/Generic.params").map(|b| String::from_utf8_lossy(&b).into_owned());
-    let own = game.0.read(&format!("/Cars/{q}/{q}.params", q = args.quad)).ok();
+    let own = game.0.read(&format!("/Cars/{q}/{q}.params", q = sel.quad)).ok();
     let own = own.map(|b| String::from_utf8_lossy(&b).into_owned());
     let params = VehicleParams::from_files(&generic.unwrap_or_default(), own.as_deref());
     let wheel_x: Vec<f32> = params.wheels.iter().map(|w| w.offset[0]).collect();
     let vehicle = Vehicle::new(params, start.0, start.1);
 
     let at = Transform::from_translation(start.0).with_rotation(start.1);
-    match loader.spawn_quad(&mut commands, &args.quad, at, &wheel_x) {
+    match loader.spawn_quad(&mut commands, &sel.quad, at, &wheel_x) {
         Ok(e) => {
-            commands.entity(e).insert(QuadBody);
+            commands.entity(e).insert((QuadBody, scoped.clone()));
             // The riding animations are in the quad model's space, which
             // hangs below the physics body like the quad's own model.
             let seat = commands.spawn((Transform::from_xyz(0.0, -convert::COM_HEIGHT, 0.0), Visibility::default())).id();
             commands.entity(e).add_child(seat);
             let rider = loader
-                .spawn_rider(&mut commands, &mut bindposes, &args.rider, seat)
+                .spawn_rider(&mut commands, &mut bindposes, &sel.rider, seat)
                 .and_then(|rig| Rider::new(&game.0, rig));
             match rider {
                 Ok(r) => {
                     commands.entity(seat).insert(r);
                 }
-                Err(e) => error!("failed to load rider {}: {e:#}", args.rider),
+                Err(e) => error!("failed to load rider {}: {e:#}", sel.rider),
             }
         }
-        Err(e) => error!("failed to load quad {}: {e:#}", args.quad),
+        Err(e) => error!("failed to load quad {}: {e:#}", sel.quad),
     }
     info!(
         "loaded {}: {} world meshes, {} props, {} collision tris, {} checkpoints",
-        args.track,
+        sel.track,
         scene.world_meshes,
         scene.props,
         collision.triangle_count(),
@@ -238,6 +352,7 @@ fn setup(
     commands.spawn((
         DirectionalLight { color: sun.1, illuminance: 6000.0, ..default() },
         Transform::default().looking_to(sun.0.normalize_or(Vec3::NEG_Y), Vec3::Y),
+        scoped.clone(),
     ));
     let fog_color = {
         let c = scene.world.fog_color;
@@ -270,23 +385,19 @@ fn setup(
     match fixed {
         Some(t) => {
             let (yaw, pitch, _) = t.rotation.to_euler(EulerRot::YXZ);
-            commands.spawn((view, t, FlyCam { yaw, pitch }));
+            commands.spawn((view, t, FlyCam { yaw, pitch }, IsDefaultUiCamera, scoped.clone()));
         }
         None => {
-            commands.spawn((view, cam, ChaseCam { ideal: eye }));
+            commands.spawn((view, cam, ChaseCam { ideal: eye }, IsDefaultUiCamera, scoped.clone()));
         }
     }
-    commands.spawn((
-        Text::new(""),
-        TextFont { font_size: FontSize::Px(28.0), ..default() },
-        TextColor(Color::WHITE),
-        Node { position_type: PositionType::Absolute, bottom: px(16), right: px(24), ..default() },
-        Hud,
-    ));
+    // Whether the grid is on the start/finish line or still has to cross it.
+    let on_line = checkpoints.first().is_some_and(|&c| (c - start.0).with_y(0.0).length() < 25.0);
+    commands.insert_resource(RaceProgress::new(sel.laps, on_line));
     commands.insert_resource(Race {
         collision,
+        next_checkpoint: usize::from(on_line && checkpoints.len() > 1),
         checkpoints,
-        next_checkpoint: 0,
         start,
         safe: start,
         safe_timer: 0.0,
@@ -320,6 +431,7 @@ fn read_input(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> Input {
     i
 }
 
+#[allow(clippy::too_many_arguments)]
 fn drive(
     time: Res<Time>,
     args: Res<Args>,
@@ -327,23 +439,40 @@ fn drive(
     pads: Query<&Gamepad>,
     race: Option<ResMut<Race>>,
     player: Option<ResMut<Player>>,
+    progress: Option<ResMut<RaceProgress>>,
     mut controls: Option<ResMut<Controls>>,
 ) {
-    let (Some(mut race), Some(mut player)) = (race, player) else { return };
+    let (Some(mut race), Some(mut player), Some(mut progress)) = (race, player, progress) else { return };
     let dt = time.delta_secs();
     let v = &mut player.0;
+    progress.tick(dt);
 
-    let input = if args.autodrive && !race.checkpoints.is_empty() {
-        let n = race.checkpoints.len();
-        let target = race.checkpoints[race.next_checkpoint % n];
-        trk::steer_towards(v, target)
+    let n = race.checkpoints.len();
+    let next = race.next_checkpoint % n.max(1);
+    // Held on the grid for the countdown; after the flag the autopilot
+    // brings the quad home.
+    let input = if !progress.started() {
+        Input::default()
+    } else if (args.autodrive || progress.finished.is_some()) && n > 0 {
+        trk::steer_towards(v, race.checkpoints[next])
     } else {
         read_input(&keys, &pads)
     };
-    if let Some(&cp) = race.checkpoints.get(race.next_checkpoint % race.checkpoints.len().max(1))
-        && (cp - v.position).with_y(0.0).length() < 25.0
-    {
-        race.next_checkpoint += 1;
+    if let Some(&cp) = race.checkpoints.get(next) {
+        let to_cp = (cp - v.position).with_y(0.0);
+        if to_cp.length() < 25.0 {
+            progress.reach(next);
+            race.next_checkpoint = (next + 1) % n;
+        }
+        // Lap progress for the meter: checkpoints passed plus the share of
+        // the way to the next one.
+        let prev = race.checkpoints[(next + n - 1) % n];
+        let leg = (cp - prev).with_y(0.0).length().max(1.0);
+        let along = (1.0 - to_cp.length() / leg).clamp(0.0, 1.0);
+        progress.lap_fraction = if next == 0 && !progress.armed() { 0.0 } else { (((next + n - 1) % n) as f32 + along) / n as f32 };
+        let vel = v.velocity.with_y(0.0);
+        let away = vel.length() > 4.0 && vel.normalize().dot(to_cp.normalize_or_zero()) < -0.3;
+        progress.wrong_way = if away { progress.wrong_way + dt } else { 0.0 };
     }
 
     v.step(&input, dt, &race.collision);
@@ -368,7 +497,9 @@ fn drive(
     if keys.just_pressed(KeyCode::Backspace) {
         let (p, r) = race.start;
         v.reset(p, r);
-        race.next_checkpoint = 0;
+        let on_line = race.checkpoints.first().is_some_and(|&c| (c - p).with_y(0.0).length() < 25.0);
+        race.next_checkpoint = usize::from(on_line && n > 1);
+        *progress = RaceProgress::new(progress.laps, on_line);
     }
 }
 
@@ -484,25 +615,12 @@ fn fly_camera(
     t.translation += dir.normalize_or_zero() * speed * time.delta_secs();
 }
 
-fn hud(player: Option<Res<Player>>, race: Option<Res<Race>>, mut text: Query<&mut Text, With<Hud>>) {
-    let (Some(player), Some(race), Ok(mut text)) = (player, race, text.single_mut()) else { return };
-    let v = &player.0;
-    let gear = if v.gear == 0 { "R".to_string() } else { v.gear.to_string() };
-    let n = race.checkpoints.len().max(1);
-    text.0 = format!(
-        "{:>3.0} MPH  gear {gear}  {:>5.0} rpm\ncheckpoint {}/{n}",
-        v.speed_mph().abs(),
-        v.revs,
-        race.next_checkpoint % n + 1
-    );
-}
-
 /// With --screenshot: waits (software renderers are slow to upload), saves
 /// one frame, then exits.
 fn auto_screenshot(
     mut commands: Commands,
     args: Res<Args>,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     mut taken: Local<Option<f32>>,
     mut exit: MessageWriter<AppExit>,
 ) {

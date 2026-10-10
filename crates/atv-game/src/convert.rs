@@ -28,6 +28,8 @@ pub const SKY_RADIUS: f32 = 1800.0;
 
 pub struct Scene {
     pub world: World,
+    /// Top-level entities: the track (props included) and the sky dome.
+    pub roots: Vec<Entity>,
     pub world_meshes: usize,
     pub props: usize,
 }
@@ -596,8 +598,10 @@ impl<'a> Loader<'a> {
             _ => "skydomeday",
         };
         // The domes are unit hemispheres; scaled up and kept on the camera.
+        let mut roots = vec![root];
         if let Some(model) = self.model(sky, "SkyDomes") {
             let holder = commands.spawn((Transform::default(), Visibility::default(), SkyDome)).id();
+            roots.push(holder);
             let t = Transform::from_scale(Vec3::splat(SKY_RADIUS));
             self.spawn_model(commands, &model, holder, t, Look::Sky);
             // Mirrored below the horizon: translucent water shows it as a
@@ -606,7 +610,7 @@ impl<'a> Loader<'a> {
             self.spawn_model(commands, &model, holder, t, Look::Sky);
         }
 
-        Ok(Scene { world, world_meshes, props })
+        Ok(Scene { world, roots, world_meshes, props })
     }
 
     /// Assembles a quad from its parts at the hard-points in its body model.

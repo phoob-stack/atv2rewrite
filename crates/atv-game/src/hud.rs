@@ -1,0 +1,449 @@
+//! The in-race HUD, drawn with the original art: the rev gauge with its
+//! needle, preload meter, speed and gear; lap, time and best-lap readouts;
+//! the lap progress meter; the 3-2-1-GO countdown, checkpoint banner and
+//! wrong-way warning; and the pause and results menus.
+
+use bevy::input::gamepad::Gamepad;
+use bevy::prelude::*;
+
+use crate::race::{fmt_time, RaceProgress};
+use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets};
+use crate::{AppState, Player, Selection};
+
+pub struct HudPlugin;
+
+impl Plugin for HudPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(OnEnter(AppState::Race), spawn_hud)
+            .add_systems(OnExit(AppState::Race), unpause)
+            .add_systems(
+                Update,
+                (update_gauge, update_readouts, update_meter, update_banners, race_menus).run_if(in_state(AppState::Race)),
+            );
+    }
+}
+
+/// Gauge scale, screen units per texel of `HUDTPAGE`.
+const GAUGE: f32 = 0.8;
+/// Needle angle (degrees clockwise from up) at 1000 rpm, and per 1000 rpm,
+/// measured from the dial face's 1..8 markings.
+const NEEDLE_AT_1K: f32 = -134.0;
+const NEEDLE_PER_1K: f32 = 22.1;
+
+#[derive(Component)]
+struct NeedleHub;
+#[derive(Component)]
+struct PreloadArc;
+#[derive(Component)]
+enum Readout {
+    Speed,
+    Gear,
+    Lap,
+    Time,
+    LapTime,
+    Best,
+}
+#[derive(Component)]
+struct MeterPin {
+    top: f32,
+    length: f32,
+}
+#[derive(Component)]
+struct Countdown;
+#[derive(Component)]
+struct CheckpointBanner;
+#[derive(Component)]
+struct SplitText;
+#[derive(Component)]
+struct LapBanner;
+#[derive(Component)]
+struct WrongWay;
+#[derive(Component)]
+struct RaceMenu {
+    results: bool,
+}
+
+fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>) {
+    let Some(ui) = assets else { return };
+    let hud = &ui.hud;
+    let dial = hud.get("DIAL");
+    let origin = dial.rect.min;
+    let local = |p: Vec2| (p - origin) * GAUGE;
+    let hub = local(dial.pivot.unwrap_or(dial.rect.center()));
+    let needle = hud.get("NEEDLE");
+    let needle_pivot = needle.pivot.unwrap_or(Vec2::new(needle.rect.center().x, needle.rect.max.y));
+    let slot = hud.get("DIAL_PRELOAD").rect;
+    let boost_slot = hud.get("DIAL_BOOST").rect;
+    let dot = hud.get("WEIRD_DOT").rect;
+    let dial_size = dial.rect.size() * GAUGE;
+
+    commands
+        .spawn((fullscreen(), DespawnOnExit(AppState::Race), Pickable::IGNORE))
+        .with_children(|root| {
+            // Rev gauge, bottom right.
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                right: px(14),
+                bottom: px(8),
+                width: px(dial_size.x),
+                height: px(dial_size.y),
+                ..default()
+            })
+            .with_children(|g| {
+                g.spawn(placed(hud.node("DIAL", GAUGE), 0.0, 0.0));
+                let p = local(slot.min);
+                let (mut n, _) = hud.tex.region(slot, GAUGE);
+                n.position_type = PositionType::Absolute;
+                n.left = px(p.x);
+                n.top = px(p.y);
+                g.spawn((n, ImageNode::new(ui.preload_steps[0].clone()).with_mode(bevy::ui::widget::NodeImageMode::Stretch), PreloadArc, Visibility::Hidden));
+                // Gear in the small dial, speed in the display window.
+                let b = local(boost_slot.center());
+                g.spawn((BitmapText::new(FontId::Chrome, 15.0, "N"), centred(b.x, b.y - 8.0, 20.0), Readout::Gear));
+                let speed_box = local(Vec2::new(152.0, 132.0) * hud.tex.size / Vec2::new(512.0, 256.0));
+                g.spawn((
+                    BitmapText::new(FontId::Chrome, 13.0, "0"),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        right: px(dial_size.x - speed_box.x),
+                        top: px(speed_box.y - 6.0),
+                        ..default()
+                    },
+                    Readout::Speed,
+                ));
+                // The needle turns about the dial's hub; it hangs off a
+                // zero-size node there so it rotates about its own pivot.
+                g.spawn((
+                    Node { position_type: PositionType::Absolute, left: px(hub.x), top: px(hub.y), ..default() },
+                    UiTransform::from_rotation(Rot2::degrees(NEEDLE_AT_1K - NEEDLE_PER_1K)),
+                    NeedleHub,
+                ))
+                .with_children(|h| {
+                    let off = (needle.rect.min - needle_pivot) * GAUGE;
+                    h.spawn(placed(hud.tex.region(needle.rect, GAUGE), off.x, off.y));
+                });
+                let d = dot.size() * GAUGE * 0.7;
+                let (mut n, img) = hud.tex.region(dot, GAUGE * 0.7);
+                n.position_type = PositionType::Absolute;
+                n.left = px(hub.x - d.x / 2.0);
+                n.top = px(hub.y - d.y / 2.0);
+                g.spawn((n, img));
+            });
+
+            // Lap, top left.
+            root.spawn(Node { position_type: PositionType::Absolute, left: px(24), top: px(18), align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() })
+                .with_children(|r| {
+                    r.spawn(BitmapText::new(FontId::Small, 9.0, "LAP"));
+                    r.spawn((BitmapText::new(FontId::Chrome, 22.0, "1/3"), Readout::Lap));
+                });
+
+            // Times, top right.
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                right: px(24),
+                top: px(18),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::FlexEnd,
+                row_gap: px(4),
+                ..default()
+            })
+            .with_children(|c| {
+                for (label, size, readout) in [("TIME", 18.0, Readout::Time), ("LAP", 11.0, Readout::LapTime), ("BEST", 11.0, Readout::Best)] {
+                    c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
+                        r.spawn(BitmapText::new(FontId::Small, 8.0, label));
+                        r.spawn((BitmapText::new(FontId::Chrome, size, "0:00.00"), readout));
+                    });
+                }
+            });
+
+            // Lap progress meter down the right edge: start at the bottom,
+            // chequered flag at the top, the rider's marker in between.
+            let m = &ui.meter;
+            let line = m.get("line").rect;
+            let ms = 0.42;
+            let (top, length) = (112.0, line.height() * ms);
+            root.spawn(Node { position_type: PositionType::Absolute, right: px(30), top: px(top), width: px(30), height: px(length), ..default() })
+                .with_children(|c| {
+                    c.spawn(placed(m.node("line", ms), 15.0 - line.width() * ms / 2.0, 0.0));
+                    let f = m.get("flag").rect.size() * ms * 1.2;
+                    c.spawn(placed(m.node("flag", ms * 1.2), 15.0 - f.x / 2.0, -f.y - 2.0));
+                    let p = ui.positions.get("P1").rect.size() * 0.24;
+                    c.spawn((placed(ui.positions.node("P1", 0.24), 15.0 - p.x / 2.0, length - p.y / 2.0), MeterPin { top: -p.y / 2.0, length }));
+                });
+
+            // Centre-screen messages.
+            root.spawn((Node { position_type: PositionType::Absolute, width: percent(100), top: px(150), justify_content: JustifyContent::Center, ..default() },))
+                .with_children(|c| {
+                    let (n, img) = ui.countdown.node("three", 1.0);
+                    c.spawn((n, img, Countdown, UiTransform::default(), Visibility::Hidden));
+                });
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                width: percent(100),
+                top: px(92),
+                flex_direction: FlexDirection::Column,
+                align_items: AlignItems::Center,
+                row_gap: px(6),
+                ..default()
+            })
+            .with_children(|c| {
+                c.spawn((ui.meter.node("checkpoint", 1.25), CheckpointBanner, Visibility::Hidden));
+                c.spawn((BitmapText::new(FontId::Chrome, 14.0, ""), SplitText));
+                c.spawn((BitmapText::new(FontId::Menu, 20.0, ""), LapBanner));
+                c.spawn((BitmapText::new(FontId::Menu, 24.0, "WRONG WAY").color(Color::srgb(1.0, 0.25, 0.1)), WrongWay, Visibility::Hidden));
+            });
+        });
+}
+
+/// A node centred on (x, y), `w` units wide.
+fn centred(x: f32, y: f32, w: f32) -> Node {
+    Node { position_type: PositionType::Absolute, left: px(x - w / 2.0), top: px(y), width: px(w), justify_content: JustifyContent::Center, ..default() }
+}
+
+fn update_gauge(
+    player: Option<Res<Player>>,
+    ui: Option<Res<UiAssets>>,
+    mut needle: Query<&mut UiTransform, With<NeedleHub>>,
+    mut arc: Query<(&mut ImageNode, &mut Visibility), With<PreloadArc>>,
+    mut shown: Local<f32>,
+    time: Res<Time>,
+) {
+    let (Some(player), Some(ui)) = (player, ui) else { return };
+    let v = &player.0;
+    // A little needle lag, like a real gauge.
+    let k = 1.0 - (-14.0 * time.delta_secs()).exp();
+    *shown += (v.revs.clamp(0.0, 8600.0) - *shown) * k;
+    if let Ok(mut t) = needle.single_mut() {
+        t.rotation = Rot2::degrees(NEEDLE_AT_1K + (*shown / 1000.0 - 1.0) * NEEDLE_PER_1K);
+    }
+    if let Ok((mut img, mut vis)) = arc.single_mut() {
+        let n = ui.preload_steps.len();
+        let step = (v.preload.clamp(0.0, 1.0) * n as f32).round() as usize;
+        vis.set_if_neq(if step == 0 { Visibility::Hidden } else { Visibility::Inherited });
+        if step > 0 && img.image != ui.preload_steps[step - 1] {
+            img.image = ui.preload_steps[step - 1].clone();
+        }
+    }
+}
+
+fn update_readouts(player: Option<Res<Player>>, progress: Option<Res<RaceProgress>>, mut q: Query<(&Readout, &mut BitmapText)>) {
+    let (Some(player), Some(p)) = (player, progress) else { return };
+    let v = &player.0;
+    for (r, mut t) in &mut q {
+        let s = match r {
+            // The dial face reads KPH.
+            Readout::Speed => format!("{:.0}", v.velocity.length() * 3.6),
+            Readout::Gear => match v.gear {
+                0 => "R".into(),
+                g => g.to_string(),
+            },
+            Readout::Lap => format!("{}/{}", p.lap(), p.laps),
+            Readout::Time => fmt_time(p.finished.unwrap_or(p.clock)),
+            Readout::LapTime => fmt_time(if p.started() { p.lap_time() } else { 0.0 }),
+            Readout::Best => p.best_lap().map_or("-:--.--".into(), fmt_time),
+        };
+        set_text(&mut t, &s);
+    }
+}
+
+fn update_meter(progress: Option<Res<RaceProgress>>, mut pins: Query<(&MeterPin, &mut Node)>) {
+    let Some(p) = progress else { return };
+    let f = if p.finished.is_some() { 1.0 } else { p.lap_fraction.clamp(0.0, 1.0) };
+    for (pin, mut n) in &mut pins {
+        n.top = px(pin.top + pin.length * (1.0 - f));
+    }
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn update_banners(
+    progress: Option<Res<RaceProgress>>,
+    ui: Option<Res<UiAssets>>,
+    time: Res<Time<Real>>,
+    mut countdown: Query<(&mut ImageNode, &mut Node, &mut UiTransform, &mut Visibility), With<Countdown>>,
+    mut banner: Query<&mut Visibility, (With<CheckpointBanner>, Without<Countdown>)>,
+    mut wrong: Query<&mut Visibility, (With<WrongWay>, Without<Countdown>, Without<CheckpointBanner>)>,
+    mut split: Query<&mut BitmapText, (With<SplitText>, Without<LapBanner>)>,
+    mut lap: Query<&mut BitmapText, (With<LapBanner>, Without<SplitText>)>,
+    menus: Query<(), With<RaceMenu>>,
+) {
+    let (Some(p), Some(ui)) = (progress, ui) else { return };
+    let quiet = !menus.is_empty();
+    // 3, 2, 1 for a second each, then GO for one more.
+    if let Ok((mut img, mut node, mut t, mut vis)) = countdown.single_mut() {
+        let c = p.countdown;
+        let (name, phase) = if c > 2.0 {
+            (Some("three"), 3.0 - c)
+        } else if c > 1.0 {
+            (Some("two"), 2.0 - c)
+        } else if c > 0.0 {
+            (Some("one"), 1.0 - c)
+        } else if p.clock < 1.0 && p.finished.is_none() {
+            (Some("go"), p.clock)
+        } else {
+            (None, 0.0)
+        };
+        match name.filter(|_| !quiet) {
+            Some(name) => {
+                let s = ui.countdown.get(name);
+                if img.rect != Some(s.rect) {
+                    img.rect = Some(s.rect);
+                    node.width = px(s.rect.width());
+                    node.height = px(s.rect.height());
+                }
+                // Pops in large and settles, fading at the end.
+                let phase = phase.clamp(0.0, 1.0);
+                t.scale = Vec2::splat(1.0 + 0.6 * (1.0 - phase).powi(3));
+                img.color = Color::srgba(1.0, 1.0, 1.0, (1.0 - phase).min(0.25) * 4.0);
+                vis.set_if_neq(Visibility::Inherited);
+            }
+            None => {
+                vis.set_if_neq(Visibility::Hidden);
+            }
+        }
+    }
+    let recent = |at: Option<f32>, secs: f32| at.is_some_and(|t| p.clock - t < secs);
+    let lap_done = recent(p.last_lap, 2.5) && p.finished.is_none();
+    if let Ok(mut vis) = banner.single_mut() {
+        vis.set_if_neq(if (recent(p.last_checkpoint, 1.5) || lap_done) && !quiet { Visibility::Inherited } else { Visibility::Hidden });
+    }
+    if let Ok(mut t) = split.single_mut() {
+        let s = if quiet {
+            String::new()
+        } else if lap_done {
+            p.lap_times.last().map(|&l| fmt_time(l)).unwrap_or_default()
+        } else if recent(p.last_checkpoint, 1.5) {
+            fmt_time(p.lap_time())
+        } else {
+            String::new()
+        };
+        set_text(&mut t, &s);
+    }
+    if let Ok(mut t) = lap.single_mut() {
+        let s = if quiet {
+            String::new()
+        } else if p.finished.is_some() {
+            "FINISHED".to_string()
+        } else if lap_done && p.lap() == p.laps {
+            "FINAL LAP".to_string()
+        } else if lap_done {
+            format!("LAP {}", p.lap())
+        } else {
+            String::new()
+        };
+        set_text(&mut t, &s);
+    }
+    if let Ok(mut vis) = wrong.single_mut() {
+        let blink = (time.elapsed_secs() * 3.0).fract() < 0.6;
+        vis.set_if_neq(if p.wrong_way > 1.5 && p.racing() && blink { Visibility::Inherited } else { Visibility::Hidden });
+    }
+}
+
+/// Escape / Start pauses the race; finishing shows the results. Both are
+/// menus over the frozen race.
+#[allow(clippy::too_many_arguments)]
+fn race_menus(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
+    ui: Option<Res<UiAssets>>,
+    progress: Option<Res<RaceProgress>>,
+    selection: Res<Selection>,
+    mut virt: ResMut<Time<Virtual>>,
+    menus: Query<(Entity, &RaceMenu)>,
+    mut lists: Query<&mut MenuList>,
+    mut next: ResMut<NextState<AppState>>,
+    mut finished_for: Local<f32>,
+) {
+    let (Some(ui), Some(p)) = (ui, progress) else { return };
+    let nav = read_nav(&keys, &pads);
+    // Results come up a moment after the line.
+    *finished_for = if p.finished.is_some() { *finished_for + virt.delta_secs() } else { 0.0 };
+
+    let (Ok((e, menu)), Ok(mut list)) = (menus.single(), lists.single_mut()) else {
+        // Escape or Start pauses (Backspace is the quick restart).
+        if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start)) && p.finished.is_none() {
+            virt.pause();
+            spawn_race_menu(&mut commands, &ui, false, &p, &selection);
+        } else if *finished_for > 2.5 && menus.is_empty() {
+            spawn_race_menu(&mut commands, &ui, true, &p, &selection);
+        }
+        return;
+    };
+    let Some(nav) = nav else { return };
+    let close = |commands: &mut Commands, virt: &mut Time<Virtual>| {
+        commands.entity(e).despawn();
+        virt.unpause();
+    };
+    match nav {
+        Nav::Up | Nav::Down => list.step(nav),
+        Nav::Start | Nav::Back if !menu.results => close(&mut commands, &mut virt),
+        Nav::Accept => match list.current() {
+            "CONTINUE" => close(&mut commands, &mut virt),
+            "RESTART" | "RACE AGAIN" => next.set(AppState::Loading),
+            "QUIT RACE" | "MAIN MENU" => next.set(AppState::FrontEnd),
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+fn spawn_race_menu(commands: &mut Commands, ui: &UiAssets, results: bool, p: &RaceProgress, sel: &Selection) {
+    let items: &[&str] = if results { &["RACE AGAIN", "MAIN MENU"] } else { &["CONTINUE", "RESTART", "QUIT RACE"] };
+    let list = MenuList::new(items, 220.0);
+    let panel = ui.bio.get("BIOPANEL").rect;
+    let (pw, ph) = (340.0, if results { 270.0 } else { 220.0 });
+    let menu = commands.spawn_empty().id();
+    commands
+        .spawn((
+            Node { justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..fullscreen() },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.05, 0.45)),
+            DespawnOnExit(AppState::Race),
+            RaceMenu { results },
+        ))
+        .with_children(|c| {
+            c.spawn(Node { width: px(pw), height: px(ph), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, padding: UiRect::all(px(16)), row_gap: px(8), ..default() })
+                .with_children(|box_| {
+                    let (mut n, img) = ui.bio.tex.region(panel, 1.0);
+                    n.position_type = PositionType::Absolute;
+                    n.left = px(0);
+                    n.top = px(0);
+                    n.width = percent(100);
+                    n.height = percent(100);
+                    box_.spawn((n, img));
+                    let title = if results { "RACE RESULTS" } else { "RACE PAUSED" };
+                    box_.spawn(BitmapText::new(FontId::Menu, 17.0, title));
+                    box_.spawn(BitmapText::new(FontId::Small, 9.0, format!("{}  -  {}", track_title(&sel.track), sel.quad.to_uppercase())).color(Color::srgb(0.75, 0.85, 1.0)));
+                    if results {
+                        box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), margin: UiRect::vertical(px(6)), ..default() }).with_children(|rows| {
+                            let best = p.best_lap();
+                            for (i, t) in p.lap_times.iter().enumerate() {
+                                let gold = best == Some(*t);
+                                row(rows, &format!("LAP {}", i + 1), &fmt_time(*t), gold);
+                            }
+                            row(rows, "TOTAL", &fmt_time(p.finished.unwrap_or(p.clock)), false);
+                        });
+                    }
+                    box_.spawn(Node { margin: UiRect::top(px(8)), ..default() }).add_child(menu);
+                });
+        });
+    spawn_menu_rows(commands, ui, menu, &list);
+    commands.entity(menu).insert(list);
+}
+
+fn row(parent: &mut ChildSpawnerCommands, label: &str, value: &str, best: bool) {
+    let c = if best { Color::srgb(1.0, 0.85, 0.2) } else { Color::WHITE };
+    parent.spawn(Node { width: px(220), justify_content: JustifyContent::SpaceBetween, align_items: AlignItems::FlexEnd, ..default() }).with_children(|r| {
+        r.spawn(BitmapText::new(FontId::Small, 9.0, label).color(c));
+        r.spawn(BitmapText::new(FontId::Chrome, 13.0, value).color(c));
+    });
+}
+
+fn unpause(mut virt: ResMut<Time<Virtual>>) {
+    virt.unpause();
+}
+
+/// "Dunes1" -> "DUNES 1".
+pub fn track_title(track: &str) -> String {
+    let split = track.find(|c: char| c.is_ascii_digit()).unwrap_or(track.len());
+    format!("{} {}", &track[..split], &track[split..]).trim().to_uppercase()
+}

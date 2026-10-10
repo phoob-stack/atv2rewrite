@@ -5,11 +5,13 @@
 
 pub mod anim;
 pub mod bark;
+pub mod bed;
 pub mod bin;
 pub mod bog;
 pub mod lzss;
 pub mod rom;
 pub mod row;
+pub mod setup;
 pub mod source;
 pub mod xiso;
 

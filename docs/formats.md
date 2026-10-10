@@ -72,11 +72,11 @@ Levels 856, shaders 75, other 116).
 | `.skel` | 1 | text | Rider skeleton definition (31 bones, mirror pairs, two-bone limbs). | Mirror pairs read. |
 | `.pts` | 11 | `POINT 1.00` | Named vehicle hard-points (wheel centres etc.). | Simple, to do. |
 | `.params` | 12 | text | Vehicle physics tuning (torque, gearing, preload, air resistance). | Readable text. |
-| `.bed` | 35 | binary | Sprite-sheet layouts for `.bog` texture pages (UI, particles). | To do. |
+| `.bed` | 35 | binary | Sprite sheets for `.bog` texture pages: HUD, front end, particles, bitmap fonts. | **Decoded, all 35.** See below. |
 | `.ink` | 45 | `0x00CEFDAB` | Extra model data (vertex positions), likely low-detail or env-map geometry. | To do. |
 | `.xwb` | 9 | `WBND` | XACT wave banks (sound effects, rider voices). Known format; samples are likely Xbox ADPCM. | To do. |
 | `.asm` / pixel shaders | 75 | text | Xbox vertex/pixel shader source. A reference for rewriting effects in WGSL. | Readable text. |
-| `Setup/*.xml` | 13 | XML | Game rules: tracks, career, arcade, freestyle, tricks, riders, vehicles, cameras, materials, sound. | Readable text. |
+| `Setup/*.xml` | 13 | XML | Game rules: tracks, career, arcade, freestyle, tricks, riders, vehicles, cameras, materials, sound, front-end screens. | Read by `setup.rs` (flat entries). |
 | `Strings/*.txt` | 2 | text | UI strings (English, plus a joke "l33t" language). | Readable text. |
 
 ## Content inventory
@@ -176,6 +176,38 @@ Locators named `Start1`..`Start8` are the 2.5 m grid boxes; `Checkpoint N`,
 too. Mesh blocks are currently found by validating candidate headers, which
 recovers 87-98% of each file's bytes; decoding the tree will make it exact
 and will give the visibility structure.
+
+## BED sprite sheets and the 2D art
+
+```
+u8 1, u8 1, source TGA name (NUL-terminated)
+u16 width, u16 height      the source TGA's size in pixels
+u16 count
+count x { u16 n, n x (i32 x, i32 y), name (NUL-terminated), i16 link }
+```
+
+Coordinates are normalised to the page, 0..100000 across its width and
+height, so they hold whatever size the `.bog` was saved at. Named entries
+are 4-point rectangles; `link` points at an unnamed 1-point entry holding
+the sprite's pivot (the rev needle's hub, a glyph's baseline origin) or is
+-1. Fonts name each glyph by its character code in decimal (`65` = `A`,
+Latin-1 for accents), every glyph linked to its baseline origin.
+
+What the UI uses:
+
+| Page | Contents |
+|---|---|
+| `Sprites/HUDTPAGE` | Rev gauge: `DIAL` (pivot = hub), `NEEDLE` (pivot = its hub end), `PRELOAD` arc drawn into the `DIAL_PRELOAD` slot, `BOOST` pie into `DIAL_BOOST`, `WEIRD_DOT` hub cap. Dial face reads 1-8 (x1000 rpm) from -134 deg to +21 deg, and KPH. `HUDTPAGE_b` is a larger, unused gauge with no sheet. |
+| `Sprites/321go`, `Sprites/positions` | Countdown digits and GO; position balls P1-P8. |
+| `Sprites/Position_meter` | Lap progress line, chequered flag, markers and the CHECKPOINT banner. No sheet; regions measured from the page (see `ui.rs`). |
+| `Fonts/*` | Bitmap fonts: `MgrammeCombined` (outlined capitals, menus), `MgrammeSmall`, `kim36` (chrome mixed case), and outline/inner variants. `Fonts/blimey.ttf` on the disc is a TrueType font. |
+| `FrontEnd/NewDesign` | Menu selection bar, attribute bars, selection square, arrows, medals, panels. |
+| `FrontEnd/BG/*` | Full-screen backgrounds; `Setup/Frontend.xml` names each screen's (`BACKGROUND0`) and its title (`mTitleText`). |
+| `FrontEnd/RiderMugs` | 24 portraits, 8 per row of 64 px, in `Setup/Riders.xml` order. |
+| `FrontEnd/Track_*_LARGE` | Track previews; `FELoading1` is the loading screen. |
+
+`Strings/Strings_ENG.txt` is one string per line with no keys (the keys are
+in the executable), so the UI uses the same English labels directly.
 
 ## Still unknown
 
