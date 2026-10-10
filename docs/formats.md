@@ -260,7 +260,17 @@ cars" lap the track at `mAIBestLapTime`..`mAIWorstLapTime` from
 by ability, technique and their quad's top speed, acceleration and
 handling (0x25ab0) follow the cars best first, and a rider's target speeds
 scale by `1 - lead / 100 m`, kept to 0.5-1.5. A car with a player near it
-is pulled up to 600 m towards them. The rider skill setup (0x66200, applied
+is pulled up to 600 m towards them. The cars set off level with the
+best-rated rider's place on the grid (0x6a0c0), and the rewrite counts
+distance from the start/finish line (the first checkpoint), not node 0,
+which on Glacier 2 is 900 m round the lap. Passing a jump node at 40 mph
+or more, a computer rider releases a preload of strength `boost / 100`
+times how well its travel lines up with the line (0x66380, 0x66460,
+0x5a9e0). The rewrite adds two respot rules: a rider respotted three
+times in a row without getting past the same spot is put past it (the
+frozen creeks on Glacier 2 and 3 catch riders that come up to the jumps
+too slow), and one that gets no further round the lap for 20 s is
+respotted. The rider skill setup (0x66200, applied
 at 0x681d0) makes an AI quad's brake (and handbrake) pedal instant, scales
 `SIDEFORCEMAX` by `1.15 (1 + Ability/10)`, sets `TORQUESLIDESCALE` to
 `0.75 / (1 + Ability/10)` and `FORCEPOINT` to 0; steering and engine are
