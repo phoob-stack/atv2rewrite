@@ -3,6 +3,8 @@
 
 use bevy::prelude::*;
 
+use atv_sim::track as trk;
+
 #[derive(Resource, Debug)]
 pub struct RaceProgress {
     pub laps: u32,
@@ -174,7 +176,7 @@ impl RaceProgress {
 /// rounds 11, 12 and 15 can't be won in time, so here any case and the
 /// misspelling count.
 pub fn arcade_gates(world: &atv_formats::row::World) -> Vec<(usize, f32)> {
-    let number = |name: &str| atv_sim::track::checkpoint_number(name);
+    let number = |name: &str| trk::checkpoint_number(name);
     let mut all: Vec<u32> = world.locators.iter().filter_map(|l| number(&l.name)).collect();
     all.sort_unstable();
     all.dedup();
@@ -195,6 +197,83 @@ pub fn arcade_gates(world: &atv_formats::row::World) -> Vec<(usize, f32)> {
     }
     gates.sort_by_key(|g| g.0);
     gates
+}
+
+/// The quad's hull for touching a gate: three spheres along it (front
+/// rack, middle, rear rack), each about as wide as the quad.
+const HULL: [f32; 3] = [0.75, 0.0, -0.85];
+const HULL_RADIUS: f32 = 0.6;
+
+/// One face of a gate: a rectangle, `half` its half-size in its own x
+/// and y.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Face {
+    pub center: Vec3,
+    rot: Quat,
+    half: Vec2,
+}
+
+impl Face {
+    /// The far (+Z, in the game's frame) face of a locator's box (0x64ac0):
+    /// `pos ± sx/2·R0 ± sy/2·R1 + sz/2·R2`.
+    fn of(l: &atv_formats::rom::Locator) -> Self {
+        let rot = trk::rotation_to_sim(&l.rotation);
+        let half = Vec3::from(l.scale).abs() * 0.5;
+        // The sim frame mirrors Z, so the game's +Z is the box's local -Z.
+        Self { center: trk::to_sim(l.pos) + rot * Vec3::new(0.0, 0.0, -half.z), rot, half: half.truncate() }
+    }
+
+    /// How far `p` is from the rectangle.
+    fn distance(&self, p: Vec3) -> f32 {
+        let l = self.rot.inverse() * (p - self.center);
+        let on = l.truncate().clamp(-self.half, self.half);
+        (l - on.extend(0.0)).length()
+    }
+}
+
+/// A checkpoint gate: the face of each locator with its number (a few
+/// tracks repeat a number, and either copy counts). The original passes a
+/// checkpoint when the quad's hull touches it (0x64440).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gate {
+    faces: Vec<Face>,
+}
+
+impl Gate {
+    /// Where the guide arrow points.
+    pub fn center(&self) -> Vec3 {
+        self.faces[0].center
+    }
+
+    /// Whether a hull sphere at any of `points` touches a face.
+    pub fn touched(&self, points: &[Vec3]) -> bool {
+        self.faces.iter().any(|f| points.iter().any(|&p| f.distance(p) <= HULL_RADIUS))
+    }
+}
+
+/// The gates of the locators `number` gives a number, in its order.
+pub fn gates(world: &atv_formats::row::World, number: impl Fn(&str) -> Option<u32>) -> Vec<Gate> {
+    let mut faces: Vec<(u32, Face)> = world.locators.iter().filter_map(|l| Some((number(&l.name)?, Face::of(l)))).collect();
+    faces.sort_by_key(|f| f.0);
+    let mut gates: Vec<(u32, Gate)> = Vec::new();
+    for (id, f) in faces {
+        match gates.last_mut() {
+            Some(g) if g.0 == id => g.1.faces.push(f),
+            _ => gates.push((id, Gate { faces: vec![f] })),
+        }
+    }
+    gates.into_iter().map(|g| g.1).collect()
+}
+
+/// A lap's gates, in the order of [`atv_sim::track::checkpoints`].
+pub fn lap_gates(world: &atv_formats::row::World) -> Vec<Gate> {
+    gates(world, trk::checkpoint_number)
+}
+
+/// Points along the quad for its hull spheres.
+pub fn hull(v: &atv_sim::vehicle::Vehicle) -> [Vec3; 3] {
+    let mid = v.position + v.up() * 0.3;
+    HULL.map(|z| mid + v.forward() * z)
 }
 
 /// `m:ss.hh`, as the original shows race and lap times.
@@ -251,6 +330,21 @@ mod tests {
         // The start line and checkpoints 2..8 are indices 0..7; a repeated
         // one adds twice.
         assert_eq!(arcade_gates(&world), vec![(2, 30.0), (3, 15.0), (4, 30.0), (5, 30.0), (6, 40.0)]);
+    }
+
+    #[test]
+    fn lap_gates_from_the_line() {
+        let locator = |name: &str, x: f32, z: f32| atv_formats::rom::Locator { name: name.to_string(), pos: [x, 0.0, z], scale: [20.0, 10.0, 1.0], rotation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] };
+        let locators = vec![locator("Checkpoint 3", 0.0, 200.0), locator("Startpoint 1", 0.0, 0.0), locator("Checkpoint 2", 0.0, 100.0), locator("checkpoint 2 ", 80.0, 100.0), locator("Respot", 0.0, 50.0)];
+        let world = atv_formats::row::World { fog_color: 0, materials: vec![], locators, lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] };
+        let gates = lap_gates(&world);
+        assert_eq!(gates.len(), 3);
+        // The line first; game z 0.5 is sim -0.5.
+        assert_eq!(gates[0].center(), Vec3::new(0.0, 0.0, -0.5));
+        // Either copy of checkpoint 2, anywhere across its 20 m.
+        assert!(gates[1].touched(&[Vec3::new(9.5, 0.0, -100.5)]));
+        assert!(gates[1].touched(&[Vec3::new(75.0, 0.0, -100.5)]));
+        assert!(!gates[1].touched(&[Vec3::new(40.0, 0.0, -100.5)]));
     }
 
     #[test]

@@ -193,7 +193,11 @@ Locators named `Start1`..`Start8` are the 2.5 m grid boxes; `Checkpoint N`,
 too. `Startpoint 1` is the start/finish line and is checkpoint 1: 0x65c50
 reads the number after the first ten letters of either name, so a lap runs
 from the line through `Checkpoint 2` .. `Checkpoint N` and back to it (no
-track has a `Checkpoint 1`). A `waterbox` (matched case-insensitively, 0x101030) is deep water:
+track has a `Checkpoint 1`). Each is passed when the quad's hull touches
+the far (+Z) face of its box (0x64440, 0x64ac0), anywhere across it; a few
+numbers have two boxes (Swamp 1's 6 on two routes) and either counts. The
+rewrite also takes a checkpoint within 25 m of its middle, and computer
+riders only use that. A `waterbox` (matched case-insensitively, 0x101030) is deep water:
 its top, `pos.y + scale.y / 2`, is the surface, and anything over its
 footprint (`scale.x` by `scale.z` along the first and third rotation
 rows) counts, however far down. Forest's tops match its water meshes to

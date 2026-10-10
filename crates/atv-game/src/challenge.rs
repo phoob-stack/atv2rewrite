@@ -36,20 +36,15 @@ use bevy::prelude::*;
 
 use atv_formats::row::World;
 use atv_formats::{setup, GameSource};
-use atv_sim::track as trk;
 
 use crate::career::{Career, Rules};
 use crate::freestyle::{PopupKind, Session, MEDALS};
-use crate::race::{fmt_time, RaceProgress};
+use crate::race::{self, fmt_time, hull, Gate, RaceProgress};
 use crate::ui::{read_nav, set_text, BitmapText, FontId, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::{AppState, Args, Mode, Player, Race, Selection};
 
 pub const COUNT: usize = 12;
 pub const TRACK: &str = "Stadium2";
-/// The quad's hull for touching a gate: three spheres along it (front
-/// rack, middle, rear rack), each about as wide as the quad.
-const HULL: [f32; 3] = [0.75, 0.0, -0.85];
-const HULL_RADIUS: f32 = 0.6;
 
 /// One challenge as the select screen shows it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -139,80 +134,14 @@ pub fn is_open(career: &Career, n: usize) -> bool {
     career.cheats & crate::unlocks::CHALS != 0 || (1..n).all(|k| career.challenges.get(&k).is_some_and(|c| c.1.is_some()))
 }
 
-/// One face of a gate: a rectangle, `half` its half-size in its own x
-/// and y.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Face {
-    pub center: Vec3,
-    rot: Quat,
-    half: Vec2,
-}
-
-impl Face {
-    /// The far (+Z, in the game's frame) face of a locator's box (0x64ac0):
-    /// `pos ± sx/2·R0 ± sy/2·R1 + sz/2·R2`.
-    fn of(l: &atv_formats::rom::Locator) -> Self {
-        let rot = trk::rotation_to_sim(&l.rotation);
-        let half = Vec3::from(l.scale).abs() * 0.5;
-        // The sim frame mirrors Z, so the game's +Z is the box's local -Z.
-        Self { center: trk::to_sim(l.pos) + rot * Vec3::new(0.0, 0.0, -half.z), rot, half: half.truncate() }
-    }
-
-    /// How far `p` is from the rectangle.
-    fn distance(&self, p: Vec3) -> f32 {
-        let l = self.rot.inverse() * (p - self.center);
-        let on = l.truncate().clamp(-self.half, self.half);
-        (l - on.extend(0.0)).length()
-    }
-}
-
-/// A gate a quad has to pass: the face of each checkpoint locator with its
-/// number (Stadium 2 has two of 1003, and either counts).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Gate {
-    faces: Vec<Face>,
-}
-
-impl Gate {
-    /// Where the guide arrow points.
-    pub fn center(&self) -> Vec3 {
-        self.faces[0].center
-    }
-
-    /// Whether a hull sphere at any of `points` touches a face.
-    fn touched(&self, points: &[Vec3]) -> bool {
-        self.faces.iter().any(|f| points.iter().any(|&p| f.distance(p) <= HULL_RADIUS))
-    }
-}
-
 /// Challenge `n`'s gates, in order (`checkpoint 600 endo box` counts as
 /// 600).
 pub fn course(world: &World, n: usize) -> Vec<Gate> {
     let lo = n as u32 * 100;
-    let mut faces: Vec<(u32, Face)> = world
-        .locators
-        .iter()
-        .filter_map(|l| {
-            let name = l.name.trim().to_ascii_lowercase();
-            let id: u32 = name.strip_prefix("checkpoint")?.split_whitespace().next()?.parse().ok()?;
-            (lo..lo + 40).contains(&id).then(|| (id, Face::of(l)))
-        })
-        .collect();
-    faces.sort_by_key(|f| f.0);
-    let mut gates: Vec<(u32, Gate)> = Vec::new();
-    for (id, f) in faces {
-        match gates.last_mut() {
-            Some(g) if g.0 == id => g.1.faces.push(f),
-            _ => gates.push((id, Gate { faces: vec![f] })),
-        }
-    }
-    gates.into_iter().map(|g| g.1).collect()
-}
-
-/// Points along the quad for its hull spheres.
-pub fn hull(v: &atv_sim::vehicle::Vehicle) -> [Vec3; 3] {
-    let mid = v.position + v.up() * 0.3;
-    HULL.map(|z| mid + v.forward() * z)
+    race::gates(world, |name| {
+        let id: u32 = name.trim().to_ascii_lowercase().strip_prefix("checkpoint")?.split_whitespace().next()?.parse().ok()?;
+        (lo..lo + 40).contains(&id).then_some(id)
+    })
 }
 
 /// The challenge being run.

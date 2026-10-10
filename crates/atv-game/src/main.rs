@@ -197,6 +197,9 @@ struct Game(Arc<GameSource>);
 struct Race {
     collision: TrackCollision,
     checkpoints: Vec<Vec3>,
+    /// Each checkpoint's gate (empty in a challenge, whose course has its
+    /// own).
+    gates: Vec<race::Gate>,
     next_checkpoint: usize,
     /// The checkpoints are a challenge course, kept by [`challenge`].
     course: bool,
@@ -735,6 +738,7 @@ fn setup(
         collision,
         next_checkpoint: if in_challenge { 0 } else { usize::from(on_line && checkpoints.len() > 1) },
         checkpoints,
+        gates: if in_challenge { Vec::new() } else { race::lap_gates(&scene.world) },
         course: in_challenge,
         players: sel.players,
         start,
@@ -903,7 +907,9 @@ fn drive(
         }
     } else if let Some(&cp) = race.checkpoints.get(next) {
         let to_cp = (cp - v.position).with_y(0.0);
-        if to_cp.length() < 25.0 {
+        // Touching the gate, as the original passes one, or near enough
+        // its middle for a route that skirts it.
+        if race.gates.get(next).is_some_and(|g| g.touched(&race::hull(v))) || to_cp.length() < 25.0 {
             progress.reach(next);
             race.next_checkpoint = (next + 1) % n;
         }
