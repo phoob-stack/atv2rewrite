@@ -107,6 +107,10 @@ fn check(game: &GameSource) -> Result<()> {
             atv_formats::aid::AiPath::parse(&data)
                 .map(|a| format!("{} racing line nodes", a.nodes.len()))
                 .map_err(Into::into)
+        } else if lower.ends_with(".ink") {
+            atv_formats::ink::CollisionMesh::parse(&data)
+                .map(|m| format!("{} collision triangles", m.triangles.len()))
+                .map_err(Into::into)
         } else if lower.ends_with(".bed") {
             SpriteSheet::parse(&data).map(|s| format!("{} sprites", s.entries.len())).map_err(Into::into)
         } else if lower.ends_with(".bog") {
@@ -137,7 +141,7 @@ fn check(game: &GameSource) -> Result<()> {
 fn sim(game: &GameSource, track: &str, quad: &str, seconds: f32) -> Result<()> {
     use atv_sim::{track as trk, Input, Vehicle, VehicleParams};
     let world = World::parse(&game.read(&format!("/Levels/{track}/World/{track}.row"))?)?;
-    let col = trk::collision_from_world(&world);
+    let col = trk::collision(&world, game, track);
     let generic = String::from_utf8_lossy(&game.read("/Cars/Generic/Generic.params")?).into_owned();
     let own = game.read(&format!("/Cars/{quad}/{quad}.params")).ok().map(|b| String::from_utf8_lossy(&b).into_owned());
     let params = VehicleParams::from_files(&generic, own.as_deref());
@@ -193,7 +197,7 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
         "Storm",
     ];
     let world = World::parse(&game.read(&format!("/Levels/{track}/World/{track}.row"))?)?;
-    let col = trk::collision_from_world(&world);
+    let col = trk::collision(&world, game, track);
     let line = RacingLine::from_path(&AiPath::parse(
         &game.read(&format!("/Levels/{track}/World/{track}.aid"))?,
     )?);

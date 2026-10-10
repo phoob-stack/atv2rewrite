@@ -59,7 +59,7 @@ Levels 856, shaders 75, other 116).
 | `.shm` | 141 | `ROM 1.26` | Shadow/simplified mesh twin of each `.rom`, same layout. | **Decoded.** |
 | `.row` | 17 | `ROW 2.25` | Track world: materials, locators (start grid, checkpoints, respots, water boxes), lights, prop instances, sprites, meshes and the road surface as Bezier patches. | **Mostly decoded.** Spatial tree between mesh blocks still unknown. |
 | `.kdt` | 17 | none | Per-track spatial data, likely collision tree. | To do. |
-| `.hsc` | 35 | none | Per-prop collision hulls (plane lists). | To do. |
+| `.hsc` | 35 | none | Knock-over prop hulls (cones, signs, barriers, planks): `u32` hull count; per hull a `u32` plane count and planes (normal, d; inside where n·p + d <= 0); then a `u32` sphere count and spheres (centre, radius), read at `0x24c10`. The signs are 6-plane boxes, one per part. | Layout known; not used yet (needs props that move). |
 | `.aid` | 17 | `AID 1.02` | AI racing line: a graph of waypoints with the drivable corridor, speed limits, respot and jump flags. | **Decoded, all 17.** See below. |
 | `.nin` | 17 | none (`0xCDAB0DF0` markers) | Per-track node/trigger data. | To do. |
 | `.viz` | 17 | none | Visibility / camera zones. | To do. |
@@ -73,7 +73,7 @@ Levels 856, shaders 75, other 116).
 | `.pts` | 11 | `POINT 1.00` | Named vehicle hard-points (wheel centres etc.). | Simple, to do. |
 | `.params` | 12 | text | Vehicle physics tuning (torque, gearing, preload, air resistance). | Readable text. |
 | `.bed` | 35 | binary | Sprite sheets for `.bog` texture pages: HUD, front end, particles, bitmap fonts. | **Decoded, all 35.** See below. |
-| `.ink` | 45 | `0x00CEFDAB` | Extra model data (vertex positions), likely low-detail or env-map geometry. | To do. |
+| `.ink` | 45 | `0x00CEFDAB` | Static prop collision mesh: `u32` triangle count, then triangles of three `f32[3]` corners in model space. A placed prop whose model has one (rocks, trees, buildings, vehicles, tyre stacks, the stadium gates) collides as it. | **Decoded, all 45**; used for prop collision. |
 | `.xwb` | 9 | `WBND` | XACT wave banks (sound effects, rider voices). Known format; samples are likely Xbox ADPCM. | To do. |
 | `.asm` / pixel shaders | 75 | text | Xbox vertex/pixel shader source. A reference for rewriting effects in WGSL. | Readable text. |
 | `Setup/*.xml` | 13 | XML | Game rules: tracks, career, arcade, freestyle, tricks, riders, vehicles, cameras, materials, sound, front-end screens. | Read by `setup.rs` (flat entries). |
@@ -266,5 +266,5 @@ with the original's addresses.
 
 ## Still unknown
 
-`.kdt` (likely collision tree), `.hsc` (prop collision hulls), `.nin`, `.viz`, `.cuban` (compressed animation), `.xwb` (sound),
+`.kdt` (likely collision tree), `.nin`, `.viz`, `.cuban` (compressed animation), `.xwb` (sound),
 the ROW spatial tree and effect records, and the material record fields.

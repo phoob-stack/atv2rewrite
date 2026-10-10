@@ -379,7 +379,7 @@ fn setup(
     for &e in &scene.roots {
         commands.entity(e).insert(scoped.clone());
     }
-    let collision = trk::collision_from_world(&scene.world);
+    let collision = trk::collision(&scene.world, &game.0, &sel.track);
     let start = trk::start_pose(&scene.world, &collision, 1);
     let checkpoints = trk::checkpoints(&scene.world);
 

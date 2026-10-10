@@ -40,6 +40,8 @@ anyone checking the port against a disassembly.
   hand-placed spheres instead, answered the way the original answers a
   contact: a position fix plus an impulse at the contact point (`0xad9b0`).
 * Only the automatic gearbox (mode 0).
+* Knock-over props (cones, signs, barriers, crates) and their `.hsc` hulls:
+  they don't collide yet. Static props collide through their `.ink` meshes.
 
 ## Tests
 

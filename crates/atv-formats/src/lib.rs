@@ -9,6 +9,7 @@ pub mod bark;
 pub mod bed;
 pub mod bin;
 pub mod bog;
+pub mod ink;
 pub mod lzss;
 pub mod rom;
 pub mod row;
