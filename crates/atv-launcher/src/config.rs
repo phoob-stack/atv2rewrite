@@ -12,6 +12,12 @@ pub struct Config {
     pub width: u32,
     pub height: u32,
     pub fullscreen: bool,
+    /// Play with the HD texture pack when one has been built.
+    pub hd: bool,
+    /// Also upscale track, quad and rider textures when building the pack.
+    pub hd_world: bool,
+    /// The upscaler, when the player picked it by hand.
+    pub upscaler: PathBuf,
 }
 
 impl Default for Config {
@@ -23,6 +29,9 @@ impl Default for Config {
             width: 1280,
             height: 720,
             fullscreen: false,
+            hd: true,
+            hd_world: false,
+            upscaler: PathBuf::new(),
         }
     }
 }
@@ -47,6 +56,9 @@ impl Config {
                 "width" => c.width = v.parse().unwrap_or(c.width),
                 "height" => c.height = v.parse().unwrap_or(c.height),
                 "fullscreen" => c.fullscreen = v == "true",
+                "hd" => c.hd = v == "true",
+                "hd_world" => c.hd_world = v == "true",
+                "upscaler" => c.upscaler = PathBuf::from(v),
                 _ => {}
             }
         }
@@ -59,13 +71,16 @@ impl Config {
             std::fs::create_dir_all(dir)?;
         }
         let text = format!(
-            "game = {}\ntrack = {}\nquad = {}\nwidth = {}\nheight = {}\nfullscreen = {}\n",
+            "game = {}\ntrack = {}\nquad = {}\nwidth = {}\nheight = {}\nfullscreen = {}\nhd = {}\nhd_world = {}\nupscaler = {}\n",
             self.game.display(),
             self.track,
             self.quad,
             self.width,
             self.height,
-            self.fullscreen
+            self.fullscreen,
+            self.hd,
+            self.hd_world,
+            self.upscaler.display()
         );
         std::fs::write(path, text)
     }

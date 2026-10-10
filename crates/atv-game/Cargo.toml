@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+atv-hd = { version = "0.1.0", path = "../atv-hd" }
 atv-formats = { version = "0.1.0", path = "../atv-formats" }
 atv-sim = { version = "0.1.0", path = "../atv-sim" }
 bevy = "0.20"

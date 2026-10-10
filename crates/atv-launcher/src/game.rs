@@ -99,6 +99,9 @@ impl Running {
         if cfg.fullscreen {
             cmd.arg("--fullscreen");
         }
+        if !cfg.hd {
+            cmd.arg("--no-hd");
+        }
         let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("could not start {}: {e}", bin.display()))?;
 
         let log = Arc::new(Mutex::new(Vec::new()));

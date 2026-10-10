@@ -444,8 +444,20 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atv-formats",
+ "atv-hd",
  "atv-sim",
  "bevy",
+]
+
+[[package]]
+name = "atv-hd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "atv-formats",
+ "directories",
+ "png",
+ "texpresso",
 ]
 
 [[package]]
@@ -454,6 +466,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atv-formats",
+ "atv-hd",
  "directories",
  "eframe",
  "rfd",
@@ -473,6 +486,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "atv-formats",
+ "atv-hd",
  "atv-sim",
  "clap",
  "glam",

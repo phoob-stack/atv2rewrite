@@ -6,6 +6,7 @@
 
 mod config;
 mod game;
+mod hd;
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -32,12 +33,24 @@ struct Launcher {
     scan: Scan,
     running: Option<Running>,
     message: Option<(bool, String)>,
+    build: Option<hd::Build>,
+    /// Textures in the HD pack folder.
+    pack: usize,
 }
 
 impl Launcher {
     fn new() -> Self {
         let cfg = Config::load();
-        let mut l = Self { path_text: cfg.game.display().to_string(), cfg, scan: Scan::Idle, running: None, message: None };
+        let pack = hd::pack_dir().map(|d| hd::pack_size(&d)).unwrap_or(0);
+        let mut l = Self {
+            path_text: cfg.game.display().to_string(),
+            cfg,
+            scan: Scan::Idle,
+            running: None,
+            message: None,
+            build: None,
+            pack,
+        };
         l.rescan();
         l
     }
@@ -91,6 +104,14 @@ impl Launcher {
                 };
             }
         }
+        if let Some(result) = self.build.as_ref().and_then(|b| b.poll()) {
+            let cancelled = self.build.take().is_some_and(|b| b.cancel.load(std::sync::atomic::Ordering::Relaxed));
+            self.pack = hd::pack_dir().map(|d| hd::pack_size(&d)).unwrap_or(0);
+            self.message = Some(match result {
+                Ok(s) => (true, hd::summary_text(&s, cancelled)),
+                Err(e) => (false, format!("Building the HD pack failed: {e:#}")),
+            });
+        }
         if let Some(r) = &mut self.running {
             match r.poll() {
                 None => {}
@@ -107,7 +128,7 @@ impl Launcher {
 impl eframe::App for Launcher {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
-        if matches!(self.scan, Scan::Busy(_)) || self.running.is_some() {
+        if matches!(self.scan, Scan::Busy(_)) || self.running.is_some() || self.build.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
     }
@@ -129,7 +150,7 @@ impl eframe::App for Launcher {
 
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                 ui.add_space(4.0);
-                let ready = catalog.is_some() && self.running.is_none();
+                let ready = catalog.is_some() && self.running.is_none() && self.build.is_none();
                 let text = if self.running.is_some() { "Running…" } else { "Play" };
                 let button = egui::Button::new(egui::RichText::new(text).size(22.0).strong().color(egui::Color32::BLACK))
                     .fill(ACCENT)
@@ -250,6 +271,63 @@ impl Launcher {
                 ui.end_row();
             });
         });
+        ui.add_space(14.0);
+        self.hd_section(ui);
+    }
+
+    fn hd_section(&mut self, ui: &mut egui::Ui) {
+        section(ui, "HD textures (AI upscaled)", |ui| {
+            let upscaler = hd::upscaler(&self.cfg);
+            if let Some(b) = &self.build {
+                let p = b.progress.lock().unwrap().clone();
+                let frac = if p.total == 0 { 0.0 } else { p.done as f32 / p.total as f32 };
+                ui.add(egui::ProgressBar::new(frac).show_percentage().text(format!("{} / {}  {}", p.done, p.total, p.current)));
+                if ui.button("Stop").clicked() {
+                    b.cancel();
+                }
+                return;
+            }
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut self.cfg.hd, "Use HD textures");
+                ui.label(if self.pack > 0 {
+                    format!("({} textures built)", self.pack)
+                } else {
+                    "(none built yet)".to_string()
+                });
+            });
+            ui.checkbox(&mut self.cfg.hd_world, "Also upscale tracks, quads and riders (slower, a few hundred MB)");
+            match &upscaler {
+                Some(u) => {
+                    ui.label(egui::RichText::new(format!("Upscaler: {}", u.exe.display())).size(11.0).weak());
+                }
+                None => {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Needs Real-ESRGAN (ncnn-vulkan). Unzip it next to the launcher, or");
+                        if ui.link("locate it…").clicked() {
+                            if let Some(p) = rfd::FileDialog::new().set_title("Choose realesrgan-ncnn-vulkan").pick_file() {
+                                self.cfg.upscaler = p;
+                            }
+                        }
+                    });
+                    ui.hyperlink_to("Download Real-ESRGAN", atv_hd::UPSCALER_URL);
+                }
+            }
+            ui.horizontal(|ui| {
+                let dir = hd::pack_dir();
+                if ui.add_enabled(upscaler.is_some() && dir.is_some(), egui::Button::new("Build HD pack")).clicked() {
+                    _ = self.cfg.save();
+                    self.message = None;
+                    self.build = Some(hd::Build::start(&self.cfg, upscaler.unwrap(), dir.clone().unwrap()));
+                }
+                if self.pack > 0 && ui.button("Delete pack").clicked() {
+                    if let Some(d) = &dir {
+                        _ = std::fs::remove_dir_all(d);
+                    }
+                    self.pack = 0;
+                }
+            });
+            ui.label(egui::RichText::new("Made on this PC from your own disc. No game art is downloaded or shared.").size(11.0).weak());
+        });
     }
 }
 
@@ -266,8 +344,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("ATV Quad Power Racing 2 Launcher")
-            .with_inner_size([620.0, 520.0])
-            .with_min_inner_size([520.0, 480.0]),
+            .with_inner_size([620.0, 700.0])
+            .with_min_inner_size([520.0, 640.0]),
         ..Default::default()
     };
     eframe::run_native(
