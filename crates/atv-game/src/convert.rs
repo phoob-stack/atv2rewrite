@@ -761,7 +761,11 @@ impl<'a> Loader<'a> {
             let stem = inst.model.trim_end_matches(".clm").trim_end_matches(".CLM");
             if let Some(model) = self.model(stem, &env) {
                 let t = mat_from_xbox(&inst.rotation, inst.scale, inst.pos);
-                self.spawn_model(commands, &model, root, t, Look::Baked);
+                let holder = self.spawn_model(commands, &model, root, t, Look::Baked);
+                if inst.flags.split_whitespace().next().is_some_and(|f| f.eq_ignore_ascii_case("free")) {
+                    let (a, b) = (Vec3::from(flip(model.bbox_min)), Vec3::from(flip(model.bbox_max)));
+                    commands.entity(holder).insert(crate::knock::Knockable::from_box(a.min(b), a.max(b), &t));
+                }
                 props += 1;
             }
         }
