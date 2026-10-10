@@ -3,7 +3,8 @@
 //! drives into one sends it flying; it tumbles under gravity, bounces off
 //! the track and settles where it lands. The original's `.hsc` hulls aren't
 //! needed for this: each prop is an upright cylinder from its model's
-//! bounding box, which is what a quad brushing past it sees.
+//! bounding box, which is what a quad brushing past it sees. Hitting one
+//! knocks the quad, which plays its knock sounds.
 
 use bevy::prelude::*;
 
@@ -49,6 +50,8 @@ struct Tumble {
 const QUAD_RADIUS: f32 = 0.8;
 /// Slower than this (m/s) a quad pushes past without knocking anything.
 const MIN_SPEED: f32 = 1.5;
+/// 5 mph: slower than this a quad's knocks are quiet (0x94480).
+const KNOCK_SPEED: f32 = 2.234_722;
 const GRAVITY: f32 = 9.81;
 /// Longest physics step for a tumbling prop, seconds.
 const MAX_STEP: f32 = 1.0 / 60.0;
@@ -68,7 +71,8 @@ fn launch(v: Vec3, dir: Vec3) -> (Vec3, Vec3) {
 fn hit_props(
     mut commands: Commands,
     player: Option<Res<Player>>,
-    opponents: Option<Res<crate::opponents::Opponents>>,
+    mut opponents: Option<ResMut<crate::opponents::Opponents>>,
+    mut wreck: Option<ResMut<crate::crash::Wreck>>,
     mut props: Query<(Entity, &Transform, &Knockable, Option<&mut Tumble>)>,
     mut last: Local<Vec<Vec3>>,
 ) {
@@ -79,17 +83,17 @@ fn hit_props(
         .chain(opponents.iter().flat_map(|o| o.racers.iter().map(|r| &r.vehicle)))
         .map(|v| (v.position, v.velocity))
         .collect();
-    let quads: Vec<(Vec3, Vec3, Vec3)> = now
+    let quads: Vec<(usize, Vec3, Vec3, Vec3)> = now
         .iter()
         .enumerate()
-        .map(|(i, &(at, v))| (last.get(i).copied().filter(|p| p.distance(at) < 10.0).unwrap_or(at), at, v))
+        .map(|(i, &(at, v))| (i, last.get(i).copied().filter(|p| p.distance(at) < 10.0).unwrap_or(at), at, v))
         .filter(|(.., v)| v.length() > MIN_SPEED)
         .collect();
     *last = now.iter().map(|q| q.0).collect();
     for (e, t, k, tumble) in &mut props {
         let centre = t.transform_point(k.centre);
         let base = t.translation.y.min(centre.y - k.height * 0.5);
-        for &(from, to, v) in &quads {
+        for &(quad, from, to, v) in &quads {
             let at = closest_on_segment(from, to, centre);
             let off = (centre - at).with_y(0.0);
             let reach = k.radius + QUAD_RADIUS;
@@ -106,6 +110,20 @@ fn hit_props(
             }
             let dir = off.normalize_or(v.with_y(0.0).normalize_or(Vec3::X));
             let (velocity, spin) = launch(v, dir);
+            // The original's props are physics bodies, so hitting one is a
+            // knock on the quad like any other (0x1aeb0 sums every contact
+            // into the impact 0x94480 sounds): over 5 mph, by how hard.
+            if v.length() >= KNOCK_SPEED {
+                let hit = v.dot(dir).max(0.0);
+                let knock = if quad == 0 {
+                    wreck.as_mut().map(|w| &mut w.knock)
+                } else {
+                    opponents.as_mut().and_then(|o| o.racers.get_mut(quad - 1)).map(|r| &mut r.wreck.knock)
+                };
+                if let Some(k) = knock {
+                    *k = k.max(hit);
+                }
+            }
             debug!("knocked a prop at {centre:.1} (quad at {:.1} m/s)", v.length());
             match tumble {
                 Some(mut t) => {
