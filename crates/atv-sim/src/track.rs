@@ -201,18 +201,19 @@ pub fn start_pose(world: &World, collision: &TrackCollision, n: usize) -> (Vec3,
     (pos.with_y(ground + 0.6), rot)
 }
 
-/// Checkpoint gate centres in lap order ("Checkpoint 2" .. "Checkpoint N").
+/// A lap checkpoint's number: `Checkpoint N` (any case, words may follow),
+/// or 1 for the start line, `Startpoint 1`. The original reads both the
+/// same way, the number after the first ten letters (0x65c50).
+pub fn checkpoint_number(name: &str) -> Option<u32> {
+    let name = name.trim().to_ascii_lowercase();
+    let rest = name.strip_prefix("checkpoint ").or_else(|| name.strip_prefix("startpoint "))?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
+/// Checkpoint gate centres in lap order: the start/finish line
+/// ("Startpoint 1"), then "Checkpoint 2" .. "Checkpoint N".
 pub fn checkpoints(world: &World) -> Vec<Vec3> {
-    let mut cps: Vec<(u32, Vec3)> = world
-        .locators
-        .iter()
-        .filter_map(|l| {
-            let name = l.name.trim().to_ascii_lowercase();
-            let rest = name.strip_prefix("checkpoint ")?;
-            let n: u32 = rest.split_whitespace().next()?.parse().ok()?;
-            Some((n, to_sim(l.pos)))
-        })
-        .collect();
+    let mut cps: Vec<(u32, Vec3)> = world.locators.iter().filter_map(|l| Some((checkpoint_number(&l.name)?, to_sim(l.pos)))).collect();
     cps.sort_by_key(|c| c.0);
     cps.dedup_by_key(|c| c.0);
     cps.into_iter().map(|c| c.1).collect()

@@ -190,7 +190,10 @@ follow the same corner order. Shadow decal textures (`*_shad`, `*shadow*`)
 mark shadow as bright texels on black, or in alpha.
 Locators named `Start1`..`Start8` are the 2.5 m grid boxes; `Checkpoint N`,
 `Respot`, `waterbox` and weather zones (`snow .. mist .. tint ..`) are boxes
-too. A `waterbox` (matched case-insensitively, 0x101030) is deep water:
+too. `Startpoint 1` is the start/finish line and is checkpoint 1: 0x65c50
+reads the number after the first ten letters of either name, so a lap runs
+from the line through `Checkpoint 2` .. `Checkpoint N` and back to it (no
+track has a `Checkpoint 1`). A `waterbox` (matched case-insensitively, 0x101030) is deep water:
 its top, `pos.y + scale.y / 2`, is the surface, and anything over its
 footprint (`scale.x` by `scale.z` along the first and third rotation
 rows) counts, however far down. Forest's tops match its water meshes to
