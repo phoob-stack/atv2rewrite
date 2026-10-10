@@ -1,0 +1,180 @@
+//! Poses the rider on the quad from the game's own riding animations.
+//!
+//! The riding clips (`Animations/Generic/Bac`) each run from the neutral
+//! seated pose to a full lean. The rider leans into turns (`turn_right1`,
+//! mirrored for left turns), shifts weight forward and back with the lean
+//! control (`leen_forward`, `leen_back`) and crouches while the suspension
+//! is pre-loaded for a hop (`landing`, whose middle is the deepest crouch).
+//! Forward/back lean and crouch are layered on the turn pose as offsets from
+//! each clip's first frame.
+
+use anyhow::Result;
+use bevy::prelude::*;
+
+use atv_formats::GameSource;
+use atv_formats::anim::{Animation, SkelInfo};
+
+use crate::convert::RiderRig;
+
+const CLIP_DIR: &str = "/Animations/Generic/Bac/";
+
+/// One bone's local transform (Bevy space).
+#[derive(Clone, Copy)]
+struct BonePose {
+    position: Vec3,
+    rotation: Quat,
+}
+
+/// A clip resampled into Bevy space: `frames[frame][bone]`.
+struct Clip {
+    frames: Vec<Vec<BonePose>>,
+}
+
+impl Clip {
+    fn load(game: &GameSource, name: &str) -> Result<Self> {
+        let anim = Animation::parse(&game.read(&format!("{CLIP_DIR}{name}.bac"))?)?;
+        anyhow::ensure!(anim.frame_count > 0, "{name}: no frames");
+        let frames = (0..anim.frame_count)
+            .map(|f| {
+                (0..anim.bone_count)
+                    .map(|b| {
+                        let k = anim.key(b, f);
+                        let [x, y, z, w] = k.rotation;
+                        // Z-mirror into Bevy's right-handed space.
+                        BonePose {
+                            position: Vec3::new(k.position[0], k.position[1], -k.position[2]),
+                            rotation: Quat::from_xyzw(-x, -y, z, w).normalize(),
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        Ok(Clip { frames })
+    }
+
+    /// Left-right mirror image, swapping paired bones.
+    fn mirrored(&self, map: &[usize]) -> Self {
+        let frames = self
+            .frames
+            .iter()
+            .map(|pose| {
+                (0..pose.len())
+                    .map(|b| {
+                        let p = pose[map.get(b).copied().unwrap_or(b).min(pose.len() - 1)];
+                        let q = p.rotation;
+                        BonePose {
+                            position: p.position * Vec3::new(-1.0, 1.0, 1.0),
+                            rotation: Quat::from_xyzw(q.x, -q.y, -q.z, q.w),
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        Clip { frames }
+    }
+
+    /// Pose at `t` (0 = first frame, 1 = last), interpolating frames.
+    fn sample(&self, t: f32) -> Vec<BonePose> {
+        let last = self.frames.len() - 1;
+        let f = t.clamp(0.0, 1.0) * last as f32;
+        let (i, s) = (f.floor() as usize, f.fract());
+        let (a, b) = (&self.frames[i], &self.frames[(i + 1).min(last)]);
+        a.iter()
+            .zip(b)
+            .map(|(a, b)| BonePose { position: a.position.lerp(b.position, s), rotation: a.rotation.slerp(b.rotation, s) })
+            .collect()
+    }
+}
+
+#[derive(Component)]
+pub struct Rider {
+    joints: Vec<Entity>,
+    offsets: Vec<Vec3>,
+    turn_right: Clip,
+    turn_left: Clip,
+    forward: Clip,
+    back: Clip,
+    crouch: Clip,
+    /// Smoothed controls driving the pose.
+    steer: f32,
+    lean: f32,
+    preload: f32,
+}
+
+/// How far into each clip the controls go. The clips end in extreme poses
+/// (hanging off the side, standing on the pegs); a full input reaches this.
+const TURN_REACH: f32 = 0.6;
+const LEAN_REACH: f32 = 0.8;
+/// The deepest crouch is the middle of the landing clip.
+const CROUCH_REACH: f32 = 0.5;
+
+impl Rider {
+    pub fn new(game: &GameSource, rig: RiderRig) -> Result<Self> {
+        let skel = game.read("/Characters/Skeletons/atvrider.skel").map(|b| SkelInfo::parse(&String::from_utf8_lossy(&b)));
+        let map = skel.unwrap_or_default().mirror_map(rig.joints.len());
+        let turn_right = Clip::load(game, "turn_right1")?;
+        let turn_left = turn_right.mirrored(&map);
+        let bones = rig.joints.len();
+        let rider = Rider {
+            joints: rig.joints,
+            offsets: rig.offsets,
+            turn_right,
+            turn_left,
+            forward: Clip::load(game, "leen_forward")?,
+            back: Clip::load(game, "leen_back")?,
+            crouch: Clip::load(game, "landing")?,
+            steer: 0.0,
+            lean: 0.0,
+            preload: 0.0,
+        };
+        for c in [&rider.turn_right, &rider.forward, &rider.back, &rider.crouch] {
+            anyhow::ensure!(c.frames[0].len() == bones, "riding clip has {} bones, skeleton {bones}", c.frames[0].len());
+        }
+        Ok(rider)
+    }
+
+    /// Eases the controls towards their targets.
+    pub fn update_controls(&mut self, steer: f32, lean: f32, preload: f32, dt: f32) {
+        let k = 1.0 - (-8.0 * dt).exp();
+        self.steer += (steer.clamp(-1.0, 1.0) - self.steer) * k;
+        self.lean += (lean.clamp(-1.0, 1.0) - self.lean) * k;
+        self.preload += (preload.clamp(0.0, 1.0) - self.preload) * k;
+    }
+
+    /// Local transform of every joint for the current controls.
+    fn pose(&self) -> Vec<Transform> {
+        let turn = if self.steer >= 0.0 { &self.turn_right } else { &self.turn_left };
+        let base = turn.sample(self.steer.abs() * TURN_REACH);
+        let lean = if self.lean >= 0.0 { &self.forward } else { &self.back };
+        let layers = [
+            (lean, self.lean.abs() * LEAN_REACH),
+            (&self.crouch, self.preload * CROUCH_REACH),
+        ];
+        let layers: Vec<(&Vec<BonePose>, Vec<BonePose>)> =
+            layers.iter().map(|(c, t)| (&c.frames[0], c.sample(*t))).collect();
+        base.iter()
+            .enumerate()
+            .map(|(b, p)| {
+                let mut rotation = p.rotation;
+                let mut position = if b == 0 { p.position } else { self.offsets[b] };
+                for (rest, pose) in &layers {
+                    rotation = rotation * (rest[b].rotation.inverse() * pose[b].rotation);
+                    if b == 0 {
+                        position += pose[b].position - rest[b].position;
+                    }
+                }
+                Transform { translation: position, rotation: rotation.normalize(), scale: Vec3::ONE }
+            })
+            .collect()
+    }
+}
+
+pub fn pose_riders(riders: Query<&Rider>, mut joints: Query<&mut Transform>) {
+    for rider in &riders {
+        for (e, t) in rider.joints.iter().zip(rider.pose()) {
+            if let Ok(mut jt) = joints.get_mut(*e) {
+                *jt = t;
+            }
+        }
+    }
+}

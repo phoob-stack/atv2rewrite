@@ -66,10 +66,10 @@ Levels 856, shaders 75, other 116).
 | `.cam` | 17 | `CAM v1.00` | Tiny camera header. | To do. |
 | `.roo` | 1 | `OBJECT` | Object placement. | To do. |
 | `Levels/*/World/*.xml` | | XML | Object placements (cameras, triggers, positions, matrices). | Readable text. |
-| `.bas` | 48 | `BAS 1.02` | Character skeleton/base pose. | To do. |
-| `.bac` | 121 | `BAC 1.03` | Rider animations (celebrations, crashes, idle). | To do. |
+| `.bas` | 48 | `BAS 1.02` | Rider skeleton in its bind (T-) pose. | **Decoded.** See below. |
+| `.bac` | 121 | `BAC 1.03` | Rider animations (riding leans, celebrations, crashes, idle). | **Decoded** (117; the four `*_bike` stunt files and `punch_floor` have another layout). |
 | `.cuban` | 91 | `CUBAN 1.02` | Compressed or curve animations (crashes). | To do. |
-| `.skel` | 1 | text | Rider skeleton definition (31 bones, mirror pairs). | Readable text. |
+| `.skel` | 1 | text | Rider skeleton definition (31 bones, mirror pairs, two-bone limbs). | Mirror pairs read. |
 | `.pts` | 11 | `POINT 1.00` | Named vehicle hard-points (wheel centres etc.). | Simple, to do. |
 | `.params` | 12 | text | Vehicle physics tuning (torque, gearing, preload, air resistance). | Readable text. |
 | `.bed` | 35 | binary | Sprite-sheet layouts for `.bog` texture pages (UI, particles). | To do. |
@@ -102,17 +102,44 @@ Levels 856, shaders 75, other 116).
      sprites    0x68 each: kind[32] ("faceme"), material[32], 10 floats
      nodes:     i32 header[5], u32 tris, u32 patches, u32 0, u32 verts,
                 i32 -1 x3, u32 idx[tris*3], vertex[verts], patch[patches]
-vertex (56 B): pos3, normal3, uv2, 4 floats (always 0), u32 ARGB, u32 pad
-patch (672 B): u32 mode,0,0; X[16], Y[16], Z[16] (4x4 Bezier control
-     points, SoA); uv[16] pairs (mode 1) or 4 corner pairs (mode 0); an
-     overlay-layer UV block; u32 colour[4] at word 148; i32 -1 x16.
+vertex (56 B): pos3, normal3, uv2, 4 floats (overlay uv2 + 2 unused),
+     u32 ARGB, u32 bone (riders; 0 elsewhere)
+patch (672 B): u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16]
+     (4x4 Bezier control points, SoA); u32 0; uv, uv2, uv3 nets at words
+     52, 84, 116 (16 pairs, corners-first like track patches; only the 4
+     corners are valid when the flag is 0); u32 colour[4] at word 148;
+     i32 bone[16] at word 152 (one per control point in riders, -1
+     elsewhere).
 ```
+Quad paint atlases (`Tpage*`) and `GEN_Tyre` keep a gloss mask in alpha
+(shiny plastic opaque, seat and rubber clear; the tyre tread pattern);
+it is not coverage. `GEN_components` alpha is real cut-out coverage.
 Node header[1] is the base material, header[2] the overlay material (mud,
 tyre dirt), header[0] probably a render group. Vertex colours are baked
 light with 0x80 = 1.0 (Xbox MODULATE2X); vertex alpha drives effects, not
 coverage. Quads are assembled from parts placed at the body's named points
 (`handlebarscentre`, `flsuspcentre`, `rwheelcentre`...); wheels live in
 `Cars/Generic` and the right front wheel is the left one mirrored.
+
+## Riders: BAS skeletons, BAC animations
+
+```
+BAS: "BAS 1.02\0" + 3 pad, u32 bones (31), then 32 B per bone:
+     f32 offset[3] (from parent), f32 quat[4] (x,y,z,w; identity),
+     u32 child_count  -- bones are depth-first, so counts give the tree
+BAC: "BAC 1.03\0" + 3 pad, u32 bones, u32 frames, then bone-major keys,
+     28 B each: f32 pos[3], f32 quat[4] (x,y,z,w), parent-relative
+```
+Tree: 0 pelvis; 1-3 spine; 4-6 neck/head; 7-14 left arm (7 clavicle,
+8 upper arm, 9 forearm, 10 wrist, 11-12 hand, 13-14 shoulder); 15-22 the
+right arm likewise; 23-26 right leg (hip, knee, ankle, toe); 27-30 left
+leg. Left is -X. All riders share the tree and differ in bone lengths;
+the mesh is in the bind pose (a T-pose around the pelvis) and rigidly
+skinned: one bone per vertex or patch control point. A BAC root key is in
+quad-model space (every quad has the same saddle, handle and footpeg
+points, so the riding clips fit them all); the riding clips
+(`Generic/Bac/leen_*`, `lean_side_right`, `turn_right1`, `powerslide`,
+`landing`) start from the seated pose and end at a full lean.
 
 ## ROW 2.25 track worlds (mostly decoded in step 2)
 
@@ -128,7 +155,22 @@ coverage. Quads are assembled from parts placed at the body's named points
 mesh block: u32 flags, i32 material, i32 material2, i32, u32 tris,
      u32 verts, u32 patches, u32 0, i32 x3, idx, vertex (52 B, no pad),
      patch (604 B, colours at word 147, no adjacency tail)
+vertex:     pos, normal, uv, uv2, 2 floats, u32 ARGB
+patch:      u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16];
+            three 16-pair UV nets at words 51, 83 and 115; ARGB[4] at 147
 ```
+Mesh flags: 0x1 has patches, 0x2 alpha-tested (foliage, fences), 0x2000
+water, 0x4000 foam/wake, 0x8000 baked shadow decal. Material -1 is
+invisible collision-only geometry. `material2` is an overlay layer (grass
+strips, tyre tracks, the checker on inflatable arches) drawn over the base
+with the second UV set, weighted by vertex alpha.
+
+Patch UV nets list the four corners first (control points 0, 12, 15, 3),
+then the inner points of the 0-12 edge, the two inner columns, and the
+inner points of the 3-15 edge. A net whose `*_full` flag is 0 holds only
+its corners; the rest of the record is stale memory. Corner colours
+follow the same corner order. Shadow decal textures (`*_shad`, `*shadow*`)
+mark shadow as bright texels on black, or in alpha.
 Locators named `Start1`..`Start8` are the 2.5 m grid boxes; `Checkpoint N`,
 `Respot`, `waterbox` and weather zones (`snow .. mist .. tint ..`) are boxes
 too. Mesh blocks are currently found by validating candidate headers, which
@@ -138,5 +180,5 @@ and will give the visibility structure.
 ## Still unknown
 
 `.kdt` (likely collision tree), `.hsc` (prop collision hulls), `.aid` (AI
-lines), `.nin`, `.viz`, `.bac`/`.cuban`/`.bas` (animation), `.xwb` (sound),
+lines), `.nin`, `.viz`, `.cuban` (compressed animation), `.xwb` (sound),
 the ROW spatial tree and effect records, and the material record fields.

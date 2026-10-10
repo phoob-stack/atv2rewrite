@@ -15,7 +15,15 @@
 //! node: i32 x5 header, u32 tri_count, u32 patch_count, u32 0, u32 vertex_count,
 //!       i32 -1 x3, u32 indices[tri_count*3], Vertex[vertex_count],
 //!       Patch[patch_count]
+//! vertex (56 B): pos, normal, uv, overlay uv, 2 floats, u32 ARGB, u32 bone
+//! patch (672 B): u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16];
+//!       u32 0; uv, uv2, uv3 nets (16 pairs each, see `NET_ORDER`; only the
+//!       4 corners are valid when the flag is 0); u32 ARGB[4] at word 148;
+//!       i32 bone[16] at word 152 (-1 when unskinned)
 //! ```
+//! Node header: [kind, material, overlay material, -1, ?]. The overlay
+//! (quad mud, tyre dust) uses the second UV set: vertex `extra[0..2]` and
+//! the patch uv2 net.
 
 use crate::bin::Reader;
 use crate::{Error, Result};
@@ -25,13 +33,16 @@ pub struct Vertex {
     pub pos: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
-    /// Four floats that are zero in every model seen so far.
+    /// Four floats: a second (overlay) UV pair, then two unused. Zero in
+    /// most models; riders use the pair for their mud layer.
     pub extra: [f32; 4],
     /// Vertex colour as stored (0xAARRGGBB).
     pub color: u32,
+    /// Skeleton bone the vertex follows (riders; 0 in unskinned models).
+    pub bone: u32,
 }
 
-/// Bicubic Bezier patch (used for curved bodywork).
+/// Bicubic Bezier patch (curved bodywork, and most of each track's road).
 #[derive(Debug, Clone)]
 pub struct Patch {
     pub header: [u32; 3],
@@ -39,16 +50,33 @@ pub struct Patch {
     pub control: [[f32; 3]; 16],
     /// Texture coordinate per control point (row-major). Patches with
     /// header[0] == 1 store all 16; others store only the four corners,
-    /// which are spread bilinearly here.
+    /// which are spread bilinearly here. See `NET_ORDER` for the stored
+    /// order.
     pub uv: [[f32; 2]; 16],
-    /// Corner colours (0xAARRGGBB).
+    /// Second (overlay) layer texture coordinates, laid out like `uv`
+    /// (full when header[1] == 1).
+    pub uv2: [[f32; 2]; 16],
+    /// Corner colours (0xAARRGGBB) at control points 0, 3, 15 and 12, i.e.
+    /// (u,v) = (0,0), (1,0), (1,1), (0,1) on the tessellated grid.
     pub corner_color: [u32; 4],
+    /// Skeleton bone per control point (row-major) for riders; -1 in
+    /// unskinned models.
+    pub bones: [i32; 16],
+}
+
+/// A tessellated patch: an (n+1) x (n+1) vertex grid, row-major.
+pub struct Tessellation {
+    pub pos: Vec<[f32; 3]>,
+    pub uv: Vec<[f32; 2]>,
+    pub uv2: Vec<[f32; 2]>,
+    pub indices: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Node {
-    /// Five header ints. Field 1 looks like the main material index (-1 for
-    /// none); fields 0 and 2..4 are not yet understood.
+    /// Five header ints. Field 1 is the material index (-1 for none) and
+    /// field 2 the overlay material drawn with the second UV set; field 0
+    /// is 0/2 for triangles and 1/3 for patches; field 4 is not understood.
     pub header: [i32; 5],
     pub indices: Vec<u32>,
     pub vertices: Vec<Vertex>,
@@ -164,8 +192,8 @@ impl Model {
                     uv: r.vec2()?,
                     extra: r.f32s::<4>()?,
                     color: r.u32()?,
+                    bone: r.u32()?,
                 };
-                r.u32()?;
                 vertices.push(v);
             }
             let mut patches = Vec::with_capacity(npatch);
@@ -175,12 +203,26 @@ impl Model {
                 let xs = r.f32s::<16>()?;
                 let ys = r.f32s::<16>()?;
                 let zs = r.f32s::<16>()?;
+                // One word (always 0 so far) that track patches don't have.
+                r.skip(4)?;
                 let uv = r.f32s::<32>()?;
+                let uv2 = r.f32s::<32>()?;
                 r.seek(start + 148 * 4);
-                let corner_color = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
+                let c = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
+                let mut bones = [-1i32; 16];
+                for b in &mut bones {
+                    *b = r.i32()?;
+                }
                 r.seek(start + PATCH_SIZE);
-                let control = std::array::from_fn(|i| [xs[i], ys[i], zs[i]]);
-                patches.push(Patch { header, control, uv: Patch::uvs(header[0], &uv), corner_color });
+                patches.push(Patch {
+                    header,
+                    control: std::array::from_fn(|i| [xs[i], ys[i], zs[i]]),
+                    uv: patch_uvs(header[0] == 1, &uv),
+                    uv2: patch_uvs(header[1] == 1, &uv2),
+                    // Stored in the same corner order as the UV nets.
+                    corner_color: [c[0], c[3], c[2], c[1]],
+                    bones,
+                });
             }
             nodes.push(Node { header, indices, vertices, patches });
         }
@@ -191,64 +233,66 @@ impl Model {
     }
 }
 
-impl Patch {
-    pub(crate) fn uvs(mode: u32, raw: &[f32; 32]) -> [[f32; 2]; 16] {
-        if mode == 1 {
-            return std::array::from_fn(|i| [raw[i * 2], raw[i * 2 + 1]]);
-        }
-        let c = |i: usize| [raw[i * 2], raw[i * 2 + 1]];
-        let (a, b, cc, d) = (c(0), c(1), c(2), c(3));
-        std::array::from_fn(|i| {
-            let (u, v) = ((i % 4) as f32 / 3.0, (i / 4) as f32 / 3.0);
-            let lerp = |k: usize| (a[k] * (1.0 - u) + b[k] * u) * (1.0 - v) + (d[k] * (1.0 - u) + cc[k] * u) * v;
-            [lerp(0), lerp(1)]
-        })
-    }
+/// Control-point index (row-major) -> position in a stored UV net. Nets
+/// list the four corners first (control points 0, 12, 15, 3), then the
+/// inner points of the 0-12 edge, the two inner columns, and the inner
+/// points of the 3-15 edge.
+pub(crate) const NET_ORDER: [usize; 16] = [0, 6, 10, 3, 4, 7, 11, 14, 5, 8, 12, 15, 1, 9, 13, 2];
 
-    /// Evaluates the patch on an (n+1) x (n+1) grid; returns positions, uvs
-    /// and triangle indices.
-    pub fn tessellate(&self, n: usize) -> (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<u32>) {
+/// One layer of patch texture coordinates: a full 16-point net, or only the
+/// four corners (the rest of the record is then stale memory) spread
+/// bilinearly.
+pub(crate) fn patch_uvs(full: bool, raw: &[f32; 32]) -> [[f32; 2]; 16] {
+    let at = |i: usize| [raw[i * 2], raw[i * 2 + 1]];
+    if full {
+        return std::array::from_fn(|k| at(NET_ORDER[k]));
+    }
+    let (c0, c1, c2, c3) = (at(0), at(1), at(2), at(3));
+    std::array::from_fn(|k| {
+        let (s, t) = ((k / 4) as f32 / 3.0, (k % 4) as f32 / 3.0);
+        std::array::from_fn(|d| {
+            c0[d] * (1.0 - s) * (1.0 - t) + c1[d] * s * (1.0 - t) + c2[d] * s * t + c3[d] * (1.0 - s) * t
+        })
+    })
+}
+
+impl Patch {
+    /// Evaluates the patch on an (n+1) x (n+1) grid (u along control-point
+    /// columns, v along rows).
+    pub fn tessellate(&self, n: usize) -> Tessellation {
         fn bern(t: f32) -> [f32; 4] {
             let s = 1.0 - t;
             [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t]
         }
-        let mut pos = Vec::new();
-        let mut uv = Vec::new();
+        fn eval<const D: usize>(net: &[[f32; D]; 16], bu: &[f32; 4], bv: &[f32; 4]) -> [f32; D] {
+            let mut p = [0.0f32; D];
+            for (row, wv) in bv.iter().enumerate() {
+                for (col, wu) in bu.iter().enumerate() {
+                    let c = net[row * 4 + col];
+                    for k in 0..D {
+                        p[k] += c[k] * wu * wv;
+                    }
+                }
+            }
+            p
+        }
+        let mut t = Tessellation { pos: Vec::new(), uv: Vec::new(), uv2: Vec::new(), indices: Vec::new() };
         for j in 0..=n {
-            let v = j as f32 / n as f32;
-            let bv = bern(v);
+            let bv = bern(j as f32 / n as f32);
             for i in 0..=n {
-                let u = i as f32 / n as f32;
-                let bu = bern(u);
-                let mut p = [0.0f32; 3];
-                for (row, wv) in bv.iter().enumerate() {
-                    for (col, wu) in bu.iter().enumerate() {
-                        let c = self.control[row * 4 + col];
-                        for k in 0..3 {
-                            p[k] += c[k] * wu * wv;
-                        }
-                    }
-                }
-                pos.push(p);
-                let mut t = [0.0f32; 2];
-                for (row, wv) in bv.iter().enumerate() {
-                    for (col, wu) in bu.iter().enumerate() {
-                        let c = self.uv[row * 4 + col];
-                        t[0] += c[0] * wu * wv;
-                        t[1] += c[1] * wu * wv;
-                    }
-                }
-                uv.push(t);
+                let bu = bern(i as f32 / n as f32);
+                t.pos.push(eval(&self.control, &bu, &bv));
+                t.uv.push(eval(&self.uv, &bu, &bv));
+                t.uv2.push(eval(&self.uv2, &bu, &bv));
             }
         }
-        let mut idx = Vec::new();
         let w = (n + 1) as u32;
         for j in 0..n as u32 {
             for i in 0..n as u32 {
                 let a = j * w + i;
-                idx.extend_from_slice(&[a, a + 1, a + w, a + 1, a + w + 1, a + w]);
+                t.indices.extend_from_slice(&[a, a + 1, a + w, a + 1, a + w + 1, a + w]);
             }
         }
-        (pos, uv, idx)
+        t
     }
 }

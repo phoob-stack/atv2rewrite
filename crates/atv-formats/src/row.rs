@@ -20,13 +20,24 @@
 //!             u32 vertex_count, u32 patch_count, u32 patch_count2, i32 x3,
 //!             u32 indices[tri_count*3], Vertex[vertex_count] (52 bytes),
 //!             Patch[patch_count] (604 bytes)
+//! vertex:     pos, normal, uv, uv2 (overlay layer), 2 floats, u32 ARGB
+//! patch:      u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16];
+//!             uv net, uv2 net, uv3 net (16 pairs each, see `rom::NET_ORDER`;
+//!             only the 4 corners are valid when the flag is 0);
+//!             u32 ARGB[4] at word 147
 //! ```
+//! Mesh flags seen: 0x0001 has patches, 0x0002 alpha-tested (foliage,
+//! fences), 0x2000 water, 0x4000 foam/wake, 0x8000 baked shadow decal.
+//! Materials of -1 are invisible (collision-only) geometry.
+//!
+//! Material 2 is an overlay layer (grass strips, tyre tracks, decals)
+//! drawn over the base with the second UV set; vertex alpha is its weight.
 //! The spatial tree between mesh blocks is not decoded yet; mesh blocks are
 //! found by validating every candidate header. What's left between them
 //! (95-99% of each file is accounted for) is 48-byte tree nodes.
 
 use crate::bin::Reader;
-use crate::rom::{Locator, Patch, Sprite, Vertex};
+use crate::rom::{patch_uvs, Locator, Patch, Sprite, Vertex};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone)]
@@ -198,6 +209,7 @@ fn try_mesh(
             uv: r.vec2()?,
             extra: r.f32s::<4>()?,
             color: r.u32()?,
+            bone: 0,
         });
     }
     let mut patches = Vec::with_capacity(npatch);
@@ -211,14 +223,18 @@ fn try_mesh(
         let ys = r.f32s::<16>()?;
         let zs = r.f32s::<16>()?;
         let uv = r.f32s::<32>()?;
+        let uv2 = r.f32s::<32>()?;
         r.seek(start + 147 * 4);
-        let corner_color = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
+        let c = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
         r.seek(start + PATCH_SIZE);
         patches.push(Patch {
             header,
             control: std::array::from_fn(|k| [xs[k], ys[k], zs[k]]),
-            uv: Patch::uvs(header[0], &uv),
-            corner_color,
+            uv: patch_uvs(header[0] == 1, &uv),
+            uv2: patch_uvs(header[1] == 1, &uv2),
+            // Stored in the same corner order as the UV nets.
+            corner_color: [c[0], c[3], c[2], c[1]],
+            bones: [-1; 16],
         });
     }
     Ok(Some((

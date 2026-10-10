@@ -2,34 +2,49 @@
 //! the player's own copy of the game.
 //!
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
+//!             [--rider Male1]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
-//!             [--camera x,y,z,tx,ty,tz]
+//!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
+//!             [--resolution 1280x720] [--fullscreen]
 
 mod convert;
+mod rider;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton};
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
+use bevy::light::GlobalAmbientLight;
+use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
+use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+use bevy::window::{MonitorSelection, WindowMode};
 
 use atv_formats::GameSource;
 use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
-use convert::WheelVisual;
+use convert::{SkyDome, WheelVisual};
+use rider::Rider;
 
 #[derive(Resource, Clone)]
 struct Args {
     game: PathBuf,
     track: String,
     quad: String,
+    rider: String,
     screenshot: Option<PathBuf>,
     screenshot_after: f32,
     camera: Option<[f32; 6]>,
+    /// Fixed close-up of the quad on the grid: degrees around it (0 = in
+    /// front), degrees above it, metres away.
+    orbit: Option<[f32; 3]>,
     autodrive: bool,
+    resolution: (u32, u32),
+    fullscreen: bool,
 }
 
 #[derive(Resource, Clone)]
@@ -50,11 +65,18 @@ struct Race {
 #[derive(Resource)]
 struct Player(Vehicle);
 
+/// The controls applied on the last physics step (the rider follows them).
+#[derive(Resource, Default)]
+struct Controls(Input);
+
 #[derive(Component)]
 struct QuadBody;
 
 #[derive(Component)]
-struct ChaseCam;
+struct ChaseCam {
+    /// Smoothed position before pulling in for terrain.
+    ideal: Vec3,
+}
 
 #[derive(Component)]
 struct FlyCam {
@@ -70,10 +92,14 @@ fn parse_args() -> anyhow::Result<Args> {
         game: std::env::var_os("ATV2_GAME").map(PathBuf::from).unwrap_or_default(),
         track: "Dunes1".into(),
         quad: "Bandit".into(),
+        rider: "Male1".into(),
         screenshot: None,
         screenshot_after: 8.0,
         camera: None,
+        orbit: None,
         autodrive: false,
+        resolution: (1280, 720),
+        fullscreen: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -82,12 +108,23 @@ fn parse_args() -> anyhow::Result<Args> {
             "--game" => a.game = PathBuf::from(val()),
             "--track" => a.track = val(),
             "--quad" => a.quad = val(),
+            "--rider" => a.rider = val(),
             "--screenshot" => a.screenshot = Some(PathBuf::from(val())),
             "--after" => a.screenshot_after = val().parse()?,
             "--autodrive" => a.autodrive = true,
+            "--fullscreen" => a.fullscreen = true,
+            "--resolution" => {
+                let v = val();
+                let (w, h) = v.split_once('x').ok_or_else(|| anyhow::anyhow!("--resolution wants WIDTHxHEIGHT, got {v}"))?;
+                a.resolution = (w.parse()?, h.parse()?);
+            }
             "--camera" => {
                 let v: Vec<f32> = val().split(',').filter_map(|s| s.trim().parse().ok()).collect();
                 a.camera = v.try_into().ok();
+            }
+            "--orbit" => {
+                let v: Vec<f32> = val().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                a.orbit = v.try_into().ok();
             }
             other => anyhow::bail!("unknown argument {other}"),
         }
@@ -105,7 +142,12 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "ATV Quad Power Racing 2".into(),
-                resolution: (1280, 720).into(),
+                resolution: args.resolution.into(),
+                mode: if args.fullscreen {
+                    WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+                } else {
+                    WindowMode::Windowed
+                },
                 ..default()
             }),
             ..default()
@@ -116,7 +158,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(game)
         .add_systems(Startup, setup)
         .add_systems(FixedUpdate, drive)
-        .add_systems(Update, (sync_quad, chase_camera, fly_camera, hud, auto_screenshot).chain())
+        .add_systems(Update, (sync_quad, animate_rider, rider::pose_riders, chase_camera, fly_camera, follow_sky, hud, auto_screenshot).chain())
         .run();
     Ok(())
 }
@@ -128,6 +170,9 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+    mut clear: ResMut<ClearColor>,
+    mut ambient: ResMut<GlobalAmbientLight>,
 ) {
     let mut loader = convert::Loader::new(&game.0, &mut meshes, &mut materials, &mut images);
     let scene = match loader.spawn_track(&mut commands, &args.track) {
@@ -152,6 +197,19 @@ fn setup(
     match loader.spawn_quad(&mut commands, &args.quad, at, &wheel_x) {
         Ok(e) => {
             commands.entity(e).insert(QuadBody);
+            // The riding animations are in the quad model's space, which
+            // hangs below the physics body like the quad's own model.
+            let seat = commands.spawn((Transform::from_xyz(0.0, -convert::COM_HEIGHT, 0.0), Visibility::default())).id();
+            commands.entity(e).add_child(seat);
+            let rider = loader
+                .spawn_rider(&mut commands, &mut bindposes, &args.rider, seat)
+                .and_then(|rig| Rider::new(&game.0, rig));
+            match rider {
+                Ok(r) => {
+                    commands.entity(seat).insert(r);
+                }
+                Err(e) => error!("failed to load rider {}: {e:#}", args.rider),
+            }
         }
         Err(e) => error!("failed to load quad {}: {e:#}", args.quad),
     }
@@ -164,16 +222,58 @@ fn setup(
         checkpoints.len()
     );
 
+    // The world's lighting is baked into vertex colours; only the quad is
+    // lit, by the track's sun and ambient lights.
+    // Light colours use the same 0x80 = 1.0 scale as vertex colours.
+    let rgb = |c: [f32; 3]| Color::linear_rgb(c[0] / 128.0, c[1] / 128.0, c[2] / 128.0);
+    ambient.brightness = 1200.0;
+    let mut sun = (Vec3::new(0.3, -0.8, -0.5), Color::linear_rgb(0.8, 0.8, 0.8));
+    for l in &scene.world.lights {
+        match l.name.to_ascii_lowercase().as_str() {
+            "sun" => sun = (trk::to_sim(l.dir), rgb(l.color)),
+            "ambient" => ambient.color = rgb(l.color),
+            _ => {}
+        }
+    }
+    commands.spawn((
+        DirectionalLight { color: sun.1, illuminance: 6000.0, ..default() },
+        Transform::default().looking_to(sun.0.normalize_or(Vec3::NEG_Y), Vec3::Y),
+    ));
+    let fog_color = {
+        let c = scene.world.fog_color;
+        Color::srgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8)
+    };
+    clear.0 = fog_color;
+    let view = (
+        Camera3d::default(),
+        // Colours are baked; show them as authored.
+        Tonemapping::None,
+        Projection::Perspective(PerspectiveProjection { far: convert::SKY_RADIUS * 2.0, ..default() }),
+        DistanceFog {
+            color: fog_color,
+            falloff: FogFalloff::Linear { start: 120.0, end: 900.0 },
+            ..default()
+        },
+    );
     let eye = start.0 - (start.1 * Vec3::NEG_Z) * 6.0 + Vec3::Y * 2.5;
     let cam = Transform::from_translation(eye).looking_at(start.0, Vec3::Y);
-    match args.camera {
-        Some([x, y, z, tx, ty, tz]) => {
-            let t = Transform::from_xyz(x, y, -z).looking_at(Vec3::new(tx, ty, -tz), Vec3::Y);
+    let fixed = match (args.camera, args.orbit) {
+        (Some([x, y, z, tx, ty, tz]), _) => Some(Transform::from_xyz(x, y, -z).looking_at(Vec3::new(tx, ty, -tz), Vec3::Y)),
+        (None, Some([yaw, pitch, dist])) => {
+            let (yaw, pitch) = (yaw.to_radians(), pitch.to_radians());
+            let dir = start.1 * Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos());
+            let target = start.0 + Vec3::Y * 0.2;
+            Some(Transform::from_translation(target + dir * dist).looking_at(target, Vec3::Y))
+        }
+        _ => None,
+    };
+    match fixed {
+        Some(t) => {
             let (yaw, pitch, _) = t.rotation.to_euler(EulerRot::YXZ);
-            commands.spawn((Camera3d::default(), t, FlyCam { yaw, pitch }));
+            commands.spawn((view, t, FlyCam { yaw, pitch }));
         }
         None => {
-            commands.spawn((Camera3d::default(), cam, ChaseCam));
+            commands.spawn((view, cam, ChaseCam { ideal: eye }));
         }
     }
     commands.spawn((
@@ -193,6 +293,7 @@ fn setup(
         upside_down: 0.0,
     });
     commands.insert_resource(Player(vehicle));
+    commands.init_resource::<Controls>();
 }
 
 fn read_input(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> Input {
@@ -226,6 +327,7 @@ fn drive(
     pads: Query<&Gamepad>,
     race: Option<ResMut<Race>>,
     player: Option<ResMut<Player>>,
+    mut controls: Option<ResMut<Controls>>,
 ) {
     let (Some(mut race), Some(mut player)) = (race, player) else { return };
     let dt = time.delta_secs();
@@ -245,6 +347,9 @@ fn drive(
     }
 
     v.step(&input, dt, &race.collision);
+    if let Some(c) = controls.as_mut() {
+        c.0 = input;
+    }
 
     // Remember a safe spot; respot there on R, when stuck upside down, or
     // after falling out of the world.
@@ -295,21 +400,58 @@ fn sync_quad(
     }
 }
 
+fn animate_rider(
+    time: Res<Time>,
+    player: Option<Res<Player>>,
+    controls: Option<Res<Controls>>,
+    mut riders: Query<&mut Rider>,
+) {
+    let (Some(player), Some(controls)) = (player, controls) else { return };
+    let v = &player.0;
+    for mut r in &mut riders {
+        r.update_controls(v.steer, controls.0.lean, v.preload, time.delta_secs());
+    }
+}
+
 fn chase_camera(
     time: Res<Time>,
     player: Option<Res<Player>>,
-    mut cam: Query<&mut Transform, With<ChaseCam>>,
+    race: Option<Res<Race>>,
+    mut cam: Query<(&mut Transform, &mut ChaseCam)>,
 ) {
-    let (Some(player), Ok(mut t)) = (player, cam.single_mut()) else { return };
+    let (Some(player), Some(race), Ok((mut t, mut cam))) = (player, race, cam.single_mut()) else { return };
     let v = &player.0;
     let fwd = v.forward().with_y(0.0).normalize_or(Vec3::NEG_Z);
     let desired = v.position - fwd * 5.5 + Vec3::Y * 2.2;
     let k = 1.0 - (-6.0 * time.delta_secs()).exp();
-    t.translation = t.translation.lerp(desired, k);
+    cam.ideal = cam.ideal.lerp(desired, k);
     // Never let the camera sink below the quad's level.
-    t.translation.y = t.translation.y.max(v.position.y + 0.8);
+    cam.ideal.y = cam.ideal.y.max(v.position.y + 0.8);
+
+    // Pull in when terrain or a wall is between the rider and the camera,
+    // and keep clear of the ground under it.
+    let pivot = v.position + Vec3::Y * 1.2;
+    let to_cam = cam.ideal - pivot;
+    let dist = to_cam.length();
+    let mut eye = cam.ideal;
+    if dist > 0.01 {
+        let dir = to_cam / dist;
+        if let Some(hit) = race.collision.raycast(pivot, dir, dist + 0.4) {
+            eye = pivot + dir * (hit.t - 0.4).max(0.3);
+        }
+    }
+    if let Some(ground) = race.collision.raycast(eye + Vec3::Y, Vec3::NEG_Y, 1.5) {
+        eye.y = eye.y.max(ground.point.y + 0.5);
+    }
+    t.translation = eye;
     let look = v.position + fwd * 3.0 + Vec3::Y * 0.6;
     t.look_at(look, Vec3::Y);
+}
+
+fn follow_sky(cam: Query<&Transform, With<Camera3d>>, mut sky: Query<&mut Transform, (With<SkyDome>, Without<Camera3d>)>) {
+    let (Ok(cam), Ok(mut sky)) = (cam.single(), sky.single_mut()) else { return };
+    // Sunk a little so the hazy rim sits under the horizon.
+    sky.translation = cam.translation - Vec3::Y * convert::SKY_RADIUS * 0.08;
 }
 
 fn fly_camera(
