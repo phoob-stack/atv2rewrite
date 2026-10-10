@@ -58,7 +58,7 @@ Levels 856, shaders 75, other 116).
 | `.rom` | 330 | `ROM 1.26` | Models: vehicle parts, wheels, riders, props, sky domes. Triangle meshes plus bicubic Bezier patches. | **Decoded, all parse exactly.** See below. |
 | `.shm` | 141 | `ROM 1.26` | Shadow/simplified mesh twin of each `.rom`, same layout. | **Decoded.** |
 | `.row` | 17 | `ROW 2.25` | Track world: materials, locators (start grid, checkpoints, respots, water boxes), lights, prop instances, sprites, meshes and the road surface as Bezier patches. | **Mostly decoded.** Spatial tree between mesh blocks still unknown. |
-| `.kdt` | 17 | none | Per-track spatial data, likely collision tree. | To do. |
+| `.kdt` | 17 | none | The original's track collision: `u32` triangle count, then 0x5C-byte triangles (face plane, three edge planes, padded bbox, `u32` surface id into `Setup/Materials.xml` order), then a spatial tree. Layout in `kdt.rs`. | **Triangles decoded, all 17**; their surfaces give the rewrite's collision grip and drag. Tree not read. |
 | `.hsc` | 35 | none | Knock-over prop hulls (cones, signs, barriers, planks): `u32` hull count; per hull a `u32` plane count and planes (normal, d; inside where n·p + d <= 0); then a `u32` sphere count and spheres (centre, radius), read at `0x24c10`. The signs are 6-plane boxes, one per part. | Layout known; not used: the rewrite knocks `FREE` props over using an upright cylinder from each model's bounding box. |
 | `.aid` | 17 | `AID 1.02` | AI racing line: a graph of waypoints with the drivable corridor, speed limits, respot and jump flags. | **Decoded, all 17.** See below. |
 | `.nin` | 17 | none (`0xCDAB0DF0` markers) | Per-track node/trigger data. | To do. |
@@ -475,7 +475,7 @@ throw half as much, and nothing is thrown past 50 m from the camera.
 
 ## Still unknown
 
-`.kdt` (likely collision tree), `.nin`, `.viz`, `.cuban` (compressed animation), the names of
+the `.kdt` spatial tree, `.nin`, `.viz`, `.cuban` (compressed animation), the names of
 Vehicles bank sounds 0 and 17–31 and of the rider voices,
 the ROW spatial tree and effect records, and the material record fields.
 

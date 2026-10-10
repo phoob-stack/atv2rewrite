@@ -3,8 +3,13 @@
 
 use glam::{Vec2, Vec3, Vec3Swizzles};
 
+use crate::surface::{self, Surface, Surfaces};
+
 pub struct TrackCollision {
     tris: Vec<[Vec3; 3]>,
+    /// Surface id of each triangle ([`surface::UNKNOWN`] when untagged).
+    surface_ids: Vec<u8>,
+    surfaces: Surfaces,
     min: Vec2,
     cell: f32,
     dims: (usize, usize),
@@ -16,6 +21,8 @@ pub struct Hit {
     pub t: f32,
     pub point: Vec3,
     pub normal: Vec3,
+    /// Surface id of the triangle hit.
+    pub surface: u8,
 }
 
 impl TrackCollision {
@@ -49,6 +56,8 @@ impl TrackCollision {
             }
         }
         Self {
+            surface_ids: vec![surface::UNKNOWN; tris.len()],
+            surfaces: Surfaces::default(),
             tris,
             min,
             cell,
@@ -63,6 +72,32 @@ impl TrackCollision {
             (c.x as usize).min(dims.0 - 1),
             (c.y as usize).min(dims.1 - 1),
         )
+    }
+
+    /// Collision whose triangles carry surface ids (one per triangle).
+    pub fn with_surfaces(tris: Vec<[Vec3; 3]>, ids: Vec<u8>, cell: f32) -> Self {
+        let mut c = Self::new(tris, cell);
+        if ids.len() == c.tris.len() {
+            c.surface_ids = ids;
+        }
+        c
+    }
+
+    /// Tags every triangle with a surface id and sets the surface table.
+    pub fn set_surfaces(&mut self, ids: Vec<u8>, surfaces: Surfaces) {
+        if ids.len() == self.tris.len() {
+            self.surface_ids = ids;
+        }
+        self.surfaces = surfaces;
+    }
+
+    pub fn triangles(&self) -> &[[Vec3; 3]] {
+        &self.tris
+    }
+
+    /// Grip and drag of surface `id`.
+    pub fn surface(&self, id: u8) -> Surface {
+        self.surfaces.get(id)
     }
 
     pub fn triangle_count(&self) -> usize {
@@ -94,6 +129,7 @@ impl TrackCollision {
                             t,
                             point: origin + dir * t,
                             normal: n,
+                            surface: self.surface_ids[i as usize],
                         });
                     }
                 }
@@ -109,26 +145,27 @@ impl TrackCollision {
         let r = Vec2::splat(radius);
         let (x0, z0) = Self::cell_of(self.min, self.cell, self.dims, centre.xz() - r);
         let (x1, z1) = Self::cell_of(self.min, self.cell, self.dims, centre.xz() + r);
-        let mut best: Option<(f32, Vec3)> = None;
+        let mut best: Option<(f32, Vec3, u8)> = None;
         for z in z0..=z1 {
             for x in x0..=x1 {
                 for &i in &self.cells[z * self.dims.0 + x] {
                     let [a, b, c] = self.tris[i as usize];
                     let p = closest_on_tri(centre, a, b, c);
                     let d2 = (centre - p).length_squared();
-                    if d2 < radius * radius && best.is_none_or(|(b2, _)| d2 < b2) {
-                        best = Some((d2, p));
+                    if d2 < radius * radius && best.is_none_or(|(b2, ..)| d2 < b2) {
+                        best = Some((d2, p, self.surface_ids[i as usize]));
                     }
                 }
             }
         }
-        let (d2, p) = best?;
+        let (d2, p, surface) = best?;
         let d = d2.sqrt();
         let normal = if d > 1e-6 { (centre - p) / d } else { Vec3::Y };
         Some(Hit {
             t: radius - d,
             point: p,
             normal,
+            surface,
         })
     }
 }

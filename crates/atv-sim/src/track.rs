@@ -5,11 +5,13 @@ use glam::{Mat3, Quat, Vec3};
 use std::collections::HashMap;
 
 use atv_formats::ink::CollisionMesh;
+use atv_formats::kdt::CollisionTree;
 use atv_formats::rom::Locator;
 use atv_formats::row::{Instance, World};
 use atv_formats::GameSource;
 
 use crate::collision::TrackCollision;
+use crate::surface::{self, Surfaces};
 
 /// Road patches are tessellated this finely for collision.
 const PATCH_STEPS: usize = 8;
@@ -43,10 +45,45 @@ pub fn collision_from_world(world: &World) -> TrackCollision {
 /// The track's collision including its static props: each placed prop
 /// whose model has an `.ink` collision mesh (rocks, buildings, trees, tyre
 /// stacks, the stadium gates) adds that mesh where the prop stands.
+///
+/// The track's own triangles take their surfaces from the original's
+/// collision (`.kdt`); props keep full grip and no drag.
 pub fn collision(world: &World, game: &GameSource, track: &str) -> TrackCollision {
     let mut tris = world_triangles(world);
+    let mut ids = surface_ids(&tris, game, track);
     tris.extend(prop_triangles(world, game, track));
-    TrackCollision::new(tris, 8.0)
+    ids.resize(tris.len(), surface::UNKNOWN);
+    let surfaces = game
+        .read("/Setup/Materials.xml")
+        .map(|b| Surfaces::parse(&String::from_utf8_lossy(&b)))
+        .unwrap_or_default();
+    let mut c = TrackCollision::new(tris, 8.0);
+    c.set_surfaces(ids, surfaces);
+    c
+}
+
+/// The original's own collision triangles (`.kdt`) with their surface ids,
+/// in the sim frame.
+pub fn kdt_collision(game: &GameSource, track: &str) -> Option<TrackCollision> {
+    let tree = CollisionTree::parse(&game.read(&format!("/Levels/{track}/Kdt/{track}.kdt")).ok()?).ok()?;
+    let (tris, ids) = tree.triangles.iter().map(|t| (t.corners.map(to_sim), t.surface)).unzip();
+    Some(TrackCollision::with_surfaces(tris, ids, 8.0))
+}
+
+/// Surface ids for the track's render triangles: the surface of the `.kdt`
+/// triangle under (or nearest) each one's centre. The rewrite collides with
+/// the render meshes, which follow the `.kdt` closely.
+fn surface_ids(tris: &[[Vec3; 3]], game: &GameSource, track: &str) -> Vec<u8> {
+    let Some(kdt) = kdt_collision(game, track) else { return vec![surface::UNKNOWN; tris.len()] };
+    tris.iter()
+        .map(|&[a, b, c]| {
+            let centre = (a + b + c) / 3.0;
+            let n = (b - a).cross(c - a).normalize_or(Vec3::Y);
+            kdt.raycast(centre + n * 0.5, -n, 1.0)
+                .or_else(|| kdt.sphere(centre, 1.0))
+                .map_or(surface::UNKNOWN, |h| h.surface)
+        })
+        .collect()
 }
 
 /// The track's water surfaces (meshes with a water material; the 0x2000

@@ -6,6 +6,7 @@
 pub mod ai;
 pub mod collision;
 pub mod params;
+pub mod surface;
 pub mod track;
 pub mod vehicle;
 
