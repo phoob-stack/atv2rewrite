@@ -3,6 +3,7 @@
 //! Works in a right-handed, Y-up, metres coordinate system (the Bevy
 //! convention); data from the game is converted on load by negating Z.
 
+pub mod ai;
 pub mod collision;
 pub mod params;
 pub mod track;

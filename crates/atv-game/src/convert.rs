@@ -109,6 +109,8 @@ pub struct WheelVisual {
     pub wheels: Vec<usize>,
     pub base: Vec3,
     pub mirror: bool,
+    /// The quad (the entity `spawn_quad` returned) this wheel belongs to.
+    pub owner: Entity,
 }
 
 /// A rider's skinned mesh and the joint entities that pose it.
@@ -665,7 +667,7 @@ impl<'a> Loader<'a> {
                 }
                 let t = Transform::from_translation(pos).with_scale(Vec3::new(sx, 1.0, 1.0));
                 let e = self.spawn_model(commands, &model, root, t, Look::Lit);
-                commands.entity(e).insert(WheelVisual { wheels: idx.to_vec(), base: pos, mirror: sx < 0.0 });
+                commands.entity(e).insert(WheelVisual { wheels: idx.to_vec(), base: pos, mirror: sx < 0.0, owner: root_entity });
             }
         }
         Ok(root_entity)

@@ -70,6 +70,9 @@ pub struct RiderInfo {
     pub from: String,
     /// Ability, technique, aggression, strength (1-5).
     pub stats: [f32; 4],
+    /// Whether computer opponents may ride as this rider (not the
+    /// `LockedNeverAI` secret riders).
+    pub ai: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -92,6 +95,7 @@ impl Roster {
                     born: e.get("mBirthDate").unwrap_or("").trim().to_uppercase(),
                     from: e.get("mResidence").unwrap_or("").trim().to_uppercase(),
                     stats: ["mAbility", "mTechnique", "mAggression", "mStrength"].map(|k| e.num(k).unwrap_or(0.0)),
+                    ai: e.get("mAvailability") != Some("LockedNeverAI"),
                 })
             })
             .collect();
