@@ -83,8 +83,9 @@ Race, Restart and Quit Race.
   rounds earn skill points but no medals.
 - **Arcade**: the 15 rounds of the disc's `Setup/Arcade.xml` back to back
   (the disc lists a sixteenth, Dunes 1 again, which the original never races).
-  The clock starts at the track's arcade time (40 s) and the arcade
-  checkpoints and the line add more. Win a round (finish first, in time)
+  Each round is one lap, as in the original. The clock starts at the
+  track's arcade time (40 or 45 s), and each arcade checkpoint adds the
+  seconds the track gives it (10 to 30). Win a round (finish first, in time)
   for the next one; each round allows three attempts, and losing the third
   sends Arcade back to round 1 (the disc's "You need to finish in first
   place to move onto the next round" and "Attempts: %d/3"). Seven computer riders race each round, as in the

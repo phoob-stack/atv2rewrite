@@ -396,11 +396,13 @@ fn main() -> anyhow::Result<()> {
         selection.track = challenge::TRACK.into();
         selection.laps = 1;
     }
-    // Arcade races its rounds' tracks (`--round N` starts on one).
+    // Arcade races its rounds' tracks (`--round N` starts on one), a lap
+    // each.
     if args.mode == Mode::Arcade
         && let Some(t) = roster.arcade.get(args.round)
     {
         selection.track = t.clone();
+        selection.laps = 1;
     }
     // The profile last loaded, or the progress from before profiles.
     let settings = Settings::load();
@@ -717,7 +719,7 @@ fn setup(
     let mut progress = RaceProgress::new(if in_challenge { 1 } else { sel.laps }, on_line);
     if sel.mode == Mode::Arcade {
         let info = roster.info(&sel.track);
-        progress = progress.with_arcade(ArcadeClock::new(info.arcade_start, info.worst_lap, checkpoints.len(), &race::arcade_gates(&scene.world)));
+        progress = progress.with_arcade(ArcadeClock::new(info.arcade_start, race::arcade_gates(&scene.world)));
     }
     commands.insert_resource(progress);
     commands.insert_resource(StuntClips::load(&game.0, &session.tricks));

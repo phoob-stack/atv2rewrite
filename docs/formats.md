@@ -313,11 +313,18 @@ left alone.
   their own colours) and 0x19c "Ranking" (the certificate a rider's skill
   rating reaches, 0x88470), then `%s: %s` 0x16f "Out" rows.
   `Tracks.xml` gives each track's `mArcadeStartTime` (40 s everywhere) and
-  `mAIBestLapTime`/`mAIWorstLapTime`. Tracks mark their time-extension gates
-  with extra `Checkpoint N arcade` locators (Forest 3 spells it `acade`) at
-  the same spot as `Checkpoint N`. The disc gives no seconds per gate; the
-  rewrite shares the slowest AI lap time out over the gates by how much of
-  the lap each covers.
+  `mAIBestLapTime`/`mAIWorstLapTime`. An arcade round is one lap
+  (`ArcadeSM`, 0x95e70, sets the lap count to 1). The time-extension gates
+  are the checkpoints named with seconds after `Arcade`
+  (`Checkpoint 3 Arcade 30`, 10 to 30 s): 0x65c50 reads them with `atol`
+  into the checkpoint's +0x134/+0x138, and 0x648f0 adds them to the clock
+  (`player+0xa4`, which starts at `mArcadeStartTime`, 0x7e610) once per
+  pass, for the local player when not thrown off (0x27620). Every locator
+  counts, so Swamp 2's doubled checkpoints give twice. The start line
+  gives nothing. The original finds `Arcade` by case (0xe4900), which
+  misses Dunes 3's and Glacier 3's `arcade 30` and Forest 3's `Acade 30`
+  and leaves rounds 11, 12 and 15 too short to finish; the rewrite counts
+  them.
 - `Freestyle.xml`: `OpenFSRecords/TimeNMinute(s)` and `TimeUnlimited` each
   hold Bronze/Silver/Gold `Record=` scores for Open Freestyle; `FSChallenge`
   has `Challenge_1..12`, each with `mBronze/Silver/GoldBonus` and
