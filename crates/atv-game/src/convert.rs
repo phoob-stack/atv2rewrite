@@ -19,10 +19,74 @@ use atv_formats::GameSource;
 
 const PATCH_STEPS: usize = 6;
 
+/// Radius the unit sky-dome models are scaled to. Inside the camera's far
+/// plane, beyond the fog.
+pub const SKY_RADIUS: f32 = 1800.0;
+
 pub struct Scene {
     pub world: World,
     pub world_meshes: usize,
     pub props: usize,
+}
+
+/// The sky dome; it is kept centred on the camera.
+#[derive(Component)]
+pub struct SkyDome;
+
+/// How a surface is drawn.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Look {
+    /// Baked-lit (unlit) surface; textures with alpha are cut out.
+    Baked,
+    /// Alpha-tested foliage, fences and similar.
+    Cutout,
+    /// Translucent water.
+    Water,
+    /// Translucent foam, wakes and spray.
+    Foam,
+    /// Low-lying mist sheets; very faint.
+    Mist,
+    /// Baked shadow decal, darkens what is under it.
+    Shadow,
+    /// Second texture layer blended over a track surface by vertex alpha.
+    Overlay,
+    /// Lit by the sun (vehicles).
+    Lit,
+    /// Sky dome: unlit and unfogged.
+    Sky,
+}
+
+impl Look {
+    /// From a ROW mesh block's flags.
+    fn from_flags(flags: u32) -> Self {
+        if flags & 0x8000 != 0 {
+            Look::Shadow
+        } else if flags & 0x2000 != 0 {
+            Look::Water
+        } else if flags & 0x4000 != 0 {
+            Look::Foam
+        } else if flags & 0x2 != 0 {
+            Look::Cutout
+        } else {
+            Look::Baked
+        }
+    }
+
+    /// Whether vertex alpha is coverage for this look (otherwise it drives
+    /// effects and is ignored).
+    fn uses_vertex_alpha(self) -> bool {
+        matches!(self, Look::Water | Look::Foam | Look::Mist | Look::Shadow | Look::Overlay)
+    }
+
+    /// Vertex colour for this look. Lit surfaces get their light from the
+    /// scene, so the baked (doubled) value is capped at white.
+    fn color(self, c: u32) -> [f32; 4] {
+        let mut rgba = argb(c, self.uses_vertex_alpha());
+        if self == Look::Lit {
+            rgba[..3].iter_mut().for_each(|v| *v = v.min(1.0));
+        }
+        rgba
+    }
 }
 
 /// Distance from the model origin (ground under the wheels) up to the
@@ -46,7 +110,7 @@ pub struct Loader<'a> {
     /// Lower-case texture stem -> archive path, for name-based lookup.
     texture_paths: HashMap<String, String>,
     textures: HashMap<String, Option<(Handle<Image>, bool)>>,
-    material_cache: HashMap<String, Handle<StandardMaterial>>,
+    material_cache: HashMap<(String, Look), Handle<StandardMaterial>>,
     models: HashMap<String, Option<Model>>,
     model_paths: HashMap<String, Vec<String>>,
 }
@@ -62,25 +126,29 @@ struct Batch {
 }
 
 impl Batch {
-    fn add_tris(&mut self, verts: &[Vertex], indices: &[u32]) {
+    /// `overlay` takes the second UV set (track meshes keep it in the first
+    /// two "extra" floats).
+    fn add_tris(&mut self, verts: &[Vertex], indices: &[u32], look: Look, overlay: bool) {
         let base = self.pos.len() as u32;
         for v in verts {
             self.pos.push(flip(v.pos));
             self.normal.push(flip(v.normal));
-            self.uv.push(v.uv);
-            self.color.push(argb(v.color));
+            self.uv.push(if overlay { [v.extra[0], v.extra[1]] } else { v.uv });
+            self.color.push(look.color(v.color));
         }
         for t in indices.chunks_exact(3) {
             self.idx.extend_from_slice(&[base + t[0], base + t[2], base + t[1]]);
         }
     }
 
-    fn add_patch(&mut self, p: &Patch) {
-        let (pos, uv, idx) = p.tessellate(PATCH_STEPS);
+    fn add_patch(&mut self, p: &Patch, look: Look, overlay: bool) {
+        let tess = p.tessellate(PATCH_STEPS);
+        let (pos, idx) = (&tess.pos, &tess.indices);
+        let uv = if overlay { &tess.uv2 } else { &tess.uv };
         let base = self.pos.len() as u32;
         let n = PATCH_STEPS + 1;
-        let cols = p.corner_color.map(argb);
-        for (k, (pp, tt)) in pos.iter().zip(&uv).enumerate() {
+        let cols = p.corner_color.map(|c| look.color(c));
+        for (k, (pp, tt)) in pos.iter().zip(uv).enumerate() {
             let (u, v) = ((k % n) as f32 / PATCH_STEPS as f32, (k / n) as f32 / PATCH_STEPS as f32);
             // Normal from finite differences across the grid.
             let at = |i: usize, j: usize| Vec3::from(pos[j.min(n - 1) * n + i.min(n - 1)]);
@@ -113,16 +181,18 @@ impl Batch {
     }
 }
 
-/// Baked shadow decals store darkness as low values against a light
-/// background; turn that into a white-is-unshadowed multiply texture.
-fn shadow_to_multiply(bgra: &mut [u8]) {
-    let max = bgra.chunks_exact(4).map(|p| p[0].max(p[1]).max(p[2])).max().unwrap_or(0).max(1) as f32;
-    for p in bgra.chunks_exact_mut(4) {
-        let s = 1.0 - p[0].max(p[1]).max(p[2]) as f32 / max;
-        let v = (255.0 * (1.0 - 0.6 * s)) as u8;
-        p[..3].fill(v);
-        p[3] = 255;
+/// Baked shadow decals mark shadow as bright texels on black (or, in a few,
+/// as alpha). Turns one into black with the shadow strength as alpha.
+fn shadow_rgba(tex: &Texture) -> Vec<u8> {
+    let mut rgba = tex.to_rgba8();
+    let in_alpha = rgba.chunks_exact(4).any(|p| p[3] < 250);
+    let level = |p: &[u8]| if in_alpha { p[3] } else { p[0].max(p[1]).max(p[2]) };
+    let max = rgba.chunks_exact(4).map(level).max().unwrap_or(0).max(1) as f32;
+    for p in rgba.chunks_exact_mut(4) {
+        let s = level(p) as f32 / max;
+        p.copy_from_slice(&[0, 0, 0, (255.0 * 0.55 * s) as u8]);
     }
+    rgba
 }
 
 fn flip(p: [f32; 3]) -> [f32; 3] {
@@ -130,13 +200,12 @@ fn flip(p: [f32; 3]) -> [f32; 3] {
 }
 
 /// 0xAARRGGBB -> linear RGBA. Colours are baked lighting where 0x80 means
-/// "unlit", so they are doubled (the Xbox used MODULATE2X).
-fn argb(c: u32) -> [f32; 4] {
+/// "unlit", so they are doubled (the Xbox used MODULATE2X). Alpha is kept
+/// only where it is coverage or a layer weight.
+fn argb(c: u32, alpha: bool) -> [f32; 4] {
     let ch = |s: u32| Color::srgb_u8(((c >> s) & 255) as u8, 0, 0).to_linear().red;
-    let a = ((c >> 24) & 255) as f32 / 255.0;
-    // Vertex alpha drives effects (tyre dirt blend etc.), not coverage.
-    let _ = a;
-    [ch(16) * 2.0, ch(8) * 2.0, ch(0) * 2.0, 1.0]
+    let a = if alpha { ((c >> 24) & 255) as f32 / 255.0 } else { 1.0 };
+    [ch(16) * 2.0, ch(8) * 2.0, ch(0) * 2.0, a]
 }
 
 fn mat_from_xbox(rot: &[f32; 9], scale: [f32; 3], pos: [f32; 3]) -> Transform {
@@ -190,49 +259,61 @@ impl<'a> Loader<'a> {
         }
     }
 
-    fn texture(&mut self, name: &str) -> Option<(Handle<Image>, bool)> {
-        let key = name.to_ascii_lowercase();
+    /// Loads a texture by name; returns it and whether it has alpha. Shadow
+    /// decals are converted to black-with-alpha.
+    fn texture(&mut self, name: &str, shadow: bool) -> Option<(Handle<Image>, bool)> {
+        let key = format!("{}{}", name.to_ascii_lowercase(), if shadow { "#shadow" } else { "" });
         if let Some(t) = self.textures.get(&key) {
             return t.clone();
         }
-        let loaded = self.texture_paths.get(&key).cloned().and_then(|path| {
+        let loaded = self.texture_paths.get(&name.to_ascii_lowercase()).cloned().and_then(|path| {
             let tex = Texture::parse(&self.game.read(&path).ok()?).ok()?;
-            let mut tex = tex;
-            let shadow = key.ends_with("_shad");
-            if shadow && tex.format == TexFormat::Bgra8 {
-                shadow_to_multiply(&mut tex.data);
-            }
-            let (format, alpha) = match tex.format {
-                TexFormat::Dxt1 => (TextureFormat::Bc1RgbaUnormSrgb, false),
-                TexFormat::Dxt5 => (TextureFormat::Bc3RgbaUnormSrgb, true),
-                TexFormat::Bgra8 => (TextureFormat::Bgra8UnormSrgb, true),
-            };
-            // Block-compressed mips must be at least 4x4 for wgpu validation.
-            let mut mips = 0;
-            let mut size = 0;
-            while mips < tex.mip_count {
-                let (w, h) = (tex.width >> mips, tex.height >> mips);
-                // Bevy only takes a single level for uncompressed images.
-                if (tex.format == TexFormat::Bgra8 && mips == 1) || w < 4 || h < 4 {
-                    break;
+            let size = Extent3d { width: tex.width, height: tex.height, depth_or_array_layers: 1 };
+            let (img, alpha) = if shadow {
+                let mut img = Image::new(
+                    size,
+                    TextureDimension::D2,
+                    shadow_rgba(&tex),
+                    TextureFormat::Rgba8UnormSrgb,
+                    RenderAssetUsages::RENDER_WORLD,
+                );
+                img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor::linear());
+                (img, true)
+            } else {
+                let (format, alpha) = match tex.format {
+                    TexFormat::Dxt1 => (TextureFormat::Bc1RgbaUnormSrgb, false),
+                    TexFormat::Dxt5 => (TextureFormat::Bc3RgbaUnormSrgb, true),
+                    TexFormat::Bgra8 => (TextureFormat::Bgra8UnormSrgb, true),
+                };
+                // Block-compressed mips must be at least 4x4 for wgpu validation.
+                let mut mips = 0;
+                let mut bytes = 0;
+                while mips < tex.mip_count {
+                    let (w, h) = (tex.width >> mips, tex.height >> mips);
+                    // Bevy only takes a single level for uncompressed images.
+                    if (tex.format == TexFormat::Bgra8 && mips == 1) || w < 4 || h < 4 {
+                        break;
+                    }
+                    bytes += tex.level_size(mips);
+                    mips += 1;
                 }
-                size += tex.level_size(mips);
-                mips += 1;
-            }
-            let mut img = Image::new(
-                Extent3d { width: tex.width, height: tex.height, depth_or_array_layers: 1 },
-                TextureDimension::D2,
-                tex.data[..size].to_vec(),
-                format,
-                RenderAssetUsages::RENDER_WORLD,
-            );
-            img.texture_descriptor.mip_level_count = mips.max(1);
-            img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-                address_mode_u: ImageAddressMode::Repeat,
-                address_mode_v: ImageAddressMode::Repeat,
-                ..ImageSamplerDescriptor::linear()
-            });
-            Some((self.images.add(img), if shadow { false } else { alpha }))
+                let mut img = Image::new(
+                    size,
+                    TextureDimension::D2,
+                    tex.data[..bytes].to_vec(),
+                    format,
+                    RenderAssetUsages::RENDER_WORLD,
+                );
+                img.texture_descriptor.mip_level_count = mips.max(1);
+                img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                    address_mode_u: ImageAddressMode::Repeat,
+                    address_mode_v: ImageAddressMode::Repeat,
+                    anisotropy_clamp: 8,
+                    ..ImageSamplerDescriptor::linear()
+                });
+                (img, alpha)
+            };
+            Some((self.images.add(img), alpha))
         });
         if loaded.is_none() {
             warn!("texture not found: {name}");
@@ -241,24 +322,36 @@ impl<'a> Loader<'a> {
         loaded
     }
 
-    fn material(&mut self, name: Option<&str>) -> Handle<StandardMaterial> {
-        let key = name.unwrap_or("").to_ascii_lowercase();
+    fn material(&mut self, name: Option<&str>, look: Look) -> Handle<StandardMaterial> {
+        let key = (name.unwrap_or("").to_ascii_lowercase(), look);
         if let Some(m) = self.material_cache.get(&key) {
             return m.clone();
         }
-        let tex = name.and_then(|n| self.texture(n));
+        let tex = name.and_then(|n| self.texture(n, look == Look::Shadow));
+        let has_alpha = tex.as_ref().is_some_and(|t| t.1);
+        let alpha_mode = match look {
+            Look::Water | Look::Foam | Look::Mist | Look::Shadow | Look::Overlay => AlphaMode::Blend,
+            Look::Cutout => AlphaMode::Mask(0.5),
+            Look::Baked | Look::Lit if has_alpha => AlphaMode::Mask(0.5),
+            _ => AlphaMode::Opaque,
+        };
         let m = self.materials.add(StandardMaterial {
-            base_color_texture: tex.as_ref().map(|t| t.0.clone()),
-            unlit: true,
+            base_color: if look == Look::Mist { Color::srgba(1.0, 1.0, 1.0, 0.3) } else { Color::WHITE },
+            base_color_texture: tex.map(|t| t.0),
+            unlit: look != Look::Lit,
+            fog_enabled: look != Look::Sky,
             cull_mode: None,
             double_sided: true,
-            alpha_mode: if key.ends_with("_shad") {
-                AlphaMode::Multiply
-            } else if tex.as_ref().is_some_and(|t| t.1) {
-                AlphaMode::Mask(0.5)
-            } else {
-                AlphaMode::Opaque
+            alpha_mode,
+            // Layers drawn on top of a surface win the depth test.
+            depth_bias: match look {
+                Look::Overlay => 2.0,
+                Look::Foam | Look::Mist => 4.0,
+                Look::Shadow => 8.0,
+                _ => 0.0,
             },
+            perceptual_roughness: 0.7,
+            reflectance: 0.15,
             ..default()
         });
         self.material_cache.insert(key, m.clone());
@@ -286,13 +379,20 @@ impl<'a> Loader<'a> {
     }
 
     /// Spawns one model as children of `parent`, one entity per material.
-    fn spawn_model(&mut self, commands: &mut Commands, model: &Model, parent: Entity, transform: Transform) -> Entity {
+    fn spawn_model(
+        &mut self,
+        commands: &mut Commands,
+        model: &Model,
+        parent: Entity,
+        transform: Transform,
+        look: Look,
+    ) -> Entity {
         let mut batches: HashMap<Option<usize>, Batch> = HashMap::new();
         for node in &model.nodes {
             let b = batches.entry(node.material()).or_default();
-            b.add_tris(&node.vertices, &node.indices);
+            b.add_tris(&node.vertices, &node.indices, look, false);
             for p in &node.patches {
-                b.add_patch(p);
+                b.add_patch(p, look, false);
             }
         }
         let holder = commands.spawn((transform, Visibility::default())).id();
@@ -302,7 +402,12 @@ impl<'a> Loader<'a> {
                 continue;
             }
             let name = mat.and_then(|i| model.materials.get(i)).map(|m| m.name.clone());
-            let material = self.material(name.as_deref());
+            let look = if name.as_deref().is_some_and(|n| n.to_ascii_lowercase().contains("shad")) {
+                Look::Shadow
+            } else {
+                look
+            };
+            let material = self.material(name.as_deref(), look);
             let mesh = self.meshes.add(batch.into_mesh());
             let child = commands.spawn((Mesh3d(mesh), MeshMaterial3d(material))).id();
             commands.entity(holder).add_child(child);
@@ -316,19 +421,36 @@ impl<'a> Loader<'a> {
         let env: String = track.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
         let root = commands.spawn((Transform::default(), Visibility::default(), Name::new(track.to_string()))).id();
 
-        let mut batches: HashMap<i32, Batch> = HashMap::new();
+        // One batch per material and look; a mesh with a second material
+        // also adds its overlay layer to that material's overlay batch.
+        let mut batches: HashMap<(i32, Look), Batch> = HashMap::new();
         for m in &world.meshes {
-            let b = batches.entry(m.material).or_default();
-            b.add_tris(&m.vertices, &m.indices);
-            for p in &m.patches {
-                b.add_patch(p);
+            // No material: invisible geometry that only blocks the quad.
+            if m.material < 0 {
+                continue;
+            }
+            let name = |i: i32| usize::try_from(i).ok().and_then(|i| world.materials.get(i)).map(|n| n.to_ascii_lowercase());
+            // Mist sheets pair two mist textures that modulate each other;
+            // the base alone gives the haze.
+            let mist = name(m.material).is_some_and(|n| n.contains("mist"));
+            let look = if mist { Look::Mist } else { Look::from_flags(m.flags) };
+            let mut layers = vec![(m.material, look, false)];
+            if m.material2 >= 0 && look != Look::Shadow && !mist {
+                layers.push((m.material2, Look::Overlay, true));
+            }
+            for (mat, look, overlay) in layers {
+                let b = batches.entry((mat, look)).or_default();
+                b.add_tris(&m.vertices, &m.indices, look, overlay);
+                for p in &m.patches {
+                    b.add_patch(p, look, overlay);
+                }
             }
         }
         let world_meshes = batches.len();
 
-        for (mat, batch) in batches {
+        for ((mat, look), batch) in batches {
             let name = usize::try_from(mat).ok().and_then(|i| world.materials.get(i)).cloned();
-            let material = self.material(name.as_deref());
+            let material = self.material(name.as_deref(), look);
             let mesh = self.meshes.add(batch.into_mesh());
             let e = commands.spawn((Mesh3d(mesh), MeshMaterial3d(material))).id();
             commands.entity(root).add_child(e);
@@ -339,7 +461,7 @@ impl<'a> Loader<'a> {
             let stem = inst.model.trim_end_matches(".clm").trim_end_matches(".CLM");
             if let Some(model) = self.model(stem, &env) {
                 let t = mat_from_xbox(&inst.rotation, inst.scale, inst.pos);
-                self.spawn_model(commands, &model, root, t);
+                self.spawn_model(commands, &model, root, t, Look::Baked);
                 props += 1;
             }
         }
@@ -353,8 +475,15 @@ impl<'a> Loader<'a> {
             "Stadium" => "ST_sky",
             _ => "skydomeday",
         };
+        // The domes are unit hemispheres; scaled up and kept on the camera.
         if let Some(model) = self.model(sky, "SkyDomes") {
-            self.spawn_model(commands, &model, root, Transform::from_xyz(0.0, -200.0, 0.0));
+            let holder = commands.spawn((Transform::default(), Visibility::default(), SkyDome)).id();
+            let t = Transform::from_scale(Vec3::splat(SKY_RADIUS));
+            self.spawn_model(commands, &model, holder, t, Look::Sky);
+            // Mirrored below the horizon: translucent water shows it as a
+            // reflection, as the mirrored scenery under the water expects.
+            let t = Transform::from_scale(Vec3::new(SKY_RADIUS, -SKY_RADIUS, SKY_RADIUS));
+            self.spawn_model(commands, &model, holder, t, Look::Sky);
         }
 
         Ok(Scene { world, world_meshes, props })
@@ -374,7 +503,7 @@ impl<'a> Loader<'a> {
         commands.entity(root).add_child(model_root);
         let root_entity = root;
         let root = model_root;
-        self.spawn_model(commands, &body, root, Transform::default());
+        self.spawn_model(commands, &body, root, Transform::default(), Look::Lit);
         let parts = [
             ("Handlebars", "handlebarscentre"),
             ("FLWishbone", "flsuspcentre"),
@@ -391,7 +520,7 @@ impl<'a> Loader<'a> {
             let Ok(bytes) = self.game.read(&format!("{dir}{part}.rom")) else { continue };
             let Ok(model) = Model::parse(&bytes) else { continue };
             let pos = point(pt).unwrap_or_default();
-            self.spawn_model(commands, &model, root, Transform::from_translation(pos));
+            self.spawn_model(commands, &model, root, Transform::from_translation(pos), Look::Lit);
         }
         // Params wheel order: 0 FL, 1 FR, 2 RL, 3 RR. Wheel models are
         // centred on the tyre: height and length come from the body's
@@ -409,7 +538,7 @@ impl<'a> Loader<'a> {
                     pos.x = *x;
                 }
                 let t = Transform::from_translation(pos).with_scale(Vec3::new(sx, 1.0, 1.0));
-                let e = self.spawn_model(commands, &model, root, t);
+                let e = self.spawn_model(commands, &model, root, t, Look::Lit);
                 commands.entity(e).insert(WheelVisual { wheels: idx.to_vec(), base: pos, mirror: sx < 0.0 });
             }
         }

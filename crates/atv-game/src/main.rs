@@ -11,7 +11,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton};
+use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
+use bevy::light::GlobalAmbientLight;
+use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
 
@@ -19,7 +22,7 @@ use atv_formats::GameSource;
 use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
-use convert::WheelVisual;
+use convert::{SkyDome, WheelVisual};
 
 #[derive(Resource, Clone)]
 struct Args {
@@ -54,7 +57,10 @@ struct Player(Vehicle);
 struct QuadBody;
 
 #[derive(Component)]
-struct ChaseCam;
+struct ChaseCam {
+    /// Smoothed position before pulling in for terrain.
+    ideal: Vec3,
+}
 
 #[derive(Component)]
 struct FlyCam {
@@ -116,7 +122,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(game)
         .add_systems(Startup, setup)
         .add_systems(FixedUpdate, drive)
-        .add_systems(Update, (sync_quad, chase_camera, fly_camera, hud, auto_screenshot).chain())
+        .add_systems(Update, (sync_quad, chase_camera, fly_camera, follow_sky, hud, auto_screenshot).chain())
         .run();
     Ok(())
 }
@@ -128,6 +134,8 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut clear: ResMut<ClearColor>,
+    mut ambient: ResMut<GlobalAmbientLight>,
 ) {
     let mut loader = convert::Loader::new(&game.0, &mut meshes, &mut materials, &mut images);
     let scene = match loader.spawn_track(&mut commands, &args.track) {
@@ -164,16 +172,49 @@ fn setup(
         checkpoints.len()
     );
 
+    // The world's lighting is baked into vertex colours; only the quad is
+    // lit, by the track's sun and ambient lights.
+    // Light colours use the same 0x80 = 1.0 scale as vertex colours.
+    let rgb = |c: [f32; 3]| Color::linear_rgb(c[0] / 128.0, c[1] / 128.0, c[2] / 128.0);
+    ambient.brightness = 1200.0;
+    let mut sun = (Vec3::new(0.3, -0.8, -0.5), Color::linear_rgb(0.8, 0.8, 0.8));
+    for l in &scene.world.lights {
+        match l.name.to_ascii_lowercase().as_str() {
+            "sun" => sun = (trk::to_sim(l.dir), rgb(l.color)),
+            "ambient" => ambient.color = rgb(l.color),
+            _ => {}
+        }
+    }
+    commands.spawn((
+        DirectionalLight { color: sun.1, illuminance: 6000.0, ..default() },
+        Transform::default().looking_to(sun.0.normalize_or(Vec3::NEG_Y), Vec3::Y),
+    ));
+    let fog_color = {
+        let c = scene.world.fog_color;
+        Color::srgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8)
+    };
+    clear.0 = fog_color;
+    let view = (
+        Camera3d::default(),
+        // Colours are baked; show them as authored.
+        Tonemapping::None,
+        Projection::Perspective(PerspectiveProjection { far: convert::SKY_RADIUS * 2.0, ..default() }),
+        DistanceFog {
+            color: fog_color,
+            falloff: FogFalloff::Linear { start: 120.0, end: 900.0 },
+            ..default()
+        },
+    );
     let eye = start.0 - (start.1 * Vec3::NEG_Z) * 6.0 + Vec3::Y * 2.5;
     let cam = Transform::from_translation(eye).looking_at(start.0, Vec3::Y);
     match args.camera {
         Some([x, y, z, tx, ty, tz]) => {
             let t = Transform::from_xyz(x, y, -z).looking_at(Vec3::new(tx, ty, -tz), Vec3::Y);
             let (yaw, pitch, _) = t.rotation.to_euler(EulerRot::YXZ);
-            commands.spawn((Camera3d::default(), t, FlyCam { yaw, pitch }));
+            commands.spawn((view, t, FlyCam { yaw, pitch }));
         }
         None => {
-            commands.spawn((Camera3d::default(), cam, ChaseCam));
+            commands.spawn((view, cam, ChaseCam { ideal: eye }));
         }
     }
     commands.spawn((
@@ -299,18 +340,42 @@ fn sync_quad(
 fn chase_camera(
     time: Res<Time>,
     player: Option<Res<Player>>,
-    mut cam: Query<&mut Transform, With<ChaseCam>>,
+    race: Option<Res<Race>>,
+    mut cam: Query<(&mut Transform, &mut ChaseCam)>,
 ) {
-    let (Some(player), Ok(mut t)) = (player, cam.single_mut()) else { return };
+    let (Some(player), Some(race), Ok((mut t, mut cam))) = (player, race, cam.single_mut()) else { return };
     let v = &player.0;
     let fwd = v.forward().with_y(0.0).normalize_or(Vec3::NEG_Z);
     let desired = v.position - fwd * 5.5 + Vec3::Y * 2.2;
     let k = 1.0 - (-6.0 * time.delta_secs()).exp();
-    t.translation = t.translation.lerp(desired, k);
+    cam.ideal = cam.ideal.lerp(desired, k);
     // Never let the camera sink below the quad's level.
-    t.translation.y = t.translation.y.max(v.position.y + 0.8);
+    cam.ideal.y = cam.ideal.y.max(v.position.y + 0.8);
+
+    // Pull in when terrain or a wall is between the rider and the camera,
+    // and keep clear of the ground under it.
+    let pivot = v.position + Vec3::Y * 1.2;
+    let to_cam = cam.ideal - pivot;
+    let dist = to_cam.length();
+    let mut eye = cam.ideal;
+    if dist > 0.01 {
+        let dir = to_cam / dist;
+        if let Some(hit) = race.collision.raycast(pivot, dir, dist + 0.4) {
+            eye = pivot + dir * (hit.t - 0.4).max(0.3);
+        }
+    }
+    if let Some(ground) = race.collision.raycast(eye + Vec3::Y, Vec3::NEG_Y, 1.5) {
+        eye.y = eye.y.max(ground.point.y + 0.5);
+    }
+    t.translation = eye;
     let look = v.position + fwd * 3.0 + Vec3::Y * 0.6;
     t.look_at(look, Vec3::Y);
+}
+
+fn follow_sky(cam: Query<&Transform, With<Camera3d>>, mut sky: Query<&mut Transform, (With<SkyDome>, Without<Camera3d>)>) {
+    let (Ok(cam), Ok(mut sky)) = (cam.single(), sky.single_mut()) else { return };
+    // Sunk a little so the hazy rim sits under the horizon.
+    sky.translation = cam.translation - Vec3::Y * convert::SKY_RADIUS * 0.08;
 }
 
 fn fly_camera(

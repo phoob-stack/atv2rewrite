@@ -128,7 +128,22 @@ coverage. Quads are assembled from parts placed at the body's named points
 mesh block: u32 flags, i32 material, i32 material2, i32, u32 tris,
      u32 verts, u32 patches, u32 0, i32 x3, idx, vertex (52 B, no pad),
      patch (604 B, colours at word 147, no adjacency tail)
+vertex:     pos, normal, uv, uv2, 2 floats, u32 ARGB
+patch:      u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16];
+            three 16-pair UV nets at words 51, 83 and 115; ARGB[4] at 147
 ```
+Mesh flags: 0x1 has patches, 0x2 alpha-tested (foliage, fences), 0x2000
+water, 0x4000 foam/wake, 0x8000 baked shadow decal. Material -1 is
+invisible collision-only geometry. `material2` is an overlay layer (grass
+strips, tyre tracks, the checker on inflatable arches) drawn over the base
+with the second UV set, weighted by vertex alpha.
+
+Patch UV nets list the four corners first (control points 0, 12, 15, 3),
+then the inner points of the 0-12 edge, the two inner columns, and the
+inner points of the 3-15 edge. A net whose `*_full` flag is 0 holds only
+its corners; the rest of the record is stale memory. Corner colours
+follow the same corner order. Shadow decal textures (`*_shad`, `*shadow*`)
+mark shadow as bright texels on black, or in alpha.
 Locators named `Start1`..`Start8` are the 2.5 m grid boxes; `Checkpoint N`,
 `Respot`, `waterbox` and weather zones (`snow .. mist .. tint ..`) are boxes
 too. Mesh blocks are currently found by validating candidate headers, which
