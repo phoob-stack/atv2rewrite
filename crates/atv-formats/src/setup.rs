@@ -59,6 +59,22 @@ pub fn entries(xml: &str) -> Vec<Entry> {
     out
 }
 
+/// The attributes of the first `<child .../>` inside top-level `<entry>`,
+/// for files whose children repeat attribute names (`VehicleCameras.xml`'s
+/// `PosOffset` and `LookOffset` both have `X`, `Y` and `Z`).
+pub fn child(xml: &str, entry: &str, child: &str) -> Option<HashMap<String, String>> {
+    let open = format!("<{entry}");
+    let start = xml.match_indices(&open).map(|(i, _)| i).find(|&i| {
+        xml[i + open.len()..].starts_with(|c: char| c.is_whitespace() || c == '>' || c == '/')
+    })?;
+    let body = &xml[start..];
+    let body = &body[..body.find(&format!("</{entry}>")).unwrap_or(body.len())];
+    let tag = format!("<{child}");
+    let at = body.match_indices(&tag).map(|(i, _)| i + tag.len()).find(|&i| body[i..].starts_with(char::is_whitespace))?;
+    let end = body[at..].find('>')?;
+    Some(parse_attrs(body[at..at + end].trim_end_matches('/')))
+}
+
 pub(crate) fn parse_attrs(mut s: &str) -> HashMap<String, String> {
     let mut m = HashMap::new();
     while let Some(eq) = s.find('=') {
@@ -88,5 +104,21 @@ mod tests {
         assert_eq!(e[0].get("mModelFilename"), Some("Male10"));
         assert_eq!(e[0].num("mTechnique"), Some(5.0));
         assert_eq!(e[1].get("mAvailable"), Some("1"));
+    }
+
+    #[test]
+    fn child_of_entry() {
+        let xml = r#"<Root>
+   <FollowNear OnGroundPosStiffness="6.0">
+      <PosOffset X="0.0" Y="1.5" Z="-2.75"/>
+      <LookOffset X="0.0" Y="0.0" Z="1.25"/>
+   </FollowNear>
+   <FollowNearer><PosOffset X="9"/></FollowNearer>
+   <FollowFar><PosOffset X="1" Y="2.7" Z="-4.3"/></FollowFar>
+</Root>"#;
+        let look = super::child(xml, "FollowNear", "LookOffset").unwrap();
+        assert_eq!(look["Z"], "1.25");
+        assert_eq!(super::child(xml, "FollowFar", "PosOffset").unwrap()["Y"], "2.7");
+        assert!(super::child(xml, "FollowFar", "LookOffset").is_none());
     }
 }
