@@ -145,6 +145,12 @@ pub struct Wreck {
     pub fall: Option<Fall>,
     /// Set on a hard landing, for the rider to pick up.
     pub landed: bool,
+    /// The hardest the chassis hit the world since the sound last looked
+    /// (closing speed, m/s).
+    pub knock: f32,
+    /// The hardest a thrown rider's body hit the world since the sound
+    /// last looked, and how fast it was going.
+    pub thump: Option<(f32, f32)>,
 }
 
 pub struct Fall {
@@ -193,6 +199,9 @@ impl Wreck {
         }
         let up = v.up();
         let wheels = v.wheels.iter().filter(|w| w.contact).count();
+        if let Some((speed, _)) = impact {
+            self.knock = self.knock.max(speed);
+        }
         if let Some((speed, n)) = impact {
             let limit = if wheels > 2 { 10.0 } else { 5.0 };
             let hard = speed.max(0.0) * (0.5 - 0.5 * up.dot(n)) * ((v.forward().dot(n) + 1.0) * 0.5 + 1.0);
@@ -250,6 +259,10 @@ impl Wreck {
             f.body += hit.normal * (hit.t - 0.05).max(0.0);
             let vn = f.vel.dot(hit.normal);
             if vn < 0.0 {
+                let speed = f.vel.length();
+                if self.thump.is_none_or(|(i, _)| -vn > i) {
+                    self.thump = Some((-vn, speed));
+                }
                 f.vel -= hit.normal * vn;
             }
             // Sliding to a stop.
