@@ -11,15 +11,25 @@
 //! in turn before track select (see [`crate::mp`]). Y (or T) on rider
 //! select, track select and the career status opens the Trick Book (see
 //! [`crate::trickbook`]).
+//!
+//! Player profiles are the original's three pages: Available Profiles
+//! (load one of ten, or make one), Choose A Rider (the riders open from the
+//! start, each in one profile at most) and Name Your Rider (an on-screen
+//! keyboard, or typing; a cheat's name enters the cheat, see
+//! [`crate::unlocks`]). Pressing start without a profile loaded opens them,
+//! as does Options. Career and Arcade ride the profile's rider: the
+//! original has no rider select for them.
 
 use bevy::input::gamepad::Gamepad;
+use bevy::input::keyboard::KeyboardInput;
+use bevy::input::ButtonState;
 use bevy::prelude::*;
 
 use atv_formats::setup::{self, Entry};
 use atv_formats::GameSource;
 
 use crate::freestyle::{self, limit_label, TrickDef, MEDALS, TIME_LIMITS};
-use crate::career::{self, Career, Champ, CustomSetup, Plan, Run};
+use crate::career::{self, Career, Champ, CustomSetup, Plan, Profile, Run, PROFILES};
 use crate::challenge;
 use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
@@ -227,16 +237,31 @@ pub enum Screen {
     /// The Custom championship's tracks and laps, then its points split.
     CustomTracks,
     CustomPoints,
+    /// The ten player profiles: load one, or pick an empty slot to make one.
+    ProfileSelect,
+    /// A new profile's rider, then its name.
+    ProfileRider,
+    ProfileName,
 }
 
 /// The Options menu's rows, and the page each opens.
-const OPTIONS: [(&str, Option<Screen>); 5] = [
+const OPTIONS: [(&str, Option<Screen>); 6] = [
     ("AUDIO", Some(Screen::Audio)),
     ("CAMERA", Some(Screen::Camera)),
     ("CONTROLLER", Some(Screen::Controller)),
     ("REPLAYS", None),
+    ("PROFILES", Some(Screen::ProfileSelect)),
     ("CREDITS", None),
 ];
+
+/// Name Your Rider's keys (0x51390): three rows of characters, then
+/// delete, space and OK.
+const KEY_ROWS: [&str; 3] = ["ABCDEFGHIJKLMN", "OPQRSTUVWXYZ", "1234567890-\"*"];
+const KEY_WORDS: [&str; 3] = ["DEL", "SPACE", "OK"];
+/// The longest name the original takes.
+const NAME_LEN: usize = 12;
+const NO_PROFILES: &str = "THERE HAVE BEEN NO PLAYER PROFILES LOADED, YOU'LL HAVE TO CREATE ONE NOW.";
+const ENTER_NAME: &str = "PLEASE ENTER YOUR NAME";
 
 #[derive(Resource, Default)]
 pub struct FrontEnd {
@@ -268,6 +293,20 @@ pub struct FrontEnd {
     /// The Trick Book's page, and the screen it was opened from.
     trick: usize,
     book_from: Screen,
+    /// Profile Select's slot (where a new profile goes), the screen it was
+    /// opened from, and what each slot holds.
+    slot: usize,
+    profile_from: Screen,
+    profiles: Vec<Option<Career>>,
+    /// Name Your Rider: the new profile's rider, its name so far and the
+    /// key highlighted (row, column).
+    new_rider: String,
+    name: String,
+    key: (usize, usize),
+    /// Cheats entered as a name, for the next profile made or loaded.
+    cheats: u32,
+    /// A message box over the screen (title, text) until it's closed.
+    popup: Option<(String, String)>,
 }
 
 impl FrontEnd {
@@ -308,6 +347,10 @@ const MUG: f32 = 50.0;
 const MUG_GAP: f32 = 64.0;
 const MUG_X: f32 = 64.0;
 const MUG_Y: f32 = 92.0;
+/// Choose A Rider's twelve, six to a row.
+const PROFILE_MUGS_ROW: usize = 6;
+const PROFILE_MUG_X: f32 = (SCREEN_W - (PROFILE_MUGS_ROW - 1) as f32 * MUG_GAP - MUG) / 2.0;
+const PROFILE_MUG_Y: f32 = 110.0;
 
 fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>, career: Res<Career>, defs: Res<challenge::Defs>) {
     // Back from a race: straight to the main menu, cursors on the last pick;
@@ -338,6 +381,7 @@ fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>, car
     fe.challenge = sel.challenge.clamp(1, challenge::COUNT);
     fe.players = sel.players;
     fe.picking = 0;
+    fe.profiles = Career::profiles();
 }
 
 /// Whether an earlier player has picked `model` in split screen.
@@ -398,18 +442,44 @@ fn navigate(
     mut exit: MessageWriter<AppExit>,
     mut settings: ResMut<Settings>,
     (mut career, rules, defs, mut mp_champ): (ResMut<Career>, Res<career::Rules>, Res<challenge::Defs>, ResMut<MpChamp>),
+    mut typing: MessageReader<KeyboardInput>,
 ) {
+    // Name Your Rider takes typing (read every frame, so only keys pressed
+    // on it count).
+    let naming = fe.screen == Screen::ProfileName && fe.built == Some(fe.screen) && fe.popup.is_none();
+    let mut typed = false;
+    for k in typing.read() {
+        if naming && k.state == ButtonState::Pressed {
+            typed |= type_key(&mut fe, k);
+        }
+    }
+    if typed {
+        fe.built = None;
+        return;
+    }
     // In split screen each player picks their rider and ATV with their own pad.
     let picking = fe.players > 1 && matches!(fe.screen, Screen::Rider | Screen::Quad);
-    let Some(nav) = read_nav_from(&keys, &pads, picking.then_some(fe.picking)) else { return };
+    let nav = if fe.screen == Screen::ProfileName { name_nav(&keys, &pads) } else { read_nav_from(&keys, &pads, picking.then_some(fe.picking)) };
+    let Some(nav) = nav else { return };
     if fe.built != Some(fe.screen) {
+        return;
+    }
+    if fe.popup.is_some() {
+        if matches!(nav, Nav::Accept | Nav::Start | Nav::Back) {
+            fe.popup = None;
+            fe.built = None;
+        }
         return;
     }
     let mut list = lists.single_mut().ok();
     match fe.screen {
         Screen::Title => {
             if matches!(nav, Nav::Accept | Nav::Start) {
-                fe.screen = Screen::Main;
+                if career.profile.is_some() {
+                    fe.screen = Screen::Main;
+                } else {
+                    open_profiles(&mut fe, &roster, &career, Screen::Title);
+                }
             }
         }
         Screen::Main => match nav {
@@ -437,7 +507,11 @@ fn navigate(
                             sel.mode = fe.mode;
                             fe.arcade_round = 0;
                             let saved = career.arcade > 0 && career.arcade < roster.arcade.len();
-                            fe.screen = if fe.mode == Mode::Arcade && saved { Screen::ArcadeNew } else { Screen::Rider };
+                            if fe.mode == Mode::Arcade && saved {
+                                fe.screen = Screen::ArcadeNew;
+                            } else {
+                                to_rider(&mut fe, &mut sel, &career);
+                            }
                         }
                         Some("CAREER") => {
                             fe.mode = Mode::Career;
@@ -542,6 +616,14 @@ fn navigate(
                     fe.screen = Screen::Track;
                 }
             }
+            Nav::Back if rides_profile(&fe, &career) => {
+                let saved = career.arcade > 0 && career.arcade < roster.arcade.len();
+                fe.screen = match fe.mode {
+                    Mode::Career => Screen::CareerChamp,
+                    _ if saved => Screen::ArcadeNew,
+                    _ => Screen::Main,
+                };
+            }
             Nav::Back => fe.screen = Screen::Rider,
             _ => {}
         },
@@ -578,11 +660,11 @@ fn navigate(
                     fe.option = l.selected;
                 }
             }
-            Nav::Accept | Nav::Start => {
-                if let Some((_, Some(page))) = OPTIONS.get(fe.option) {
-                    fe.screen = *page;
-                }
-            }
+            Nav::Accept | Nav::Start => match OPTIONS.get(fe.option) {
+                Some((_, Some(Screen::ProfileSelect))) => open_profiles(&mut fe, &roster, &career, Screen::Options),
+                Some((_, Some(page))) => fe.screen = *page,
+                _ => {}
+            },
             Nav::Back => fe.screen = Screen::Main,
             _ => {}
         },
@@ -643,7 +725,7 @@ fn navigate(
                     }
                     Some((_, Some(c))) if career.is_open(*c) => {
                         fe.champ = *c;
-                        fe.screen = Screen::Rider;
+                        to_rider(&mut fe, &mut sel, &career);
                     }
                     _ => {}
                 }
@@ -660,7 +742,7 @@ fn navigate(
             Nav::Accept | Nav::Start => {
                 // The saved round first, then a new game.
                 fe.arcade_round = if list.as_ref().is_some_and(|l| l.selected == 0) { career.arcade } else { 0 };
-                fe.screen = Screen::Rider;
+                to_rider(&mut fe, &mut sel, &career);
             }
             Nav::Back => fe.screen = Screen::Main,
             _ => {}
@@ -855,6 +937,205 @@ fn navigate(
             Nav::Back => fe.screen = Screen::MpMode,
             _ => {}
         },
+        Screen::ProfileSelect => match nav {
+            Nav::Left | Nav::Right => {
+                fe.slot = if nav == Nav::Left { (fe.slot + PROFILES - 1) % PROFILES } else { (fe.slot + 1) % PROFILES };
+                fe.built = None;
+            }
+            Nav::Accept | Nav::Start => match fe.profiles.get(fe.slot).cloned().flatten() {
+                Some(mut loaded) => {
+                    loaded.upgrade(&rules);
+                    unlocks::upgrade(&mut loaded, &roster);
+                    unlocks::apply_bits(&mut loaded, &rules, std::mem::take(&mut fe.cheats));
+                    loaded.save();
+                    *career = loaded;
+                    settings.profile = Some(fe.slot);
+                    settings.save();
+                    fe.screen = profiles_done(&fe);
+                }
+                None => new_profile(&mut fe, &roster),
+            },
+            Nav::Back => fe.screen = fe.profile_from,
+            _ => {}
+        },
+        Screen::ProfileRider => {
+            let riders = profile_riders(&roster);
+            let n = riders.len();
+            if n == 0 {
+                return;
+            }
+            let k = riders.iter().position(|&i| i == fe.rider).unwrap_or(0);
+            match nav {
+                Nav::Left => fe.rider = riders[(k + n - 1) % n],
+                Nav::Right => fe.rider = riders[(k + 1) % n],
+                Nav::Up => fe.rider = riders[(k + n - PROFILE_MUGS_ROW % n) % n],
+                Nav::Down => fe.rider = riders[(k + PROFILE_MUGS_ROW) % n],
+                Nav::Accept | Nav::Start => {
+                    let Some(r) = roster.riders.get(fe.rider) else { return };
+                    if in_profile(&fe, &r.model) {
+                        return;
+                    }
+                    fe.new_rider = r.model.clone();
+                    fe.name.clear();
+                    fe.key = (0, 0);
+                    fe.screen = Screen::ProfileName;
+                }
+                Nav::Back if fe.profiles.iter().any(Option::is_some) => fe.screen = Screen::ProfileSelect,
+                Nav::Back => fe.screen = fe.profile_from,
+                Nav::Extra => {}
+            }
+        }
+        Screen::ProfileName => {
+            let row_len = |r: usize| KEY_ROWS.get(r).map_or(KEY_WORDS.len(), |k| k.chars().count());
+            let (r, c) = fe.key;
+            match nav {
+                Nav::Left => fe.key.1 = (c + row_len(r) - 1) % row_len(r),
+                Nav::Right => fe.key.1 = (c + 1) % row_len(r),
+                Nav::Up | Nav::Down => {
+                    // To the key across from this one.
+                    let to = if nav == Nav::Up { (r + 3) % 4 } else { (r + 1) % 4 };
+                    fe.key = (to, ((2 * c + 1) * row_len(to) / (2 * row_len(r))).min(row_len(to) - 1));
+                }
+                Nav::Accept if r < KEY_ROWS.len() => {
+                    let ch = KEY_ROWS[r].chars().nth(c).unwrap_or(' ');
+                    push_char(&mut fe, ch);
+                }
+                Nav::Accept if c == 0 => {
+                    fe.name.pop();
+                }
+                Nav::Accept if c == 1 => push_char(&mut fe, ' '),
+                Nav::Accept | Nav::Start => {
+                    let name = fe.name.trim().to_string();
+                    if let Some((bits, msg)) = unlocks::cheat(&name) {
+                        // The cheat goes to the next profile made or loaded.
+                        fe.cheats |= bits;
+                        fe.name.clear();
+                        fe.popup = Some(("CHEAT".into(), msg.into()));
+                    } else if name.is_empty() {
+                        fe.popup = Some((String::new(), ENTER_NAME.into()));
+                    } else {
+                        create_profile(&mut fe, &mut career, &rules, &mut settings, name);
+                        fe.screen = profiles_done(&fe);
+                    }
+                }
+                Nav::Back => fe.screen = Screen::ProfileRider,
+                Nav::Extra => {}
+            }
+            fe.built = None;
+        }
+    }
+}
+
+/// Opens Available Profiles from `from`; with no profiles saved, goes
+/// straight on to make the first, as the original does.
+fn open_profiles(fe: &mut FrontEnd, roster: &Roster, career: &Career, from: Screen) {
+    fe.profiles = Career::profiles();
+    fe.profile_from = from;
+    fe.slot = career.profile.as_ref().map_or(0, |p| p.slot);
+    if fe.profiles.iter().all(Option::is_none) {
+        new_profile(fe, roster);
+        fe.popup = Some((String::new(), NO_PROFILES.into()));
+    } else {
+        fe.screen = Screen::ProfileSelect;
+    }
+}
+
+/// Where loading or making a profile goes on to.
+fn profiles_done(fe: &FrontEnd) -> Screen {
+    if fe.profile_from == Screen::Options { Screen::Options } else { Screen::Main }
+}
+
+/// Choose A Rider for a profile in `fe.slot`, on the first rider no
+/// profile has.
+fn new_profile(fe: &mut FrontEnd, roster: &Roster) {
+    let riders = profile_riders(roster);
+    fe.rider = riders.iter().copied().find(|&i| !in_profile(fe, &roster.riders[i].model)).or(riders.first().copied()).unwrap_or(0);
+    fe.screen = Screen::ProfileRider;
+}
+
+/// Makes the profile named on Name Your Rider and loads it, with any
+/// cheats entered. The first profile carries on the progress made before
+/// profiles.
+fn create_profile(fe: &mut FrontEnd, career: &mut Career, rules: &career::Rules, settings: &mut Settings, name: String) {
+    let first = career.profile.is_none() && fe.profiles.iter().all(Option::is_none);
+    let mut new = if first { career.clone() } else { Career::new() };
+    new.profile = Some(Profile { slot: fe.slot, name, rider: fe.new_rider.clone() });
+    unlocks::apply_bits(&mut new, rules, std::mem::take(&mut fe.cheats));
+    new.save();
+    *career = new;
+    settings.profile = Some(fe.slot);
+    settings.save();
+    fe.profiles = Career::profiles();
+}
+
+/// The riders a profile can have: the ones open from the start (not the
+/// pros or the secret riders), as Choose A Rider offers them.
+fn profile_riders(roster: &Roster) -> Vec<usize> {
+    roster.riders.iter().enumerate().filter(|(_, r)| !r.locked).map(|(i, _)| i).collect()
+}
+
+/// Whether a saved profile has this rider (no two may share one).
+fn in_profile(fe: &FrontEnd, model: &str) -> bool {
+    fe.profiles.iter().flatten().filter_map(|c| c.profile.as_ref()).any(|p| p.rider.eq_ignore_ascii_case(model))
+}
+
+/// Whether the player rides the profile's rider: in Career and Arcade.
+fn rides_profile(fe: &FrontEnd, career: &Career) -> bool {
+    career.profile.is_some() && fe.players <= 1 && matches!(fe.mode, Mode::Career | Mode::Arcade)
+}
+
+/// On to rider select, or past it to ATV select on the profile's rider.
+fn to_rider(fe: &mut FrontEnd, sel: &mut Selection, career: &Career) {
+    match career.profile.as_ref().filter(|_| rides_profile(fe, career)) {
+        Some(p) => {
+            sel.rider = p.rider.clone();
+            fe.screen = Screen::Quad;
+        }
+        None => fe.screen = Screen::Rider,
+    }
+}
+
+/// A key typed on Name Your Rider: true when it typed or deleted.
+fn type_key(fe: &mut FrontEnd, k: &KeyboardInput) -> bool {
+    if k.key_code == KeyCode::Backspace {
+        fe.name.pop();
+        return true;
+    }
+    let Some(text) = &k.text else { return false };
+    let mut typed = false;
+    for c in text.chars().map(|c| c.to_ascii_uppercase()) {
+        if c == ' ' || KEY_ROWS.iter().any(|r| r.contains(c)) {
+            push_char(fe, c);
+            typed = true;
+        }
+    }
+    typed
+}
+
+fn push_char(fe: &mut FrontEnd, c: char) {
+    if fe.name.chars().count() < NAME_LEN && !(c == ' ' && fe.name.is_empty()) {
+        fe.name.push(c);
+    }
+}
+
+/// Moves on Name Your Rider, where letters, space and backspace type: the
+/// arrows, Enter for OK, Escape to go back, and the pads as usual.
+fn name_nav(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> Option<Nav> {
+    let k = |c: KeyCode| keys.just_pressed(c);
+    if k(KeyCode::ArrowUp) {
+        Some(Nav::Up)
+    } else if k(KeyCode::ArrowDown) {
+        Some(Nav::Down)
+    } else if k(KeyCode::ArrowLeft) {
+        Some(Nav::Left)
+    } else if k(KeyCode::ArrowRight) {
+        Some(Nav::Right)
+    } else if k(KeyCode::Enter) || k(KeyCode::NumpadEnter) {
+        Some(Nav::Start)
+    } else if k(KeyCode::Escape) {
+        Some(Nav::Back)
+    } else {
+        read_nav_from(&ButtonInput::default(), pads, None)
     }
 }
 
@@ -870,8 +1151,12 @@ fn champ_items(career: &Career) -> Vec<(String, Option<Champ>)> {
 
 /// Starts a championship for the picked rider and ATV, and saves it.
 fn start_career(career: &mut Career, plan: Plan, roster: &Roster, rules: &career::Rules, sel: &Selection) {
+    // The profile's name on its own rider.
     let rider = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider));
-    let name = rider.map_or(sel.rider.to_uppercase(), |r| r.name.clone());
+    let name = match &career.profile {
+        Some(p) if p.rider.eq_ignore_ascii_case(&sel.rider) => p.name.clone(),
+        _ => rider.map_or(sel.rider.to_uppercase(), |r| r.name.clone()),
+    };
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos());
     let pool = career_pool(roster, rules, plan.champ);
     career.start(plan, (&name, &sel.rider), &sel.quad, &pool, seed);
@@ -994,6 +1279,9 @@ fn rebuild(
         Screen::TrickBook => ("Trickbook", ""),
         Screen::CustomTracks => ("Career_Custom_Tracks", if split { "CHAMPIONSHIP" } else { "CAREER" }),
         Screen::CustomPoints => ("Career_Custom_Points_Distrib", if split { "CHAMPIONSHIP" } else { "CAREER" }),
+        Screen::ProfileSelect => ("Profile_Select", ""),
+        Screen::ProfileRider => ("Profile_Rider", ""),
+        Screen::ProfileName => ("Profile_Name", ""),
     };
     let (bg, title) = roster.screen(key);
 
@@ -1079,22 +1367,104 @@ fn rebuild(
                 if !unlocks::rider_shown(&career, &defs, rider) {
                     continue;
                 }
-                let (x, y) = mug_pos(i);
-                let rect = Rect::new((i % 8) as f32 * 64.0, (i / 8) as f32 * 64.0, (i % 8) as f32 * 64.0 + 64.0, (i / 8) as f32 * 64.0 + 64.0);
-                let scale = ui.mugs.size.x / 512.0;
-                let rect = Rect::from_corners(rect.min * scale, rect.max * scale);
-                let (mut n, mut img) = ui.mugs.region(rect, MUG / rect.width());
-                if taken(&fe, &sel, &rider.model) || !unlocks::rider_open(&career, &defs, rider) {
-                    // Another player has them, or they're locked.
-                    img.color = Color::srgb(0.25, 0.25, 0.25);
-                }
-                n.position_type = PositionType::Absolute;
-                n.left = px(x);
-                n.top = px(y);
-                kids.push(commands.spawn((n, img)).id());
+                // Dimmed when another player has them, or they're locked.
+                let dim = taken(&fe, &sel, &rider.model) || !unlocks::rider_open(&career, &defs, rider);
+                kids.push(mug(&mut commands, &ui, i, mug_pos(i), dim));
             }
             kids.push(bio_panel(&mut commands, &ui, 64.0, 296.0, &["ABILITY", "TECHNIQUE", "AGGRESSION", "STRENGTH"], true));
             kids.push(locked_line(&mut commands, 278.0));
+        }
+        Screen::ProfileRider => {
+            let sq = ui.design.get("SELECTION_SQUARE").rect;
+            let (mut n, img) = ui.design.tex.region(sq, (MUG + 22.0) / sq.width());
+            n.position_type = PositionType::Absolute;
+            kids.push(commands.spawn((n, img, MugCursor)).id());
+            for (k, i) in profile_riders(&roster).into_iter().enumerate() {
+                // Another profile's rider is dimmed.
+                kids.push(mug(&mut commands, &ui, i, profile_mug_pos(k), in_profile(&fe, &roster.riders[i].model)));
+            }
+            kids.push(bio_panel(&mut commands, &ui, 64.0, 296.0, &["ABILITY", "TECHNIQUE", "AGGRESSION", "STRENGTH"], true));
+            kids.push(locked_line(&mut commands, 278.0));
+        }
+        Screen::ProfileSelect => {
+            // The ten slots in a row, the selection square behind the one
+            // picked and the empty ones dimmed.
+            let (tile, gap, y) = (48.0, 8.0, 92.0);
+            let x0 = (SCREEN_W - (PROFILES as f32 * tile + (PROFILES - 1) as f32 * gap)) / 2.0;
+            let sq = ui.design.get("SELECTION_SQUARE").rect;
+            let (mut n, img) = ui.design.tex.region(sq, (tile + 20.0) / sq.width());
+            n.position_type = PositionType::Absolute;
+            n.left = px(x0 + fe.slot as f32 * (tile + gap) - 10.0);
+            n.top = px(y - 10.0);
+            kids.push(commands.spawn((n, img)).id());
+            let scale = ui.profile_numbers.size.x / 512.0;
+            for i in 0..PROFILES {
+                let corner = Vec2::new((i % 8) as f32, (i / 8) as f32) * 64.0;
+                let rect = Rect::from_corners(corner * scale, (corner + 64.0) * scale);
+                let (mut n, mut img) = ui.profile_numbers.region(rect, tile / rect.width());
+                if fe.profiles.get(i).is_none_or(Option::is_none) {
+                    img.color = Color::srgb(0.35, 0.35, 0.35);
+                }
+                n.position_type = PositionType::Absolute;
+                n.left = px(x0 + i as f32 * (tile + gap));
+                n.top = px(y);
+                kids.push(commands.spawn((n, img)).id());
+            }
+            let saved = fe.profiles.get(fe.slot).and_then(Option::as_ref);
+            let name = saved.and_then(|c| c.profile.as_ref()).map_or("EMPTY PROFILE".to_string(), |p| p.name.clone());
+            let w = ui.font(FontId::Menu).width(&name, 20.0);
+            kids.push(commands.spawn((BitmapText::new(FontId::Menu, 20.0, name), ui_at((SCREEN_W - w) / 2.0, 170.0))).id());
+            if let Some(c) = saved {
+                let rider = c.profile.as_ref().and_then(|p| roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&p.rider)));
+                if let Some(r) = rider {
+                    kids.push(hint(&mut commands, &ui, &r.name, 200.0));
+                }
+                for (i, (label, value)) in profile_stats(c, &roster, &rules).into_iter().enumerate() {
+                    let y = 236.0 + 22.0 * i as f32;
+                    kids.push(commands.spawn((BitmapText::new(FontId::Small, 9.0, label).color(Color::srgb(0.75, 0.82, 0.95)), ui_at(190.0, y))).id());
+                    kids.push(commands.spawn((BitmapText::new(FontId::Small, 9.0, value), ui_at(380.0, y))).id());
+                }
+            }
+        }
+        Screen::ProfileName => {
+            let gold = Color::srgb(1.0, 0.85, 0.3);
+            if let Some(r) = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&fe.new_rider)) {
+                kids.push(hint(&mut commands, &ui, &r.name, 76.0));
+            }
+            // The name in its box, then the keyboard.
+            let small = ui.name_entry.get("SMALLNAMEPANEL").rect;
+            let (bw, bs) = (320.0, 320.0 / small.width());
+            let (bx, by) = ((SCREEN_W - bw) / 2.0, 96.0);
+            kids.push(commands.spawn(placed(ui.name_entry.node("SMALLNAMEPANEL", bs), bx, by)).id());
+            let menu_font = ui.font(FontId::Menu);
+            let w = menu_font.width(&fe.name, 18.0);
+            let tx = (SCREEN_W - w) / 2.0;
+            let ty = by + (small.height() * bs - 18.0) / 2.0;
+            kids.push(commands.spawn((BitmapText::new(FontId::Menu, 18.0, fe.name.clone()), ui_at(tx, ty))).id());
+            if fe.name.chars().count() < NAME_LEN {
+                kids.push(commands.spawn((BitmapText::new(FontId::Menu, 18.0, "_").color(gold), ui_at(tx + w + 2.0, ty), Blink)).id());
+            }
+            let panel = ui.name_entry.get("NAMEPANEL").rect;
+            let (pw, ps) = (540.0, 540.0 / panel.width());
+            let (px0, py0) = ((SCREEN_W - pw) / 2.0, 156.0);
+            kids.push(commands.spawn(placed(ui.name_entry.node("NAMEPANEL", ps), px0, py0)).id());
+            let row_h = (panel.height() * ps - 24.0) / 4.0;
+            let mut rows: Vec<Vec<String>> = KEY_ROWS.iter().map(|r| r.chars().map(String::from).collect()).collect();
+            rows.push(KEY_WORDS.iter().map(|w| w.to_string()).collect());
+            for (r, keys) in rows.iter().enumerate() {
+                let words = r == KEY_ROWS.len();
+                let step = if words { 150.0 } else { 36.0 };
+                let x_mid = SCREEN_W / 2.0 - step * (keys.len() - 1) as f32 / 2.0;
+                for (c, key) in keys.iter().enumerate() {
+                    let on = fe.key == (r, c);
+                    let size = if on { 20.0 } else { 16.0 };
+                    let kw = menu_font.width(key, size);
+                    let y = py0 + 12.0 + r as f32 * row_h + (row_h - size) / 2.0;
+                    let text = BitmapText::new(FontId::Menu, size, key.clone()).color(if on { gold } else { Color::WHITE });
+                    kids.push(commands.spawn((text, ui_at(x_mid + step * c as f32 - kw / 2.0, y))).id());
+                }
+            }
+            kids.push(hint(&mut commands, &ui, "TYPE A NAME OR PICK THE LETTERS  -  ENTER WHEN DONE", py0 + panel.height() * ps + 14.0));
         }
         Screen::Quad => {
             let names: Vec<String> = roster.quads.iter().map(|q| q.name.to_uppercase()).collect();
@@ -1409,8 +1779,14 @@ fn rebuild(
         }
     }
 
+    if let Some((head, text)) = &fe.popup {
+        kids.push(popup(&mut commands, &ui, head, text));
+    }
+
     // Button hints along the bottom.
     let hints: &[(&str, &str)] = match fe.screen {
+        _ if fe.popup.is_some() => &[("controlbuttoncross", "OK")],
+        Screen::ProfileSelect if fe.profiles.get(fe.slot).is_none_or(Option::is_none) => &[("controlbuttoncross", "CREATE PROFILE"), ("controlbuttoncircle", "BACK")],
         Screen::Title => &[],
         Screen::Main => &[("controlbuttoncross", "SELECT")],
         Screen::Audio | Screen::Camera => &[("controlbuttoncross", "OK")],
@@ -1528,6 +1904,66 @@ fn locked_line(commands: &mut Commands, top: f32) -> Entity {
         .id()
 }
 
+/// A message box over the screen, as the original's (`ID_PROFILE_MSGBOX`,
+/// `ID_CHEAT_PAGE`).
+fn popup(commands: &mut Commands, ui: &UiAssets, head: &str, text: &str) -> Entity {
+    let panel = ui.bio.get("BIOPANEL").rect;
+    commands
+        .spawn((
+            Node { position_type: PositionType::Absolute, width: px(SCREEN_W), height: px(SCREEN_H), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..default() },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.75)),
+        ))
+        .with_children(|o| {
+            o.spawn((
+                Node {
+                    width: px(440),
+                    min_height: px(130),
+                    flex_direction: FlexDirection::Column,
+                    justify_content: JustifyContent::Center,
+                    align_items: AlignItems::Center,
+                    row_gap: px(10),
+                    padding: UiRect::all(px(20)),
+                    ..default()
+                },
+                // The panel is see-through; the screen shouldn't show through it.
+                BackgroundColor(Color::srgba(0.02, 0.04, 0.12, 0.9)),
+            ))
+            .with_children(|p| {
+                let (mut n, img) = ui.bio.tex.region(panel, 1.0);
+                n.position_type = PositionType::Absolute;
+                n.left = px(0);
+                n.top = px(0);
+                n.width = percent(100);
+                n.height = percent(100);
+                p.spawn((n, img, ZIndex(-1)));
+                if !head.is_empty() {
+                    p.spawn(BitmapText::new(FontId::Menu, 18.0, head).color(Color::srgb(1.0, 0.85, 0.3)));
+                }
+                for line in challenge::wrap(text, 40) {
+                    p.spawn(BitmapText::new(FontId::Small, 9.0, line));
+                }
+            });
+        })
+        .id()
+}
+
+/// Available Profiles' figures for a profile, as the original lists them.
+fn profile_stats(c: &Career, roster: &Roster, rules: &career::Rules) -> [(&'static str, String); 6] {
+    let champ = Champ::ALL.into_iter().rev().find(|&ch| c.is_open(ch)).unwrap_or_default();
+    // Arcade's tracks reached (its last round goes back to the first).
+    let tracks: std::collections::BTreeSet<String> = roster.arcade.iter().map(|t| t.to_ascii_lowercase()).collect();
+    let arcade = tracks.iter().filter(|t| c.reached.iter().any(|r| r.eq_ignore_ascii_case(t))).count();
+    let medals = c.challenges.values().filter(|ch| ch.1.is_some()).count();
+    [
+        ("SKILL LEVEL", rules.skill_level(c.skill_points).to_string()),
+        ("SKILL POINTS", c.skill_points.to_string()),
+        ("RANKING", rules.certificate(c.skill_points).to_string()),
+        ("CHAMPIONSHIP", champ.label().to_string()),
+        ("ARCADE", format!("{arcade}/{}", tracks.len())),
+        ("CHALLENGE", format!("{medals}/{}", challenge::COUNT)),
+    ]
+}
+
 fn hint(commands: &mut Commands, ui: &UiAssets, text: &str, top: f32) -> Entity {
     let w = ui.font(FontId::Small).width(text, 8.0);
     commands.spawn((BitmapText::new(FontId::Small, 8.0, text).color(Color::srgb(0.75, 0.82, 0.95)), ui_at((SCREEN_W - w) / 2.0, top))).id()
@@ -1602,6 +2038,26 @@ fn mug_pos(i: usize) -> (f32, f32) {
     (MUG_X + (i % 8) as f32 * MUG_GAP, MUG_Y + (i / 8) as f32 * MUG_GAP)
 }
 
+/// Where Choose A Rider puts its `k`th rider.
+fn profile_mug_pos(k: usize) -> (f32, f32) {
+    (PROFILE_MUG_X + (k % PROFILE_MUGS_ROW) as f32 * MUG_GAP, PROFILE_MUG_Y + (k / PROFILE_MUGS_ROW) as f32 * MUG_GAP)
+}
+
+/// Rider `i`'s mug from the `RiderMugs` page, eight 64-texel faces a row.
+fn mug(commands: &mut Commands, ui: &UiAssets, i: usize, (x, y): (f32, f32), dim: bool) -> Entity {
+    let corner = Vec2::new((i % 8) as f32, (i / 8) as f32) * 64.0;
+    let scale = ui.mugs.size.x / 512.0;
+    let rect = Rect::from_corners(corner * scale, (corner + 64.0) * scale);
+    let (mut n, mut img) = ui.mugs.region(rect, MUG / rect.width());
+    if dim {
+        img.color = Color::srgb(0.25, 0.25, 0.25);
+    }
+    n.position_type = PositionType::Absolute;
+    n.left = px(x);
+    n.top = px(y);
+    commands.spawn((n, img)).id()
+}
+
 /// The blue bio panel: a name, two detail lines (riders) and 1-5 rating
 /// bars made of the attribute-bar sprites.
 fn bio_panel(commands: &mut Commands, ui: &UiAssets, left: f32, top: f32, stats: &[&str], rider: bool) -> Entity {
@@ -1663,12 +2119,13 @@ fn update_rider_panel(
     mut fields: Query<(&Field, &mut BitmapText)>,
     mut bars: Query<(&StatBar, &mut Node), Without<MugCursor>>,
 ) {
-    if fe.screen != Screen::Rider {
+    let profile = fe.screen == Screen::ProfileRider;
+    if fe.screen != Screen::Rider && !profile {
         return;
     }
     let Some(r) = roster.riders.get(fe.rider) else { return };
     if let Ok(mut n) = cursor.single_mut() {
-        let (x, y) = mug_pos(fe.rider);
+        let (x, y) = if profile { profile_riders(&roster).iter().position(|&i| i == fe.rider).map_or((0.0, 0.0), profile_mug_pos) } else { mug_pos(fe.rider) };
         n.left = px(x - 11.0);
         n.top = px(y - 11.0);
     }
@@ -1678,7 +2135,9 @@ fn update_rider_panel(
             Field::Born => set_text(&mut t, &format!("BORN  {}", r.born)),
             Field::From => set_text(&mut t, &format!("FROM  {}", r.from)),
             Field::Locked => {
-                let why = if taken(&fe, &sel, &r.model) {
+                let why = if profile {
+                    if in_profile(&fe, &r.model) { unlocks::RIDER_IN_PROFILE } else { "" }
+                } else if taken(&fe, &sel, &r.model) {
                     unlocks::RIDER_TAKEN
                 } else if !unlocks::rider_open(&career, &defs, r) {
                     unlocks::RIDER_LOCKED

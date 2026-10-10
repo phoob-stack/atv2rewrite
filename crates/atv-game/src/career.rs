@@ -23,7 +23,10 @@
 //!   shares each place's race and trick points (together 50 for a win) out
 //!   between the two rankings in steps of 5% (0x426a0, 0x42ea0, 0x43680).
 //!
-//! Progress is saved to `career.cfg` beside the options.
+//! Progress belongs to a player profile, as in the original: up to ten,
+//! each with its own name and rider, saved as `profiles/<n>.cfg` beside
+//! the options. Before a profile is made it goes to `career.cfg`, and the
+//! first profile made carries that progress on.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -280,6 +283,19 @@ impl Run {
     }
 }
 
+/// Player profiles the original keeps (0x16340).
+pub const PROFILES: usize = 10;
+
+/// Whose progress a [`Career`] is.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Profile {
+    /// 0-based; saved as `profiles/<slot + 1>.cfg`.
+    pub slot: usize,
+    pub name: String,
+    /// Their rider's model (`Male11`), which Career and Arcade ride.
+    pub rider: String,
+}
+
 /// What one race earned, for the results screen.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Award {
@@ -313,15 +329,41 @@ pub struct Career {
     pub reached: BTreeSet<String>,
     /// Cheats entered ([`crate::unlocks::CHEATS`] bits).
     pub cheats: u32,
+    /// The profile this is, none before one is made.
+    pub profile: Option<Profile>,
 }
 
 impl Career {
-    fn path() -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "atv2").map(|d| d.config_dir().join("career.cfg"))
+    fn dir() -> Option<PathBuf> {
+        directories::ProjectDirs::from("", "", "atv2").map(|d| d.config_dir().to_path_buf())
     }
 
+    fn profile_path(slot: usize) -> Option<PathBuf> {
+        Self::dir().map(|d| d.join("profiles").join(format!("{}.cfg", slot + 1)))
+    }
+
+    fn path(&self) -> Option<PathBuf> {
+        match &self.profile {
+            Some(p) => Self::profile_path(p.slot),
+            None => Self::dir().map(|d| d.join("career.cfg")),
+        }
+    }
+
+    /// The progress made before any profile.
     pub fn load() -> Self {
-        Self::path().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| Self::parse(&t)).unwrap_or_default()
+        Self::dir().and_then(|d| std::fs::read_to_string(d.join("career.cfg")).ok()).map(|t| Self::parse(&t)).unwrap_or_default()
+    }
+
+    /// A saved profile, if that slot has one.
+    pub fn load_profile(slot: usize) -> Option<Self> {
+        let mut c = Self::parse(&std::fs::read_to_string(Self::profile_path(slot)?).ok()?);
+        c.profile.as_mut()?.slot = slot;
+        Some(c)
+    }
+
+    /// Every profile slot, empty or not.
+    pub fn profiles() -> Vec<Option<Self>> {
+        (0..PROFILES).map(Self::load_profile).collect()
     }
 
     pub fn new() -> Self {
@@ -443,6 +485,8 @@ impl Career {
                     c.reached.insert(v.to_string());
                 }
                 "cheat" => c.cheats |= crate::unlocks::cheat_bits(v).unwrap_or(0),
+                "profile" => c.profile.get_or_insert_default().name = v.to_string(),
+                "profile_rider" => c.profile.get_or_insert_default().rider = v.to_string(),
                 "best" => {
                     if let Some((t, p)) = v.rsplit_once(' ')
                         && let Ok(p) = p.parse()
@@ -509,7 +553,11 @@ impl Career {
     }
 
     pub fn to_text(&self) -> String {
-        let mut s = format!("skill_points = {}\nqualifying = {}\nprofessional = {}\n", self.skill_points, self.open[1], self.open[2]);
+        let mut s = String::new();
+        if let Some(p) = &self.profile {
+            s += &format!("profile = {}\nprofile_rider = {}\n", p.name, p.rider);
+        }
+        s += &format!("skill_points = {}\nqualifying = {}\nprofessional = {}\n", self.skill_points, self.open[1], self.open[2]);
         if self.open[3] {
             s += "custom = true\n";
         }
@@ -522,7 +570,7 @@ impl Career {
         for t in &self.reached {
             s += &format!("reached = {t}\n");
         }
-        for (name, bits) in crate::unlocks::CHEATS {
+        for (name, bits, _) in crate::unlocks::CHEATS {
             if bits.count_ones() == 1 && self.cheats & bits != 0 {
                 s += &format!("cheat = {name}\n");
             }
@@ -547,7 +595,7 @@ impl Career {
     }
 
     pub fn save(&self) {
-        let Some(path) = Self::path() else { return };
+        let Some(path) = self.path() else { return };
         let write = || -> std::io::Result<()> {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
@@ -852,6 +900,8 @@ mod tests {
         c.challenges.insert(3, (14.25, Some(1)));
         c.challenges.insert(12, (99.5, None));
         c.arcade = 6;
+        assert_eq!(Career::parse(&c.to_text()), c);
+        c.profile = Some(Profile { slot: 0, name: "BUBBA 2".into(), rider: "Male11".into() });
         assert_eq!(Career::parse(&c.to_text()), c);
         assert_eq!(Career::parse("junk"), Career::new());
     }

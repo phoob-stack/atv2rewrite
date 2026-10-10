@@ -352,8 +352,9 @@ left alone.
   over `BAR_OFF`); Camera picks one of the three follow cameras; Control
   Config shows `FrontEnd/BigPad_Xbox` (top and front views of the Duke pad;
   `BigPad_Overlay_Xbox` holds the leader lines for its labels) and a
-  Vibration tick box (`FrontEnd/checkbox`: `OFF`, `ON`). Replays, Profiles,
+  Vibration tick box (`FrontEnd/checkbox`: `OFF`, `ON`). Replays,
   Language and Credits pages exist too; the disc has no credits text.
+  Profiles opens Available Profiles (see Profiles below).
 - `Career.xml`: root attributes `mMaxSkillForAmateur` (7),
   `mNumUnlockables` and `mTimePercentage` (1.3); `SkillLevelPoints`
   (`SkillLevel1..7`), `CertificateSkillLevels` (Amateur 0, Professional 4,
@@ -430,7 +431,24 @@ left alone.
   one. `ALLOFEM` 0x7e (all below), `ALLRIDERS` 0x2, `ALLBIKES` 0x4,
   `ALLTRACKS` 0x8, `ALLTRICKS` 0x10 (skill points to the maximum),
   `ALLCHAMPS` 0x20 (Qualifying, Professional and Custom open), `ALLCHALS`
-  0x40 (all twelve challenges open) and `NOHUD` 0x80.
+  0x40 (all twelve challenges open) and `NOHUD` 0x80. Each shows the
+  `ID_CHEAT_PAGE` box ("Cheat" and its own string, 0x6f-0x75).
+- Profiles (ten slots, 0x16340; the frontend state machines at 0x9b430
+  on): `Profile_Select` (`ID_PROFILE_SELECTION_PAGE`, page 0x2b) shows
+  `FrontEnd/ProfileNumbers` (1-10, eight 64-texel tiles a row) as a picture
+  bar, empty slots greyed, the name or 0xa3 "Empty Profile", and Skill
+  Level, Skill Points, Ranking, Championship, Arcade (of 15) and Challenge
+  (of 12); A is 0x1c2 "Select" or 0x89 "Create Profile". With no profile
+  loaded the game first says 0x164 ("There have been no player profiles
+  loaded...") in `ID_PROFILE_MSGBOX`. `Profile_Rider`
+  (`ID_CREATEPROFILE_PAGE`, 0x2c) offers the twelve `Unlocked` riders,
+  refusing one another profile has (0x1ae); `Profile_Name`
+  (`ID_NAMEPROFILE_PAGE`, 0x2d) is `ID_NAME_ENTRY` on
+  `FrontEnd/nameentrypanel` (`NAMEPANEL` keyboard, `SMALLNAMEPANEL` name
+  box): rows `ABCDEFGHIJKLMN`, `OPQRSTUVWXYZ` and `1234567890-"*`, then Del,
+  Space and Ok, up to 12 characters (0x51390). Arcade and Career have no
+  rider select (no `ID_RIDER_SELECT_PAGE` for `Arcade_Rider`): they ride
+  the profile's rider. Options lists Profiles between Replays and Credits.
 
 ## Particles (Setup/Materials.xml, Sprites/Particles)
 

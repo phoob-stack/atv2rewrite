@@ -69,8 +69,9 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
 - **Career**: the Amateur, Qualifying and Professional championships of
   `Setup/Career.xml`, five rounds each against seven computer riders, with
   race and trick points, skill points, gold medals and ATV unlocks; a top-3
-  finish opens the next. Professional opens **Custom**, as in the original:
-  after rider and ATV, Choose Your Tracks lists the championship tracks
+  finish opens the next. With a profile loaded you ride its rider, as in
+  the original. Professional opens **Custom**, as in the original:
+  after ATV select, Choose Your Tracks lists the championship tracks
   you've opened (A adds the highlighted one as the next round or takes it out,
   Right then Up/Down sets its laps from 1 to 20, Y or Continue goes on),
   and Point Distribution shares each place's race and trick points out
@@ -83,9 +84,9 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   sends Arcade back to round 1 (the disc's "You need to finish in first
   place to move onto the next round" and "Attempts: %d/3"). Seven computer riders race each round, as in the
   original (its arcade mode seats 1 player and 7 AI).
-  The next round is saved after each one (`arcade` in career.cfg, the
+  The next round is saved after each one (`arcade` in the profile, the
   original's `mArcadeProgress`); choosing Arcade then offers to continue
-  from it or start a new game.
+  from it or start a new game. With a profile loaded you ride its rider.
 - **Open Freestyle**: roam any track for points against a time limit (1, 3,
   5, 10, 15 or 30 minutes, or unlimited) with the disc's Bronze, Silver and
   Gold targets. Points come from tricks, multi-trick combos, flips and spins,
@@ -148,9 +149,23 @@ and the two secret riders only appear once won. Bullet, Challenger,
 Nitro, Skyline, Storm and the ATC come with career gold medals, in every
 mode, and computer riders never ride the ATC. Locked items show dimmed
 with the original's message saying how to open them. The original's
-cheats (typed as a profile name there) work with `--cheat NAME`, once,
-and stay in the save: `ALLOFEM` (everything), `ALLRIDERS`, `ALLBIKES`,
-`ALLTRACKS`, `ALLTRICKS` (top skill level), `ALLCHAMPS`, `ALLCHALS`.
+cheats are typed as a name on Name Your Rider (below): `ALLOFEM`
+(everything), `ALLRIDERS`, `ALLBIKES`, `ALLTRACKS`, `ALLTRICKS` (top skill
+level), `ALLCHAMPS`, `ALLCHALS`. Each shows its message and goes to the
+next profile you make or load, and stays in its save; `--cheat NAME` enters
+one into the profile loaded.
+
+**Profiles**, as in the original: up to ten players, each with their own
+progress, name and rider. Pressing start with no profile loaded opens
+Available Profiles (or, when there are none, goes straight on to make
+one), as does Options > Profiles: pick a numbered slot to load its profile,
+or an empty one to make one. Choose A Rider offers the twelve riders open
+from the start, each in one profile at most, and Name Your Rider takes up
+to 12 characters from its on-screen keyboard or typed (Backspace deletes,
+Enter is OK, Escape goes back). Profiles are saved as `profiles/<n>.cfg`
+in the config folder, and the last one loaded comes back next time; the
+first one made carries on any progress from before profiles
+(`career.cfg`).
 
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on
@@ -159,7 +174,7 @@ track select.
 The quad respots automatically when it is upside down or falls off the world.
 Other options: `--frontend` (show the menus even with `--track`, which
 then preselects), `--screen title|main|rider|atv|track|tricks` (open on that
-front-end screen), `--mode race|timetrial|arcade|freestyle` with
+front-end screen; also `profiles`), `--mode race|timetrial|arcade|freestyle` with
 `--minutes N` (freestyle limit, 0 = unlimited) or `--round N` (arcade round),
 `--opponents N` (computer riders in a single race, default 5),
 `--players N` (split screen for N players, in a single race or freestyle),
@@ -167,7 +182,8 @@ front-end screen), `--mode race|timetrial|arcade|freestyle` with
 x,y,z,tx,ty,tz` (free-fly camera in game coordinates: WASD, Q/E, Shift, right
 mouse to look), `--screenshot out.png --after 8` (saves a frame and exits),
 `--resolution 1920x1080`, `--fullscreen` (borderless, desktop resolution),
-`--cheat ALLOFEM` (enters one of the original's cheats into the save).
+`--cheat ALLOFEM` (enters one of the original's cheats into the profile
+loaded).
 
 Tracks: Dunes1-3, Forest1-3, Glacier1-3, Industrial1-3, Swamp1-3, Stadium1-2.
 Quads: ATC, Bandit, Blaze, Bullet, Challenger, Charger, Dimension, Nitro,

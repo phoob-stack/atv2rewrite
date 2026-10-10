@@ -273,6 +273,7 @@ fn parse_args() -> anyhow::Result<Args> {
                     "multiplayer" => Screen::MpMode,
                     "players" => Screen::MpPlayers,
                     "tricks" | "trickbook" => Screen::TrickBook,
+                    "profiles" => Screen::ProfileSelect,
                     other => anyhow::bail!("unknown screen {other} (title, main, rider, atv, track)"),
                 });
             }
@@ -376,8 +377,9 @@ fn main() -> anyhow::Result<()> {
     {
         selection.track = t.clone();
     }
-    // Career races the saved championship's next round.
-    let mut career = career::Career::load();
+    // The profile last loaded, or the progress from before profiles.
+    let settings = Settings::load();
+    let mut career = settings.profile.and_then(career::Career::load_profile).unwrap_or_else(career::Career::load);
     career.upgrade(&career_rules);
     unlocks::upgrade(&mut career, &roster);
     if !args.cheats.is_empty() {
@@ -386,6 +388,7 @@ fn main() -> anyhow::Result<()> {
         }
         career.save();
     }
+    // Career races the saved championship's next round.
     if args.mode == Mode::Career
         && let Some(run) = career.run.as_ref().filter(|r| !r.over())
         && let Some((t, laps)) = run.next_round()
@@ -420,7 +423,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(roster)
         .insert_resource(selection)
         .insert_resource(front_end)
-        .insert_resource(Settings::load())
+        .insert_resource(settings)
         .insert_resource(career_rules)
         .insert_resource(career)
         .insert_resource(challenges)
