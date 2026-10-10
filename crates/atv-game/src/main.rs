@@ -16,6 +16,7 @@
 //! with `--round` races the saved championship's next round).
 
 mod aitricks;
+mod attack;
 mod audio;
 mod boost;
 mod career;
@@ -457,6 +458,9 @@ fn teardown(mut commands: Commands, mut cams: Query<(Entity, &mut Camera), With<
     commands.remove_resource::<Session>();
     commands.remove_resource::<boost::Boost>();
     commands.remove_resource::<boost::BoostRules>();
+    commands.remove_resource::<attack::Fighter>();
+    commands.remove_resource::<attack::FightRules>();
+    commands.remove_resource::<attack::FightClips>();
     commands.remove_resource::<StuntClips>();
     commands.remove_resource::<Wreck>();
     commands.remove_resource::<CrashClips>();
@@ -533,6 +537,9 @@ fn setup(
             match rider {
                 Ok(r) => {
                     commands.insert_resource(CrashClips::load(&game.0, &r.mirror_map));
+                    if let Some(c) = attack::FightClips::load(&game.0, &r.mirror_map) {
+                        commands.insert_resource(c);
+                    }
                     commands.entity(seat).insert(r);
                 }
                 Err(e) => error!("failed to load rider {}: {e:#}", sel.rider),
@@ -654,6 +661,9 @@ fn setup(
     commands.insert_resource(session);
     commands.insert_resource(boost::BoostRules::load(&game.0));
     commands.insert_resource(boost::Boost::default());
+    commands.insert_resource(attack::FightRules::load(&game.0));
+    let stats = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider)).map_or([3.0; 4], |r| r.stats);
+    commands.insert_resource(attack::Fighter::new(stats[3], stats[2]));
     commands.insert_resource(water::Water(trk::water_surface(&scene.world)));
     commands.insert_resource(Race {
         collision,
@@ -944,12 +954,22 @@ fn animate_rider(
     }
 }
 
-/// The rider performs the trick in progress.
-fn stunts(time: Res<Time>, session: Option<Res<Session>>, clips: Option<Res<StuntClips>>, mut riders: Query<&mut Rider, Without<OpponentRider>>) {
+/// The rider kicks, flinches from a kick, or performs the trick in
+/// progress.
+#[allow(clippy::type_complexity)]
+fn stunts(
+    time: Res<Time>,
+    session: Option<Res<Session>>,
+    (clips, fighter, fight_clips): (Option<Res<StuntClips>>, Option<Res<attack::Fighter>>, Option<Res<attack::FightClips>>),
+    mut riders: Query<&mut Rider, Without<OpponentRider>>,
+) {
     let (Some(s), Some(clips)) = (session, clips) else { return };
-    let stunt = s.active.as_ref().and_then(|a| {
-        let clip = clips.0.get(a.def)?.clone()?;
-        Some((clip, a.t / s.tricks[a.def].total))
+    let fight = fighter.zip(fight_clips).and_then(|(f, c)| f.pose(&c));
+    let stunt = fight.or_else(|| {
+        s.active.as_ref().and_then(|a| {
+            let clip = clips.0.get(a.def)?.clone()?;
+            Some((clip, a.t / s.tricks[a.def].total))
+        })
     });
     for mut r in &mut riders {
         r.set_stunt(stunt.clone(), time.delta_secs());

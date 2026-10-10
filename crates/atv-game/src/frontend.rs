@@ -1324,13 +1324,14 @@ fn hint(commands: &mut Commands, ui: &UiAssets, text: &str, top: f32) -> Entity 
 
 /// The controls, pad and keyboard, beside the front of the big pad.
 fn controls_table(commands: &mut Commands, ui: &UiAssets) -> Entity {
-    const ROWS: [(&str, &str, &str); 11] = [
+    const ROWS: [(&str, &str, &str); 12] = [
         ("ACCELERATE", "RT OR A", "W OR UP"),
         ("BRAKE AND REVERSE", "LT OR X", "S OR DOWN"),
         ("STEER", "LEFT STICK", "A D OR LEFT RIGHT"),
         ("LEAN", "LEFT STICK", "I K"),
         ("PRE-LOAD AND HOP", "B OR RB", "SPACE"),
         ("SPEED BOOST", "Y", "SHIFT"),
+        ("KICK", "LB", "E"),
         ("TRICKS IN THE AIR", "X Y LB RB", "1 2 3 4"),
         ("CHANGE CAMERA", "BACK", "C"),
         ("PAUSE", "START", "ESCAPE"),

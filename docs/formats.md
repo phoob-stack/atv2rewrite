@@ -296,7 +296,17 @@ with the original's addresses.
   the physics' drive factor at +0x7e4) and the meter drains `BoostTimeMod`
   (0.1) a second (0x1b750); holding it also opens the throttle fully
   (0x1a9a0). A crash takes `CrashLoss` (0.2); `AttackLoss` and
-  `AttackAwardAIMod` are for kicks and punches, which steal boost.
+  `AttackAwardAIMod` are for kicks: the kick (rider anim state 5, the
+  `Kick` clip, mirrored for the left; 0x27eb0) lands on its 12th frame
+  (0x2dc50) on any rider within 1 m of the kicker's position + (±1.2, 0,
+  0.3) in its frame, and the victim (0x2a200) loses strength (1 if its
+  `mStrength` is below the kicker's, 0.75 if equal, 0.5 if above; strength
+  refills over Riders.xml's root `mStrengthRestoreTime`, 0x2cca0). It
+  hands over min(meter, `AttackLoss`) of boost and flinches
+  (`Hit_from_right`, mirrored for a kick from the left), or at no
+  strength left is knocked off (crash types 3/4) and hands over all of
+  it. The AI (0x630f0) kicks when its `mAggression` x 0.2 > 0.5 and a
+  rider is within 2.2 m more than 45 degrees off its heading.
   `mLevel` (1-7, four tricks each) is the skill level a rider needs: the
   original refuses a trick above it (0x18439). A player's level comes from
   the profile's skill points (`Career.xml` `SkillLevelPoints`), another

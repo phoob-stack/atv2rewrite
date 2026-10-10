@@ -17,6 +17,7 @@ use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 use crate::convert::{self, Loader, WheelVisual};
 use crate::crash::{CrashClips, Wreck};
 use crate::aitricks::AiTricks;
+use crate::attack::Fighter;
 use crate::boost::{Boost, BoostRules};
 use crate::freestyle::{self, Dir, Session, StuntClips};
 use crate::frontend::Roster;
@@ -36,7 +37,8 @@ impl Plugin for OpponentsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
-            drive_opponents
+            (drive_opponents, crate::attack::kicks)
+                .chain()
                 .after(crate::drive)
                 .run_if(in_state(AppState::Race)),
         )
@@ -89,6 +91,8 @@ pub struct Racer {
     /// Thrown off, by the same rules as player 1.
     pub wreck: Wreck,
     pub boost: Boost,
+    /// Kicks given and taken.
+    pub fighter: Fighter,
 }
 
 /// Marks a computer rider's seat, so the player's rider systems leave its
@@ -267,6 +271,7 @@ pub fn spawn(
             tricks: AiTricks::new(i as u32 * 7919 + 17),
             wreck: Wreck::default(),
             boost: Boost::default(),
+            fighter: Fighter::new(rider.stats[3], rider.stats[2]),
         });
         info!("computer rider {}: {} on {quad}", i + 1, rider.name);
     }
@@ -497,7 +502,7 @@ fn drive_opponents(
 fn sync_opponents(
     time: Res<Time>,
     opponents: Option<Res<Opponents>>,
-    (clips, crash_clips): (Option<Res<StuntClips>>, Option<Res<CrashClips>>),
+    (clips, crash_clips, fight_clips): (Option<Res<StuntClips>>, Option<Res<CrashClips>>, Option<Res<crate::attack::FightClips>>),
     mut bodies: Query<&mut Transform, (Without<WheelVisual>, Without<OpponentRider>)>,
     mut wheels: Query<(&WheelVisual, &mut Transform), Without<OpponentRider>>,
     mut riders: Query<(&ChildOf, &mut Rider, &mut Transform), With<OpponentRider>>,
@@ -539,10 +544,13 @@ fn sync_opponents(
                 r.vehicle.preload,
                 time.delta_secs(),
             );
-            // The trick in progress, a player's or a computer rider's.
-            let stunt = r.session.as_ref().zip(clips.as_deref()).and_then(|(s, clips)| {
-                let a = s.active.as_ref()?;
-                Some((clips.0.get(a.def)?.clone()?, a.t / s.tricks[a.def].total))
+            // A kick or a flinch, else the trick in progress, a player's or
+            // a computer rider's.
+            let stunt = fight_clips.as_deref().and_then(|c| r.fighter.pose(c)).or_else(|| {
+                r.session.as_ref().zip(clips.as_deref()).and_then(|(s, clips)| {
+                    let a = s.active.as_ref()?;
+                    Some((clips.0.get(a.def)?.clone()?, a.t / s.tricks[a.def].total))
+                })
             });
             rider.set_stunt(stunt, time.delta_secs());
         }
