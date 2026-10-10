@@ -533,6 +533,8 @@ fn setup(
         Mode::SingleRace if sel.players > 1 => mp::FIELD - 1,
         Mode::SingleRace => args.opponents,
         Mode::Career => sel.field.len(),
+        // The original's arcade state machine seats 1 player and 7 AI.
+        Mode::Arcade => 7,
         // Freestyle Battle: the players only.
         Mode::Freestyle => sel.players - 1,
         _ => 0,
