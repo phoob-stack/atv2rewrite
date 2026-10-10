@@ -379,7 +379,8 @@ the ROW spatial tree and effect records, and the material record fields.
   volume, pitch).
 - SpotFX (3 clips): 0 the menu cursor moving, 1 select (and, it seems,
   back), 2 a pop-up panel opening or closing; all at
-  `mFrontEndSpotFXVol`, pitch 1.
+  `mFrontEndSpotFXVol`, pitch 1. The rewrite plays 0 and 1 on the front
+  end and in-race menus, and 2 as the pause menu opens and closes.
 - Riders (34 clips): `0x94690` plays one when a thrown rider's body hits
   something with an impulse over 2.5 while going faster than 2.2347, at
   most once a second unless the hit is twice as hard as the last. Female
