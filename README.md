@@ -192,6 +192,8 @@ to the results. Beyond the original, holding Left or Right rewinds or
 fast forwards, Up/Down watches another rider, Y or C holds one camera
 (each in turn, then back to the director), and the right stick turns the
 Orbit camera. The original could save one replay; that isn't ported.
+Once a lone rider is home, the same director films the rest of the race
+behind the results, moving between the computer riders every few seconds.
 
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on

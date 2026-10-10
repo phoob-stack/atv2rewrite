@@ -37,6 +37,8 @@ pub const CRASHED: u8 = 4;
 
 /// The shortest shot, in seconds.
 const MIN_SHOT: f32 = 3.0;
+/// The general mode watches one rider at least this long (0x72d00).
+const MIN_WATCH: f32 = 4.0;
 /// Half the size of a quad and rider, which the zoom cameras frame. The
 /// original measures the rider's model; this is a typical size.
 const RIDER_HALF_SIZE: f32 = 1.4;
@@ -326,6 +328,8 @@ pub struct Director {
     /// Where the walk along the secondaries stands.
     cursor: Option<usize>,
     since_cut: f32,
+    /// Seconds on the rider being watched.
+    since_switch: f32,
     ride: Ride,
     take: Take,
     last: Option<Shot>,
@@ -342,6 +346,7 @@ impl Default for Director {
             on_primary: true,
             cursor: None,
             since_cut: 0.0,
+            since_switch: 0.0,
             ride: Ride::Chase,
             take: Take::default(),
             last: None,
@@ -362,6 +367,27 @@ impl Director {
     pub fn cut(&mut self) {
         self.take = Take::default();
         self.since_cut = 0.0;
+    }
+
+    /// Who the general mode watches next (0x72d00): after [`MIN_WATCH`] on
+    /// one rider, a computer rider picked at random, unless either of them
+    /// is thrown off. The first `players` racers are the players. The
+    /// original first asks a scored table for a rider (0x729f0); that table
+    /// isn't decoded, so the pick is always the random one it falls back on.
+    pub fn pick_rider(&mut self, scene: &Scene, players: usize, dt: f32) -> usize {
+        self.since_switch += dt;
+        if scene.racers <= players || self.since_switch < MIN_WATCH {
+            return scene.target;
+        }
+        let pick = players + self.rand(scene.racers - players);
+        let thrown = |i: usize| (scene.flags)(i, scene.time) & CRASHED != 0;
+        if pick == scene.target || thrown(scene.target) || thrown(pick) {
+            return scene.target;
+        }
+        // The same camera picks the new rider up, and holds them a while.
+        self.since_switch = 0.0;
+        self.cut();
+        pick
     }
 
     /// Steps through holding each camera, then back to the director's cuts.
@@ -736,6 +762,28 @@ mod tests {
         // Forward is -Z for the quad and the camera alike.
         assert_eq!(m.offset, Vec3::new(0.0, 1.25, -0.2));
         assert!((m.rotation * Vec3::NEG_Z).distance(Vec3::Z) < 1e-5);
+    }
+
+    #[test]
+    fn general_mode_moves_between_computer_riders() {
+        let mut d = Director::default();
+        let quad = |_: usize, _: f32| Some((Vec3::ZERO, Quat::IDENTITY));
+        let fine = |_: usize, _: f32| GROUNDED | ALL_DOWN;
+        let scene = Scene { quad: &quad, flags: &fine, racers: 4, target: 0, time: 0.0, collision: None, stick: Vec2::ZERO, real_dt: 0.1 };
+        assert_eq!(d.pick_rider(&scene, 1, 3.9), 0);
+        let mut target = 0;
+        for _ in 0..20 {
+            target = d.pick_rider(&Scene { target, ..scene }, 1, 0.5);
+            if target != 0 {
+                break;
+            }
+        }
+        assert!((1..4).contains(&target));
+        // Not again for a while.
+        assert_eq!(d.pick_rider(&Scene { target, ..scene }, 1, 3.0), target);
+        // Alone, nobody else to watch.
+        let alone = Scene { racers: 1, ..scene };
+        assert_eq!(d.pick_rider(&alone, 1, 10.0), 0);
     }
 
     #[test]
