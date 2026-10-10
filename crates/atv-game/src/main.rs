@@ -4,7 +4,7 @@
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
 //!             [--rider Male1]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
-//!             [--camera x,y,z,tx,ty,tz]
+//!             [--camera x,y,z,tx,ty,tz] [--resolution 1280x720] [--fullscreen]
 
 mod convert;
 mod rider;
@@ -20,6 +20,7 @@ use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+use bevy::window::{MonitorSelection, WindowMode};
 
 use atv_formats::GameSource;
 use atv_sim::track as trk;
@@ -38,6 +39,8 @@ struct Args {
     screenshot_after: f32,
     camera: Option<[f32; 6]>,
     autodrive: bool,
+    resolution: (u32, u32),
+    fullscreen: bool,
 }
 
 #[derive(Resource, Clone)]
@@ -90,6 +93,8 @@ fn parse_args() -> anyhow::Result<Args> {
         screenshot_after: 8.0,
         camera: None,
         autodrive: false,
+        resolution: (1280, 720),
+        fullscreen: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -102,6 +107,12 @@ fn parse_args() -> anyhow::Result<Args> {
             "--screenshot" => a.screenshot = Some(PathBuf::from(val())),
             "--after" => a.screenshot_after = val().parse()?,
             "--autodrive" => a.autodrive = true,
+            "--fullscreen" => a.fullscreen = true,
+            "--resolution" => {
+                let v = val();
+                let (w, h) = v.split_once('x').ok_or_else(|| anyhow::anyhow!("--resolution wants WIDTHxHEIGHT, got {v}"))?;
+                a.resolution = (w.parse()?, h.parse()?);
+            }
             "--camera" => {
                 let v: Vec<f32> = val().split(',').filter_map(|s| s.trim().parse().ok()).collect();
                 a.camera = v.try_into().ok();
@@ -122,7 +133,12 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "ATV Quad Power Racing 2".into(),
-                resolution: (1280, 720).into(),
+                resolution: args.resolution.into(),
+                mode: if args.fullscreen {
+                    WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+                } else {
+                    WindowMode::Windowed
+                },
                 ..default()
             }),
             ..default()
