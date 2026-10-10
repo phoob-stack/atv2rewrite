@@ -15,6 +15,9 @@
 //! node: i32 x5 header, u32 tri_count, u32 patch_count, u32 0, u32 vertex_count,
 //!       i32 -1 x3, u32 indices[tri_count*3], Vertex[vertex_count],
 //!       Patch[patch_count]
+//! vertex (56 B): pos, normal, uv, 4 floats, u32 ARGB, u32 bone
+//! patch (672 B): u32 mode, 0, 0; X[16], Y[16], Z[16]; UVs; u32 ARGB[4]
+//!       at word 148; i32 bone[16] at word 152 (-1 when unskinned)
 //! ```
 
 use crate::bin::Reader;
@@ -25,10 +28,13 @@ pub struct Vertex {
     pub pos: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
-    /// Four floats that are zero in every model seen so far.
+    /// Four floats: a second (overlay) UV pair, then two unused. Zero in
+    /// most models; riders use the pair for their mud layer.
     pub extra: [f32; 4],
     /// Vertex colour as stored (0xAARRGGBB).
     pub color: u32,
+    /// Skeleton bone the vertex follows (riders; 0 in unskinned models).
+    pub bone: u32,
 }
 
 /// Bicubic Bezier patch (curved bodywork, and most of each track's road).
@@ -47,6 +53,9 @@ pub struct Patch {
     /// Corner colours (0xAARRGGBB) at control points 0, 3, 15 and 12, i.e.
     /// (u,v) = (0,0), (1,0), (1,1), (0,1) on the tessellated grid.
     pub corner_color: [u32; 4],
+    /// Skeleton bone per control point (row-major) for riders; -1 in
+    /// unskinned models.
+    pub bones: [i32; 16],
 }
 
 /// A tessellated patch: an (n+1) x (n+1) vertex grid, row-major.
@@ -176,8 +185,8 @@ impl Model {
                     uv: r.vec2()?,
                     extra: r.f32s::<4>()?,
                     color: r.u32()?,
+                    bone: r.u32()?,
                 };
-                r.u32()?;
                 vertices.push(v);
             }
             let mut patches = Vec::with_capacity(npatch);
@@ -190,9 +199,13 @@ impl Model {
                 let uv = r.f32s::<32>()?;
                 r.seek(start + 148 * 4);
                 let corner_color = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
+                let mut bones = [-1i32; 16];
+                for b in &mut bones {
+                    *b = r.i32()?;
+                }
                 r.seek(start + PATCH_SIZE);
                 let control = std::array::from_fn(|i| [xs[i], ys[i], zs[i]]);
-                patches.push(Patch { header, control, uv: Patch::uvs(header[0], &uv), uv2: [[0.0; 2]; 16], corner_color });
+                patches.push(Patch { header, control, uv: Patch::uvs(header[0], &uv), uv2: [[0.0; 2]; 16], corner_color, bones });
             }
             nodes.push(Node { header, indices, vertices, patches });
         }

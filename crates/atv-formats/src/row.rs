@@ -232,6 +232,7 @@ fn try_mesh(
             uv: r.vec2()?,
             extra: r.f32s::<4>()?,
             color: r.u32()?,
+            bone: 0,
         });
     }
     let mut patches = Vec::with_capacity(npatch);
@@ -256,6 +257,7 @@ fn try_mesh(
             uv2: patch_uvs(header[1] == 1, &uv2),
             // Stored in the same corner order as the UV nets.
             corner_color: [c[0], c[3], c[2], c[1]],
+            bones: [-1; 16],
         });
     }
     Ok(Some((

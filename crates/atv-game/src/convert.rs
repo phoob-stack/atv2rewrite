@@ -7,13 +7,16 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use bevy::asset::RenderAssetUsages;
+use bevy::camera::visibility::DynamicSkinnedMeshBounds;
 use bevy::image::{Image, ImageSampler, ImageSamplerDescriptor, ImageAddressMode};
-use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
+use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
+use bevy::mesh::{Indices, Mesh, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use atv_formats::bog::{TexFormat, Texture};
-use atv_formats::rom::{Model, Patch, Vertex};
+use atv_formats::anim::Skeleton;
+use atv_formats::rom::{Model, Node, Patch, Vertex};
 use atv_formats::row::World;
 use atv_formats::GameSource;
 
@@ -52,6 +55,8 @@ enum Look {
     Overlay,
     /// Lit by the sun (vehicles).
     Lit,
+    /// Lit and always opaque: rider textures keep a gloss mask in alpha.
+    Rider,
     /// Sky dome: unlit and unfogged.
     Sky,
 }
@@ -82,7 +87,7 @@ impl Look {
     /// scene, so the baked (doubled) value is capped at white.
     fn color(self, c: u32) -> [f32; 4] {
         let mut rgba = argb(c, self.uses_vertex_alpha());
-        if self == Look::Lit {
+        if matches!(self, Look::Lit | Look::Rider) {
             rgba[..3].iter_mut().for_each(|v| *v = v.min(1.0));
         }
         rgba
@@ -100,6 +105,15 @@ pub struct WheelVisual {
     pub wheels: Vec<usize>,
     pub base: Vec3,
     pub mirror: bool,
+}
+
+/// A rider's skinned mesh and the joint entities that pose it.
+pub struct RiderRig {
+    /// Joint entities in skeleton order; the first is the pelvis, a child
+    /// of the quad's model root.
+    pub joints: Vec<Entity>,
+    /// Each bone's bind offset from its parent (Bevy space).
+    pub offsets: Vec<Vec3>,
 }
 
 pub struct Loader<'a> {
@@ -123,6 +137,9 @@ struct Batch {
     uv: Vec<[f32; 2]>,
     color: Vec<[f32; 4]>,
     idx: Vec<u32>,
+    /// Skinning, for riders only: up to four bones per vertex.
+    joints: Vec<[u16; 4]>,
+    weights: Vec<[f32; 4]>,
 }
 
 impl Batch {
@@ -171,14 +188,63 @@ impl Batch {
         }
     }
 
+    /// Adds a rider node: its triangles follow one bone per vertex; patch
+    /// vertices blend the bones of the control points by their Bezier
+    /// weights, which is exact for rigidly skinned control points.
+    fn add_skinned(&mut self, node: &Node, look: Look) {
+        self.add_tris(&node.vertices, &node.indices, look, false);
+        for v in &node.vertices {
+            self.joints.push([v.bone as u16, 0, 0, 0]);
+            self.weights.push([1.0, 0.0, 0.0, 0.0]);
+        }
+        for p in &node.patches {
+            self.add_patch(p, look, false);
+            for j in 0..=PATCH_STEPS {
+                let bv = bernstein(j as f32 / PATCH_STEPS as f32);
+                for i in 0..=PATCH_STEPS {
+                    let bu = bernstein(i as f32 / PATCH_STEPS as f32);
+                    let mut per_bone: Vec<(u16, f32)> = Vec::new();
+                    for (k, &bone) in p.bones.iter().enumerate() {
+                        let w = bu[k % 4] * bv[k / 4];
+                        let bone = bone.max(0) as u16;
+                        match per_bone.iter_mut().find(|(b, _)| *b == bone) {
+                            Some(e) => e.1 += w,
+                            None => per_bone.push((bone, w)),
+                        }
+                    }
+                    per_bone.sort_by(|a, b| b.1.total_cmp(&a.1));
+                    per_bone.truncate(4);
+                    let total: f32 = per_bone.iter().map(|e| e.1).sum::<f32>().max(1e-6);
+                    let (mut j4, mut w4) = ([0u16; 4], [0f32; 4]);
+                    for (n, (b, w)) in per_bone.into_iter().enumerate() {
+                        j4[n] = b;
+                        w4[n] = w / total;
+                    }
+                    self.joints.push(j4);
+                    self.weights.push(w4);
+                }
+            }
+        }
+    }
+
     fn into_mesh(self) -> Mesh {
-        Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
             .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.pos)
             .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.normal)
             .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, self.uv)
             .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, self.color)
-            .with_inserted_indices(Indices::U32(self.idx))
+            .with_inserted_indices(Indices::U32(self.idx));
+        if self.joints.is_empty() {
+            return mesh;
+        }
+        mesh.with_inserted_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, VertexAttributeValues::Uint16x4(self.joints))
+            .with_inserted_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, self.weights)
     }
+}
+
+fn bernstein(t: f32) -> [f32; 4] {
+    let s = 1.0 - t;
+    [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t]
 }
 
 /// Baked shadow decals mark shadow as bright texels on black (or, in a few,
@@ -338,7 +404,7 @@ impl<'a> Loader<'a> {
         let m = self.materials.add(StandardMaterial {
             base_color: if look == Look::Mist { Color::srgba(1.0, 1.0, 1.0, 0.3) } else { Color::WHITE },
             base_color_texture: tex.map(|t| t.0),
-            unlit: look != Look::Lit,
+            unlit: !matches!(look, Look::Lit | Look::Rider),
             fog_enabled: look != Look::Sky,
             cull_mode: None,
             double_sided: true,
@@ -543,5 +609,53 @@ impl<'a> Loader<'a> {
             }
         }
         Ok(root_entity)
+    }
+
+    /// Spawns a rider (`Characters/<name>`) under a quad's model root. The
+    /// mesh is skinned to one joint entity per bone, left in the bind pose
+    /// (a T-pose around the model origin) for the caller to pose.
+    pub fn spawn_rider(
+        &mut self,
+        commands: &mut Commands,
+        bindposes: &mut Assets<SkinnedMeshInverseBindposes>,
+        name: &str,
+        parent: Entity,
+    ) -> Result<RiderRig> {
+        let dir = format!("/Characters/{name}/");
+        let model = Model::parse(&self.game.read(&format!("{dir}{name}.rom"))?)?;
+        let skeleton = Skeleton::parse(&self.game.read(&format!("{dir}{name}.bas"))?)?;
+        let bind: Vec<Vec3> = skeleton.bind_positions().into_iter().map(|p| Vec3::from(flip(p))).collect();
+        let offsets: Vec<Vec3> = skeleton.bones.iter().map(|b| Vec3::from(flip(b.offset))).collect();
+
+        let mut joints: Vec<Entity> = Vec::with_capacity(skeleton.bones.len());
+        for (i, b) in skeleton.bones.iter().enumerate() {
+            let e = commands.spawn((Transform::from_translation(offsets[i]), Visibility::default())).id();
+            commands.entity(b.parent.map_or(parent, |p| joints[p])).add_child(e);
+            joints.push(e);
+        }
+        let inverse = bindposes.add(bind.iter().map(|p| Mat4::from_translation(-*p)).collect::<Vec<_>>());
+
+        let mut batches: HashMap<Option<usize>, Batch> = HashMap::new();
+        for node in &model.nodes {
+            batches.entry(node.material()).or_default().add_skinned(node, Look::Rider);
+        }
+        for (mat, batch) in batches {
+            if batch.idx.is_empty() {
+                continue;
+            }
+            let name = mat.and_then(|i| model.materials.get(i)).map(|m| m.name.clone());
+            let material = self.material(name.as_deref(), Look::Rider);
+            let mesh = batch.into_mesh().with_generated_skinned_mesh_bounds()?;
+            let child = commands
+                .spawn((
+                    Mesh3d(self.meshes.add(mesh)),
+                    MeshMaterial3d(material),
+                    SkinnedMesh { inverse_bindposes: inverse.clone(), joints: joints.clone() },
+                    DynamicSkinnedMeshBounds,
+                ))
+                .id();
+            commands.entity(parent).add_child(child);
+        }
+        Ok(RiderRig { joints, offsets })
     }
 }
