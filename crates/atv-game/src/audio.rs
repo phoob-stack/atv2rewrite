@@ -471,9 +471,9 @@ const KNOCK_MIN: f32 = 2.0;
 
 #[derive(Default)]
 struct CrashVoices {
-    /// Seconds since the last grunt and knock, and how hard each was.
-    grunt: (f32, f32),
-    knock: (f32, f32),
+    /// Per quad (player 1 first, then the computer riders): seconds since
+    /// its last grunt and knock, and how hard each was.
+    timers: Vec<[(f32, f32); 2]>,
     last_voice: Option<usize>,
     seed: u32,
 }
@@ -483,59 +483,82 @@ impl CrashVoices {
         self.seed = self.seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
         (self.seed >> 16) as usize % n.max(1)
     }
+
+    /// The grunt and knock, if any, from quad `slot`'s crash state. `near`
+    /// scales them by how far it is from player 1.
+    fn play(&mut self, slot: usize, wreck: &mut crate::crash::Wreck, female: bool, near: f32, out: &mut impl FnMut(&Arc<Pcm>, f32, f32), banks: &Banks) {
+        let [mut grunt, mut knock_t] = self.timers[slot];
+        // A bailed rider hitting the ground: impulse over 2.5 while moving,
+        // at most once a second unless it's twice as hard as the last.
+        if let Some((impulse, speed)) = wreck.thump.take()
+            && impulse > 2.5
+            && speed > 2.2347
+            && (grunt.0 > 1.0 || impulse > grunt.1 * 2.0)
+        {
+            let voices = if female { FEMALE_VOICES } else { MALE_VOICES };
+            let mut pick = voices.start + self.rand(voices.len());
+            for _ in 0..8 {
+                if Some(pick) != self.last_voice {
+                    break;
+                }
+                pick = voices.start + self.rand(voices.len());
+            }
+            if let Some(pcm) = banks.riders.get(pick) {
+                debug!("rider voice {pick} (impulse {impulse:.1})");
+                out(pcm, near, 1.0);
+                self.last_voice = Some(pick);
+                grunt = (0.0, impulse);
+            }
+        }
+        // The quad's body hitting something: harder knocks draw on more of
+        // the table, every 0.25 s at most unless twice as hard.
+        let knock = std::mem::take(&mut wreck.knock);
+        if knock > KNOCK_MIN && (knock_t.0 > 0.25 || knock > knock_t.1 * 2.0) {
+            let (choices, scale) = if knock <= 8.0 { (3, 8.0) } else if knock <= 14.0 { (4, 14.0) } else { (6, 14.0) };
+            let i = KNOCKS[self.rand(choices)];
+            if let Some(pcm) = banks.vehicles.get(i) {
+                let volume = (knock / scale + 0.7).min(1.0) * near;
+                let pitch = 1.0 + self.rand(1000) as f32 / 2000.0;
+                debug!("knock {i} (impact {knock:.1})");
+                out(pcm, volume, pitch);
+                knock_t = (0.0, knock);
+            }
+        }
+        self.timers[slot] = [grunt, knock_t];
+    }
 }
 
-/// Grunts from a thrown rider and knocks from the quad's body.
+/// Grunts from thrown riders and knocks from quads' bodies: player 1's,
+/// and everyone else's by how far off they are.
 #[allow(clippy::too_many_arguments)]
 fn crash_sounds(
     mut commands: Commands,
     time: Res<Time>,
     banks: Option<Res<Banks>>,
     wreck: Option<ResMut<crate::crash::Wreck>>,
+    player: Option<Res<Player>>,
+    mut opponents: Option<ResMut<crate::opponents::Opponents>>,
     sel: Res<Selection>,
     settings: Res<Settings>,
     mut sounds: ResMut<Assets<Sound>>,
     mut state: Local<CrashVoices>,
 ) {
-    let (Some(banks), Some(mut wreck)) = (banks, wreck) else { return };
+    let (Some(banks), Some(mut wreck), Some(player)) = (banks, wreck, player) else { return };
     let dt = time.delta_secs();
-    state.grunt.0 += dt;
-    state.knock.0 += dt;
-    let effects = gain(settings.effects);
-    // A bailed rider hitting the ground: impulse over 2.5 while moving,
-    // at most once a second unless it's twice as hard as the last.
-    if let Some((impulse, speed)) = wreck.thump.take()
-        && impulse > 2.5
-        && speed > 2.2347
-        && (state.grunt.0 > 1.0 || impulse > state.grunt.1 * 2.0)
-    {
-        let voices = if sel.rider.to_ascii_lowercase().starts_with("female") { FEMALE_VOICES } else { MALE_VOICES };
-        let mut pick = voices.start + state.rand(voices.len());
-        for _ in 0..8 {
-            if Some(pick) != state.last_voice {
-                break;
-            }
-            pick = voices.start + state.rand(voices.len());
-        }
-        if let Some(pcm) = banks.riders.get(pick) {
-            debug!("rider voice {pick} (impulse {impulse:.1})");
-            one_shot(&mut commands, &mut sounds, pcm, effects, 1.0);
-            state.last_voice = Some(pick);
-            state.grunt = (0.0, impulse);
-        }
+    let quads = 1 + opponents.as_ref().map_or(0, |o| o.racers.len());
+    state.timers.resize(quads, [(f32::MAX, 0.0); 2]);
+    for t in &mut state.timers {
+        t[0].0 += dt;
+        t[1].0 += dt;
     }
-    // The quad's body hitting something: harder knocks draw on more of
-    // the table, every 0.25 s at most unless twice as hard.
-    let knock = std::mem::take(&mut wreck.knock);
-    if knock > KNOCK_MIN && (state.knock.0 > 0.25 || knock > state.knock.1 * 2.0) {
-        let (choices, scale) = if knock <= 8.0 { (3, 8.0) } else if knock <= 14.0 { (4, 14.0) } else { (6, 14.0) };
-        let i = KNOCKS[state.rand(choices)];
-        if let Some(pcm) = banks.vehicles.get(i) {
-            let volume = (knock / scale + 0.7).min(1.0) * effects;
-            let pitch = 1.0 + state.rand(1000) as f32 / 2000.0;
-            debug!("knock {i} (impact {knock:.1})");
-            one_shot(&mut commands, &mut sounds, pcm, volume, pitch);
-            state.knock = (0.0, knock);
+    let effects = gain(settings.effects);
+    let mut out = |pcm: &Arc<Pcm>, volume: f32, pitch: f32| one_shot(&mut commands, &mut sounds, pcm, volume * effects, pitch);
+    let female = |model: &str| model.to_ascii_lowercase().starts_with("female");
+    state.play(0, &mut wreck, female(&sel.rider), 1.0, &mut out, &banks);
+    if let Some(opp) = opponents.as_mut() {
+        for (i, r) in opp.racers.iter_mut().enumerate() {
+            let near = falloff(r.vehicle.position.distance(player.0.position));
+            state.play(i + 1, &mut r.wreck, female(&r.model), near, &mut out, &banks);
         }
     }
 }

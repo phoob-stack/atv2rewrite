@@ -1,6 +1,7 @@
 //! Computer riders in a single race. Each one drives its own quad with
 //! the original game's AI driver (`atv_sim::ai`) along the track's racing
-//! line, keeps its own laps, and is ranked against the player.
+//! line, keeps its own laps, and is ranked against the player. Riders are
+//! thrown off by the same crash rules as the player's.
 
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::input::gamepad::Gamepad;
@@ -14,6 +15,7 @@ use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
 use crate::convert::{self, Loader, WheelVisual};
+use crate::crash::{CrashClips, Wreck};
 use crate::freestyle::{self, Dir, Session, StuntClips};
 use crate::frontend::Roster;
 use crate::race::RaceProgress;
@@ -80,6 +82,8 @@ pub struct Racer {
     pub human: Option<usize>,
     /// A player's tricks (and in Freestyle Battle, their score).
     pub session: Option<Session>,
+    /// Thrown off, by the same rules as player 1.
+    pub wreck: Wreck,
 }
 
 /// Marks a computer rider's seat, so the player's rider systems leave its
@@ -249,6 +253,7 @@ pub fn spawn(
             upside_down: 0.0,
             human: human.map(|_| i + 2),
             session: human.map(|_| session.clone()),
+            wreck: Wreck::default(),
         });
         info!("computer rider {}: {} on {quad}", i + 1, rider.name);
     }
@@ -292,7 +297,7 @@ fn drive_opponents(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     args: Res<crate::Args>,
-    session: Option<Res<Session>>,
+    (session, crash_clips): (Option<Res<Session>>, Option<Res<CrashClips>>),
 ) {
     let (Some(race), Some(mut player), Some(progress), Some(mut opp), Some(mut standings)) =
         (race, player, progress, opponents, standings)
@@ -321,7 +326,9 @@ fn drive_opponents(
         // Freestyle Battle runs on player 1's clock, with no laps.
         let battle = r.session.as_ref().is_some_and(|s| s.freestyle);
         let time_up = battle && session.as_ref().is_some_and(|s| s.over(progress.clock));
-        r.input = if !r.progress.started() {
+        let crashed = r.wreck.fall.is_some();
+        r.input = if !r.progress.started() || crashed {
+            // On the grid, or thrown off: the quad rolls on by itself.
             Input::default()
         } else if time_up {
             Input { brake: if r.vehicle.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
@@ -334,7 +341,23 @@ fn drive_opponents(
                 _ => ai,
             }
         };
+        let before = (r.vehicle.velocity, r.vehicle.angular_velocity);
         r.vehicle.step(&r.input, dt, &race.collision);
+        let mut back_on = false;
+        if crashed {
+            back_on = r.wreck.advance(crash_clips.as_deref(), &race.collision, dt);
+            if back_on {
+                r.wreck.fall = None;
+            }
+        } else if r.progress.started()
+            && !time_up
+            && let Some((cause, way)) = r.wreck.check(&r.vehicle, before, &race.collision, dt)
+        {
+            let p = r.vehicle.position;
+            let pick = ((p.x * 12.9898 + p.z * 78.233 + i as f32).sin() * 43758.547).fract().abs();
+            r.wreck.start(&r.vehicle, cause, way, pick);
+            debug!("{} crashed ({cause:?})", r.name);
+        }
         if let (Some(s), Some(n)) = (r.session.as_mut(), r.human) {
             let (mut buttons, mut dir) = freestyle::read_tricks(&keys, &pads, Some(n - 1));
             if args.autodrive && s.active.is_none() && !r.vehicle.grounded() {
@@ -371,6 +394,7 @@ fn drive_opponents(
 
         // Back on the line when the driver gives up, the quad has been on
         // its back a while, or it fell out of the world.
+        // A thrown rider gets back on there too.
         r.upside_down = if r.vehicle.up().y < 0.2 {
             r.upside_down + dt
         } else {
@@ -378,7 +402,9 @@ fn drive_opponents(
         };
         let fell = r.vehicle.position.y < race.safe.0.y.min(race.start.0.y) - 60.0;
         let gave_up = r.driver.wants_respot() && (r.human.is_none() || r.progress.finished.is_some());
-        if gave_up || r.upside_down > 2.5 || fell {
+        let crashed = r.wreck.fall.is_some();
+        if back_on || fell || (!crashed && (gave_up || r.upside_down > 2.5)) {
+            r.wreck.fall = None;
             let (p, rot) = r.driver.respot(&opp.line);
             let ground = race
                 .collision
@@ -432,10 +458,10 @@ fn drive_opponents(
 fn sync_opponents(
     time: Res<Time>,
     opponents: Option<Res<Opponents>>,
-    clips: Option<Res<StuntClips>>,
-    mut bodies: Query<&mut Transform, Without<WheelVisual>>,
+    (clips, crash_clips): (Option<Res<StuntClips>>, Option<Res<CrashClips>>),
+    mut bodies: Query<&mut Transform, (Without<WheelVisual>, Without<OpponentRider>)>,
     mut wheels: Query<(&WheelVisual, &mut Transform), Without<OpponentRider>>,
-    mut riders: Query<(&ChildOf, &mut Rider), With<OpponentRider>>,
+    mut riders: Query<(&ChildOf, &mut Rider, &mut Transform), With<OpponentRider>>,
 ) {
     let Some(opp) = opponents else { return };
     for r in &opp.racers {
@@ -449,8 +475,25 @@ fn sync_opponents(
             crate::place_wheel(w, &mut t, &r.vehicle);
         }
     }
-    for (parent, mut rider) in &mut riders {
+    for (parent, mut rider, mut seat) in &mut riders {
         if let Some(r) = opp.racers.iter().find(|r| r.body == parent.parent()) {
+            // Thrown off: the rider tumbles where the crash puts them, as
+            // player 1's does.
+            match (&r.wreck.fall, crash_clips.as_deref().and_then(|c| r.wreck.pose(c))) {
+                (Some(f), Some(pose)) => {
+                    rider.set_crash(Some(pose));
+                    let quad = Transform::from_translation(r.vehicle.position).with_rotation(r.vehicle.rotation);
+                    let world = Transform::from_translation(f.body).with_rotation(f.heading);
+                    let local = quad.compute_affine().inverse() * world.compute_affine();
+                    *seat = Transform::from_matrix(Mat4::from(local));
+                    continue;
+                }
+                _ if rider.crashed() => {
+                    rider.set_crash(None);
+                    *seat = Transform::from_xyz(0.0, -convert::COM_HEIGHT, 0.0);
+                }
+                _ => {}
+            }
             rider.update_controls(
                 r.vehicle.steer,
                 r.input.lean,
