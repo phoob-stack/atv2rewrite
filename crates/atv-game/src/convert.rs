@@ -20,10 +20,22 @@ use atv_formats::GameSource;
 const PATCH_STEPS: usize = 6;
 
 pub struct Scene {
+    pub world: World,
     pub world_meshes: usize,
     pub props: usize,
-    pub quad_pos: Vec3,
-    pub quad_forward: Vec3,
+}
+
+/// Distance from the model origin (ground under the wheels) up to the
+/// physics centre of mass; WHEELOFFSET in the params is relative to it.
+pub const COM_HEIGHT: f32 = 0.43;
+
+/// A wheel (or rear axle half) that follows the simulation.
+#[derive(Component)]
+pub struct WheelVisual {
+    /// Simulation wheel indices this visual averages (the rear axle is solid).
+    pub wheels: Vec<usize>,
+    pub base: Vec3,
+    pub mirror: bool,
 }
 
 pub struct Loader<'a> {
@@ -111,29 +123,6 @@ fn shadow_to_multiply(bgra: &mut [u8]) {
         p[..3].fill(v);
         p[3] = 255;
     }
-}
-
-/// Highest surface point directly below `from`, by testing every triangle.
-fn ground_below(tris: &[[Vec3; 3]], from: Vec3) -> Option<f32> {
-    let mut best: Option<f32> = None;
-    for [a, b, c] in tris {
-        let (p, a2, b2, c2) = (from.xz(), a.xz(), b.xz(), c.xz());
-        let d = (b2 - a2).perp_dot(c2 - a2);
-        if d.abs() < 1e-9 {
-            continue;
-        }
-        let u = (b2 - p).perp_dot(c2 - p) / d;
-        let v = (c2 - p).perp_dot(a2 - p) / d;
-        let w = 1.0 - u - v;
-        if u < 0.0 || v < 0.0 || w < 0.0 {
-            continue;
-        }
-        let y = a.y * u + b.y * v + c.y * w;
-        if y <= from.y && best.is_none_or(|bst| y > bst) {
-            best = Some(y);
-        }
-    }
-    best
 }
 
 fn flip(p: [f32; 3]) -> [f32; 3] {
@@ -297,7 +286,7 @@ impl<'a> Loader<'a> {
     }
 
     /// Spawns one model as children of `parent`, one entity per material.
-    fn spawn_model(&mut self, commands: &mut Commands, model: &Model, parent: Entity, transform: Transform) {
+    fn spawn_model(&mut self, commands: &mut Commands, model: &Model, parent: Entity, transform: Transform) -> Entity {
         let mut batches: HashMap<Option<usize>, Batch> = HashMap::new();
         for node in &model.nodes {
             let b = batches.entry(node.material()).or_default();
@@ -318,9 +307,10 @@ impl<'a> Loader<'a> {
             let child = commands.spawn((Mesh3d(mesh), MeshMaterial3d(material))).id();
             commands.entity(holder).add_child(child);
         }
+        holder
     }
 
-    pub fn spawn_track(&mut self, commands: &mut Commands, track: &str, quad: &str) -> Result<Scene> {
+    pub fn spawn_track(&mut self, commands: &mut Commands, track: &str) -> Result<Scene> {
         let path = format!("/Levels/{track}/World/{track}.row");
         let world = World::parse(&self.game.read(&path).map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?)?;
         let env: String = track.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
@@ -335,12 +325,7 @@ impl<'a> Loader<'a> {
             }
         }
         let world_meshes = batches.len();
-        let mut ground = Vec::new();
-        for b in batches.values() {
-            for t in b.idx.chunks_exact(3) {
-                ground.push([b.pos[t[0] as usize], b.pos[t[1] as usize], b.pos[t[2] as usize]].map(Vec3::from));
-            }
-        }
+
         for (mat, batch) in batches {
             let name = usize::try_from(mat).ok().and_then(|i| world.materials.get(i)).cloned();
             let material = self.material(name.as_deref());
@@ -372,36 +357,23 @@ impl<'a> Loader<'a> {
             self.spawn_model(commands, &model, root, Transform::from_xyz(0.0, -200.0, 0.0));
         }
 
-        // Start position: the first "start" locator, else the first checkpoint.
-        // Grid slots are 2.5 m boxes named Start1..Start8; the quad sits on
-        // the bottom face of the pole-position box.
-        let start = world
-            .locators
-            .iter()
-            .find(|l| l.name.trim().eq_ignore_ascii_case("start1"))
-            .or_else(|| world.locators.iter().find(|l| l.name.to_ascii_lowercase().contains("checkpoint")));
-        let (quad_pos, quad_rot) = match start {
-            Some(l) => {
-                let t = mat_from_xbox(&l.rotation, [1.0; 3], l.pos);
-                (t.translation - Vec3::Y * l.scale[1] * 0.5, t.rotation)
-            }
-            None => (Vec3::ZERO, Quat::IDENTITY),
-        };
-        let quad_pos = ground_below(&ground, quad_pos + Vec3::Y * 3.0).map_or(quad_pos, |y| quad_pos.with_y(y));
-        let quad_t = Transform::from_translation(quad_pos).with_rotation(quad_rot);
-        self.spawn_quad(commands, quad, quad_t)?;
-        let quad_forward = (quad_rot * Vec3::NEG_Z).with_y(0.0).normalize_or(Vec3::NEG_Z);
-        Ok(Scene { world_meshes, props, quad_pos, quad_forward })
+        Ok(Scene { world, world_meshes, props })
     }
 
     /// Assembles a quad from its parts at the hard-points in its body model.
-    fn spawn_quad(&mut self, commands: &mut Commands, quad: &str, at: Transform) -> Result<()> {
+    /// Returns the root entity, whose transform is the physics body (centre
+    /// of mass); the model hangs below it by [`COM_HEIGHT`].
+    pub fn spawn_quad(&mut self, commands: &mut Commands, quad: &str, at: Transform, wheel_x: &[f32]) -> Result<Entity> {
         let dir = format!("/Cars/{quad}/");
         let body = Model::parse(&self.game.read(&format!("{dir}Body.rom"))?)?;
         let point = |name: &str| {
             body.points.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, p)| Vec3::from(flip(*p)))
         };
         let root = commands.spawn((at, Visibility::default(), Name::new(quad.to_string()))).id();
+        let model_root = commands.spawn((Transform::from_xyz(0.0, -COM_HEIGHT, 0.0), Visibility::default())).id();
+        commands.entity(root).add_child(model_root);
+        let root_entity = root;
+        let root = model_root;
         self.spawn_model(commands, &body, root, Transform::default());
         let parts = [
             ("Handlebars", "handlebarscentre"),
@@ -421,19 +393,26 @@ impl<'a> Loader<'a> {
             let pos = point(pt).unwrap_or_default();
             self.spawn_model(commands, &model, root, Transform::from_translation(pos));
         }
-        let wheels = [
-            ("road_wheel_front_left", "flwheelcentre", 1.0),
-            ("road_wheel_front_left", "frwheelcentre", -1.0),
-            ("road_wheel_rear_left", "rwheelcentre", 1.0),
-            ("road_wheel_rear_right", "rwheelcentre", 1.0),
+        // Params wheel order: 0 FL, 1 FR, 2 RL, 3 RR. Wheel models are
+        // centred on the tyre: height and length come from the body's
+        // hard-points, the track width from WHEELOFFSET.
+        let wheels: [(&str, &str, f32, &[usize]); 4] = [
+            ("road_wheel_front_left", "flwheelcentre", 1.0, &[0]),
+            ("road_wheel_front_left", "frwheelcentre", -1.0, &[1]),
+            ("road_wheel_rear_left", "rwheelcentre", 1.0, &[2]),
+            ("road_wheel_rear_right", "rwheelcentre", 1.0, &[3]),
         ];
-        for (w, pt, sx) in wheels {
+        for (k, (w, pt, sx, idx)) in wheels.into_iter().enumerate() {
             if let Some(model) = self.model(w, "Cars/Generic") {
-                let pos = point(pt).unwrap_or_default();
+                let mut pos = point(pt).unwrap_or_default();
+                if let Some(x) = wheel_x.get(k) {
+                    pos.x = *x;
+                }
                 let t = Transform::from_translation(pos).with_scale(Vec3::new(sx, 1.0, 1.0));
-                self.spawn_model(commands, &model, root, t);
+                let e = self.spawn_model(commands, &model, root, t);
+                commands.entity(e).insert(WheelVisual { wheels: idx.to_vec(), base: pos, mirror: sx < 0.0 });
             }
         }
-        Ok(())
+        Ok(root_entity)
     }
 }

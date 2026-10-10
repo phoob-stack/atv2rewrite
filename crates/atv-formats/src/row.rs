@@ -17,13 +17,13 @@
 //!      sprites[sprite_count]       0x68 bytes (same as ROM sprites)
 //!      ...effects and a spatial tree interleaved with mesh blocks...
 //! mesh block: u32 flags, i32 material, i32 material2, i32, u32 tri_count,
-//!             u32 vertex_count, u32 patch_count, u32 0, i32 x3,
+//!             u32 vertex_count, u32 patch_count, u32 patch_count2, i32 x3,
 //!             u32 indices[tri_count*3], Vertex[vertex_count] (52 bytes),
 //!             Patch[patch_count] (604 bytes)
 //! ```
 //! The spatial tree between mesh blocks is not decoded yet; mesh blocks are
-//! found by validating every candidate header, which recovers ~90-98% of
-//! each file's bytes.
+//! found by validating every candidate header. What's left between them
+//! (95-99% of each file is accounted for) is 48-byte tree nodes.
 
 use crate::bin::Reader;
 use crate::rom::{Locator, Patch, Sprite, Vertex};
@@ -155,9 +155,9 @@ fn try_mesh(
     w: &impl Fn(usize) -> i32,
 ) -> Result<Option<(Mesh, usize)>> {
     let (flags, mat, mat2, x) = (w(i), w(i + 1), w(i + 2), w(i + 3));
-    let (ntri, nv, npatch, zero) = (w(i + 4), w(i + 5), w(i + 6), w(i + 7));
+    let (ntri, nv, npatch, npatch2) = (w(i + 4), w(i + 5), w(i + 6), w(i + 7));
     let small = |q: i32| (-1..64).contains(&q);
-    let plausible = zero == 0
+    let plausible = (0..5000).contains(&npatch2)
         && (0..65536).contains(&flags)
         && (-1..nmat).contains(&mat)
         && (-1..nmat).contains(&mat2)
@@ -165,7 +165,7 @@ fn try_mesh(
         && (0..200_000).contains(&nv)
         && (0..5000).contains(&npatch)
         && (ntri > 0) == (nv > 0)
-        && (ntri > 0 || npatch > 0)
+        && (ntri > 0 || npatch > 0 || npatch2 > 0)
         && small(x)
         && small(w(i + 8))
         && small(w(i + 9))
@@ -173,7 +173,9 @@ fn try_mesh(
     if !plausible {
         return Ok(None);
     }
-    let (ntri, nv, npatch) = (ntri as usize, nv as usize, npatch as usize);
+    // Two patch counts; both use the same record (the second kind's
+    // meaning is not known yet).
+    let (ntri, nv, npatch) = (ntri as usize, nv as usize, (npatch + npatch2) as usize);
     let idx_start = (i + 11) * 4;
     let end = idx_start + ntri * 12 + nv * VERTEX_SIZE + npatch * PATCH_SIZE;
     if end > b.len() {
