@@ -59,7 +59,7 @@ pub fn entries(xml: &str) -> Vec<Entry> {
     out
 }
 
-fn parse_attrs(mut s: &str) -> HashMap<String, String> {
+pub(crate) fn parse_attrs(mut s: &str) -> HashMap<String, String> {
     let mut m = HashMap::new();
     while let Some(eq) = s.find('=') {
         let key = s[..eq].trim().to_string();

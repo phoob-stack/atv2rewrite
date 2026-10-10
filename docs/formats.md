@@ -25,7 +25,7 @@ python3 tools/disc/extract.py bark.txt disc/ATV.bad assets/  # 1,931 files, ~190
 | `default.xbe` | Game executable. The reference for reverse engineering logic, physics and any format detail we can't infer. |
 | `user.xml` | Debug/boot config left on disc (track, laps, AI count, editor mode). Useful for testing. |
 | `ATV.bah` / `ATV.bad` | "Bark" archive: index + data, holds almost all game content. |
-| `Music/*.wav` | 18 music tracks, RIFF WAV, Xbox IMA ADPCM (format 0x69), 44.1 kHz stereo. ffmpeg decodes them. |
+| `Music/*.wav` | 19 music sections, RIFF WAV, Xbox IMA ADPCM (format 0x69), 44.1 kHz, stereo except the mono `Stadium.wav`. 36-byte blocks per channel decode to 65 samples. **Decoded** by `wav.rs`, sample-exact with ffmpeg; `Setup/Sound.xml` says which play on each environment. |
 | `Movies/*.xmv` | Acclaim/Climax intro videos (Xbox XMV, ffmpeg can decode). |
 | `Fonts/blimey.ttf` | Standard TrueType font. |
 | `Sound/dsstdfx.bin` | Xbox DSP effects image. Not needed on PC. |
@@ -74,7 +74,7 @@ Levels 856, shaders 75, other 116).
 | `.params` | 12 | text | Vehicle physics tuning (torque, gearing, preload, air resistance). | Readable text. |
 | `.bed` | 35 | binary | Sprite sheets for `.bog` texture pages: HUD, front end, particles, bitmap fonts. | **Decoded, all 35.** See below. |
 | `.ink` | 45 | `0x00CEFDAB` | Static prop collision mesh: `u32` triangle count, then triangles of three `f32[3]` corners in model space. A placed prop whose model has one (rocks, trees, buildings, vehicles, tyre stacks, the stadium gates) collides as it. | **Decoded, all 45**; used for prop collision. |
-| `.xwb` | 9 | `WBND` | XACT wave banks (sound effects, rider voices). Known format; samples are likely Xbox ADPCM. | To do. |
+| `.xwb` | 9 | `WBND` | XACT v1 wave banks: engine, wheel and impact sounds (`Vehicles`), rider voices, menu effects (`SpotFX`), the stadium crowd and one ambient loop per environment. All mono PCM. Layout in `xwb.rs`. | **Decoded, all 9**; engine, wheel, ambient and crowd sounds play. |
 | `.asm` / pixel shaders | 75 | text | Xbox vertex/pixel shader source. A reference for rewriting effects in WGSL. | Readable text. |
 | `Setup/*.xml` | 13 | XML | Game rules: tracks, career, arcade, freestyle, tricks, riders, vehicles, cameras, materials, sound, front-end screens. | Read by `setup.rs` (flat entries). |
 | `Strings/*.txt` | 2 | text | UI strings (English, plus a joke "l33t" language). | Readable text. |
@@ -266,5 +266,28 @@ with the original's addresses.
 
 ## Still unknown
 
-`.kdt` (likely collision tree), `.nin`, `.viz`, `.cuban` (compressed animation), `.xwb` (sound),
+`.kdt` (likely collision tree), `.nin`, `.viz`, `.cuban` (compressed animation), the names of
+Vehicles bank sounds 0 and 17–31 and of the rider voices,
 the ROW spatial tree and effect records, and the material record fields.
+
+## Sound
+
+- `Setup/Sound.xml` nests, unlike the other setup files (`sound.rs` reads
+  it): root mix levels (`mPlayerEngineVol` 0.25, `mAmbientVol` 0.3,
+  `mMusicVol` 1.0, `mSurfaceVol` 1.0, `mEnginePitchZero` 0.6,
+  `mEnginePitchSpan` 1.2), then per-environment `Surfaces` (wheel sample,
+  type, volume, pitch per material), `Music` (an optional `IntroSection`
+  then `TrackSection`s), `Ambient` and `Crowd` banks. `DefaultTrack` is
+  the fallback for each.
+- Wave bank format word: low 4 bits always 2, sample rate in bits 4–30,
+  bit 31 set for 16-bit signed and clear for 8-bit unsigned samples. No
+  entry has a loop region.
+- Vehicles bank: 1 is the engine "off throttle" loop and 2 the "on
+  throttle" loop; the name table at `0x1d2838` gives 3–16 (`Gravel1`–`3`,
+  `Rumble1`–`4`, `Water1`–`3`, `Twigs1`–`2`, `Screech1`–`2`).
+- Engine update (`0x93c60`), with r = revs / max revs and t = throttle,
+  on the ground: on-loop volume `clamp((t + r) * 0.7, 0.2, 1)` and pitch
+  `mEnginePitchZero + mEnginePitchSpan * r`; off-loop volume
+  `clamp(1 - on, 0.3, 1)` and pitch `0.85 + 1.8 * r`. Another branch
+  (a vehicle value at `+0x2b0` below 0.6) changes the mix and isn't
+  ported.

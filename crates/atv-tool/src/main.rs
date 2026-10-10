@@ -158,6 +158,8 @@ fn check(game: &GameSource) -> Result<()> {
             atv_formats::ink::CollisionMesh::parse(&data)
                 .map(|m| format!("{} collision triangles", m.triangles.len()))
                 .map_err(Into::into)
+        } else if lower.ends_with(".xwb") {
+            atv_formats::xwb::WaveBank::parse(&data).map(|b| format!("{} sounds", b.waves.len())).map_err(Into::into)
         } else if lower.ends_with(".bed") {
             SpriteSheet::parse(&data).map(|s| format!("{} sprites", s.entries.len())).map_err(Into::into)
         } else if lower.ends_with(".bog") {
@@ -178,6 +180,24 @@ fn check(game: &GameSource) -> Result<()> {
             Err(e) => {
                 failed += 1;
                 println!("FAIL {p}: {e}");
+            }
+        }
+    }
+    // The music lives on the disc beside the archive; Sound.xml names it.
+    let sound = atv_formats::sound::SoundSetup::parse(&String::from_utf8_lossy(&game.read("/Setup/Sound.xml")?));
+    let mut music: Vec<String> = Vec::new();
+    for env in ["Dunes", "Forest", "Glacier", "Industrial", "Swamp", "Stadium"] {
+        if let Some(m) = sound.music(env) {
+            music.extend(m.intro.iter().chain(&m.sections).filter(|n| !music.contains(n)).cloned().collect::<Vec<_>>());
+        }
+    }
+    for name in music {
+        let path = format!("/{}.wav", name.replace('\\', "/"));
+        match game.read(&path).map_err(anyhow::Error::from).and_then(|b| Ok(atv_formats::wav::decode(&b)?)) {
+            Ok(_) => ok += 1,
+            Err(e) => {
+                failed += 1;
+                println!("FAIL {path}: {e}");
             }
         }
     }
