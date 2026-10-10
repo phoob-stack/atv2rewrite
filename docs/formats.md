@@ -602,6 +602,42 @@ ends on a button press (0x80c30 takes buttons 0 and 2 of its input
 events), when any rider finishes, or after `mDemoMaxTime` (0x80d20), and
 the front end comes back.
 
+## The race intro
+
+The intro state (0x1c1b2c; enter 0x7dd80, update 0x7e750) runs before the
+countdown when `mRaceIntro` is set (`user.xml`, 0x1dbb68) and the race
+isn't a replay; it plays in the attract demo too. It switches off every
+view but player 1's, makes that one fullscreen (0x83010), hides the HUD
+(0xa4600) and hands the view to the intro cameras (0x82fa0). When the last
+of them is done the player's camera comes back (0x83730) and the countdown
+state follows; nothing skips it.
+
+The intro cameras are the `World/<Track>.xml` `Camera` objects with
+`CameraType` 4 to 6 (0x21460 sends them to 0x73180; all on the disc are
+4, "P: Intro", 0x6d290, field of view 45°). They go in a table by `ID`
+(ten slots, 0x72fb0), and the intro plays them from ID 0 up, skipping
+empty slots (0x6ac70: Glacier 1 has IDs 0, 2 and 3), cutting to the next
+once a shot is done (0x6aae0, 0x6cbc0). A camera's `NextGUID` names a `Path
+Node` object: `NumNodes`, the first node at `Position` and the rest at
+`NodePos1`... The path is resampled every `mFixedNodeSep` metres (5;
+adjusted to divide the length evenly) and a spline fitted through those
+points (0x77e00, 0x77fb0). Each shot (0x6c590 sets it up, 0x6cf00 runs it)
+starts from its camera's own `Position` at rest and gains 6.704 m/s every
+second up to 44.694 m/s (100 mph). First it runs a cubic Hermite from
+there to the path's start, both tangents the path's starting direction
+times the straight distance d between them, with its parameter moving at
+speed/d (0x6c890); past the end the overshoot carries on along the path,
+which is then followed by distance until it ends (0x6ca30). With
+`NextGUID` 0 the camera holds still for 10 seconds; with a path that isn't
+there the shot ends at once. All the while it looks at the `Camera Focus
+Point` whose `mIndex` is its `FocusIndex` (`FocusIndex` 0: none, and the
+camera keeps its `Matrix`, `Row2` forward). Focus points are built like
+the cameras' movers (0x6cc30, with `mTrackVelFrac` scaling the top speed)
+and could follow paths of their own (0x6cfd0), but none on the disc have
+one. Every track has intro cameras except Swamp 3 and Stadium 2; the
+whole intro runs from about 5 s (Glacier 3, Forest 2) to about 22 s
+(Dunes 2, Industrial 1).
+
 ## Still unknown
 
 the `.kdt` spatial tree, `.nin`, `.viz`, `.cuban` (compressed animation), the names of

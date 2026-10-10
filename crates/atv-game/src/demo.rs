@@ -15,6 +15,7 @@ use bevy::prelude::*;
 
 use crate::frontend::{self, FrontEnd, Roster, Screen};
 use crate::hud::track_title;
+use crate::intro::ShowInIntro;
 use crate::opponents::{Opponents, NOT_FOR_AI};
 use crate::race::RaceProgress;
 use crate::ui::{fullscreen, placed, BitmapText, FontId, UiAssets, SCREEN_H, SCREEN_W};
@@ -119,7 +120,7 @@ fn pick(roster: &Roster, sel: &Selection, seed: &mut u32) -> Option<Selection> {
 /// The demo page: the big logo, "PRESS START" flashing and the track.
 fn spawn_page(mut commands: Commands, ui: Option<Res<UiAssets>>, sel: Res<Selection>) {
     let Some(ui) = ui else { return };
-    commands.spawn((fullscreen(), DespawnOnExit(AppState::Race), Pickable::IGNORE)).with_children(|root| {
+    commands.spawn((fullscreen(), DespawnOnExit(AppState::Race), Pickable::IGNORE, ShowInIntro)).with_children(|root| {
         root.spawn(Node {
             position_type: PositionType::Absolute,
             left: percent(50),

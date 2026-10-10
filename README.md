@@ -205,6 +205,12 @@ track (any the setup files offer for the demo, locked or not), filmed by
 the same TV director, under the logo and a flashing PRESS START. Any key
 or button, the first rider home or five minutes brings back Press Start.
 
+**Race intro**, as in the original: before the 3-2-1, the track's intro
+cameras fly over it one after another, each along its own path, with
+the HUD hidden (and in split screen, player 1's view
+filling the screen). Swamp 3 and Stadium 2 have none and go straight to
+the countdown. `--no-intro` skips it.
+
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on
 track select.
@@ -219,6 +225,7 @@ front-end screen; also `profiles`, and `arcade` with `--mode arcade`), `--mode r
 `--autodrive` (autopilot chases checkpoints and throws tricks), `--camera
 x,y,z,tx,ty,tz` (free-fly camera in game coordinates: WASD, Q/E, Shift, right
 mouse to look), `--screenshot out.png --after 8` (saves a frame and exits),
+`--no-intro` (no camera flight before the countdown),
 `--resolution 1920x1080`, `--fullscreen` (borderless, desktop resolution),
 `--cheat ALLOFEM` (enters one of the original's cheats into the profile
 loaded).
