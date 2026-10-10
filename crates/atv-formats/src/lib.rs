@@ -3,6 +3,7 @@
 //! Nothing here ships game data: every reader works on bytes taken from the
 //! player's own copy of the game, usually through [`GameSource`].
 
+pub mod aid;
 pub mod anim;
 pub mod bark;
 pub mod bed;

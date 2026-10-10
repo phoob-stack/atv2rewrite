@@ -323,6 +323,16 @@ impl Vehicle {
         self.sync_out();
     }
 
+    /// Moves the quad by `offset` and changes its velocity by `delta_v`
+    /// (sim frame), as a bump from another quad does.
+    pub fn nudge(&mut self, offset: Vec3, delta_v: Vec3) {
+        self.pos += offset * FLIP;
+        self.momentum += delta_v * FLIP * self.params.mass;
+        self.vel = self.momentum / self.params.mass;
+        self.position = self.pos * FLIP;
+        self.velocity = self.vel * FLIP;
+    }
+
     /// Advances the simulation by `dt` seconds (internally sub-stepped).
     pub fn step(&mut self, input: &Input, dt: f32, world: &TrackCollision) {
         let n = (dt / STEP).ceil().clamp(1.0, 32.0) as usize;
