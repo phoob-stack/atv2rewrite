@@ -335,6 +335,14 @@ left alone.
   pays its bonus once per tier climbed. The texts are `CHALLENGE_TEXT_N`
   in `Strings/Strings_ENG.txt`, which holds values only, in sorted key
   order (lines 92-103 for `_1`, `_10`, `_11`, `_12`, `_2`..`_9`).
+  A challenge (game type 5) has no camera intro: the race start (0x801c0)
+  instead opens `ID_FS_INTRO` (0x55bf0, entered by 0x7fcc0 when
+  `mRaceIntro` is set and it isn't a replay) with the HUD hidden: the
+  challenge's name (`Challenge_N` through the string table, 0x9ac60), its
+  `CHALLENGE_TEXT_N` in a text box (0x9ac90) and a "Press Start" button
+  (string 0x17c). The countdown follows once it closes (0x7fd70). The
+  rewrite keeps the chase camera behind the waiting quad meanwhile; the
+  original hands the view to the (empty, on Stadium 2) intro cameras.
 - `Tricks.xml`: one element per trick with `mControlCombo="KeyAHeld,
   StickUp"` (buttons D, A, B, E for levels 1-4, `KeyCombo1/3/2` for 5-7),
   `mScorePoints`, `mHoldPoints`, `mTotalTrickTimeSec`, `mTrickEndTimeSec`

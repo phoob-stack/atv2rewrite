@@ -14,6 +14,9 @@
 //!   once for each tier it climbs, as the original does (a first gold pays
 //!   the gold bonus three times).
 //! - Gold in challenge K+1 frees the rider of `UnlockableK`.
+//! - Before the run, in place of the race intro, a page shows the
+//!   challenge's name and task over the waiting quad, and the countdown
+//!   starts on a button (`ID_FS_INTRO`, 0x55bf0, run by 0x7fcc0..0x7fd70).
 //! - A challenge opens once every earlier one has a medal (or with the
 //!   ALLCHALS cheat).
 //!
@@ -33,8 +36,8 @@ use atv_sim::track as trk;
 use crate::career::{Career, Rules};
 use crate::freestyle::{Ground, PopupKind, Session, MEDALS};
 use crate::race::{fmt_time, RaceProgress};
-use crate::ui::{set_text, BitmapText, FontId};
-use crate::{AppState, Mode, Player, Race, Selection};
+use crate::ui::{read_nav, set_text, BitmapText, FontId, Nav, UiAssets, SCREEN_H, SCREEN_W};
+use crate::{AppState, Args, Mode, Player, Race, Selection};
 
 pub const COUNT: usize = 12;
 pub const TRACK: &str = "Stadium2";
@@ -373,8 +376,98 @@ pub struct ChallengePlugin;
 
 impl Plugin for ChallengePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (spawn_hud.run_if(resource_added::<Course>), update_hud, guide_arrow).chain().run_if(in_state(AppState::Race)));
+        app.add_systems(
+            Update,
+            (spawn_hud.run_if(resource_added::<Course>), brief.run_if(resource_added::<Course>), update_hud, guide_arrow).chain().run_if(in_state(AppState::Race)),
+        )
+        .add_systems(FixedUpdate, crate::intro::hold.before(crate::drive).run_if(resource_exists::<Briefing>).run_if(in_state(AppState::Race)))
+        // After the pause menu has looked at this frame's buttons, so the
+        // one that starts the run doesn't also pause it.
+        .add_systems(PostUpdate, (cover, crate::frontend::blink, dismiss).chain().run_if(resource_exists::<Briefing>).run_if(in_state(AppState::Race)))
+        .add_systems(OnExit(AppState::Race), |mut commands: Commands| commands.remove_resource::<Briefing>());
     }
+}
+
+/// The challenge's intro page is up: the run waits for a button.
+#[derive(Resource, Default)]
+pub struct Briefing {
+    /// The screens hidden for it, and how they were.
+    hidden: Vec<(Entity, Visibility)>,
+}
+
+#[derive(Component)]
+struct BriefingPage;
+
+/// Opens the intro page (0x55bf0): the challenge's name, its task in a
+/// box, and "Press Start" (string 0x17c). `--no-intro` skips it, and so
+/// does the autopilot, with no one to press a button.
+fn brief(mut commands: Commands, course: Res<Course>, defs: Res<Defs>, ui: Option<Res<UiAssets>>, args: Res<Args>) {
+    let Some(ui) = ui else { return };
+    if args.no_intro || args.autodrive {
+        return;
+    }
+    let text = defs.get(course.n).map_or(String::new(), |d| d.text.to_uppercase());
+    let panel = crate::frontend::popup(&mut commands, &ui, &format!("CHALLENGE {}", course.n), &text);
+    // The whole screen dims, not just the page's 4:3 frame.
+    commands.entity(panel).remove::<BackgroundColor>();
+    let start = "PRESS START";
+    let width = ui.font(FontId::Menu).width(start, 18.0);
+    let prompt = commands
+        .spawn((
+            BitmapText::new(FontId::Menu, 18.0, start),
+            Node { position_type: PositionType::Absolute, left: px((SCREEN_W - width) / 2.0), top: px(400.0), ..default() },
+            crate::frontend::Blink,
+        ))
+        .id();
+    commands
+        .spawn((crate::ui::fullscreen(), BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)), DespawnOnExit(AppState::Race), Pickable::IGNORE, BriefingPage))
+        .with_children(|root| {
+            root.spawn(Node {
+                position_type: PositionType::Absolute,
+                left: percent(50),
+                margin: UiRect::left(px(-SCREEN_W / 2.0)),
+                width: px(SCREEN_W),
+                height: px(SCREEN_H),
+                ..default()
+            })
+            .add_children(&[panel, prompt]);
+        });
+    commands.insert_resource(Briefing::default());
+}
+
+/// Keeps the HUD hidden while the page is up (0xa4600).
+#[allow(clippy::type_complexity)]
+fn cover(mut briefing: ResMut<Briefing>, mut screens: Query<(Entity, &mut Visibility), (With<Node>, Without<ChildOf>, With<DespawnOnExit<AppState>>, Without<BriefingPage>)>) {
+    for (e, mut v) in &mut screens {
+        if !briefing.hidden.iter().any(|h| h.0 == e) {
+            briefing.hidden.push((e, *v));
+            *v = Visibility::Hidden;
+        }
+    }
+}
+
+/// A or Start closes the page and the countdown begins (0x7fd70); the HUD
+/// comes back (0x83730).
+fn dismiss(
+    mut commands: Commands,
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&bevy::input::gamepad::Gamepad>,
+    mut briefing: ResMut<Briefing>,
+    pages: Query<Entity, With<BriefingPage>>,
+    mut screens: Query<&mut Visibility, Without<BriefingPage>>,
+) {
+    if !matches!(read_nav(&keys, &pads), Some(Nav::Accept | Nav::Start)) {
+        return;
+    }
+    for (e, was) in briefing.hidden.drain(..) {
+        if let Ok(mut v) = screens.get_mut(e) {
+            *v = was;
+        }
+    }
+    for e in &pages {
+        commands.entity(e).despawn();
+    }
+    commands.remove_resource::<Briefing>();
 }
 
 #[derive(Component)]

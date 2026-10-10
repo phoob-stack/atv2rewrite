@@ -310,7 +310,7 @@ fn start(mut commands: Commands, game: Res<Game>, sel: Res<Selection>, args: Res
 }
 
 /// Keeps everyone on the grid, the countdown not yet started.
-fn hold(mut progress: Option<ResMut<RaceProgress>>, mut opponents: Option<ResMut<Opponents>>) {
+pub(crate) fn hold(mut progress: Option<ResMut<RaceProgress>>, mut opponents: Option<ResMut<Opponents>>) {
     if let Some(p) = progress.as_mut() {
         p.countdown = RaceProgress::COUNTDOWN;
     }
