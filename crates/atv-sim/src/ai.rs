@@ -46,8 +46,17 @@ const QUAD_HALF_WIDTH: f32 = 1.0;
 /// respotted.
 const PROGRESS_RADIUS: f32 = 10.0;
 const PROGRESS_WINDOW: f32 = 8.0;
+/// A driver that gets no further round the lap for this many seconds
+/// (rolling back and forth at the foot of a climb) is respotted too; the
+/// rewrite's.
+const HEADWAY_TIMEOUT: f32 = 20.0;
 /// Jump nodes only get a hop from quads at least this fast (40 mph).
 const HOP_SPEED: f32 = 17.877_8;
+/// Respots in a row at one spot, each from one more respot node back,
+/// before the rider is put past the spot instead.
+const SKIP_AFTER_REPEATS: u32 = 2;
+/// A respot this far (metres) past the last one's spot is a fresh one.
+const TROUBLE_REACH: f32 = 50.0;
 /// Seconds of travel ahead a jump node keeps the pacer from slowing a
 /// rider.
 const JUMP_RUN_UP: f32 = 4.0;
@@ -89,6 +98,8 @@ pub struct RacingLine {
     /// leaves and rejoins the loop).
     lap_pos: Vec<f32>,
     lap_len: f32,
+    /// Lap position of the start/finish line (see [`Self::set_start`]).
+    start: f32,
 }
 
 impl RacingLine {
@@ -132,6 +143,7 @@ impl RacingLine {
             edges,
             lap_pos: Vec::new(),
             lap_len: 0.0,
+            start: 0.0,
         };
         line.lap_len = line.lap_length();
         line.lap_pos = line.lap_positions();
@@ -199,7 +211,20 @@ impl RacingLine {
         pos.into_iter().map(|p| p.unwrap_or(0.0)).collect()
     }
 
-    /// How far round the lap `t` along `edge` is, metres from node 0.
+    /// Puts the start of the lap at `p` (the start/finish line), so lap
+    /// positions and distances count from there rather than from node 0,
+    /// which on some tracks sits well round the lap.
+    pub fn set_start(&mut self, p: Vec3) {
+        if self.is_empty() {
+            return;
+        }
+        self.start = 0.0;
+        let (e, t) = self.locate(p);
+        self.start = self.lap_position(e, t);
+    }
+
+    /// How far round the lap `t` along `edge` is, metres from the start
+    /// line (node 0 until [`Self::set_start`]).
     pub fn lap_position(&self, edge: usize, t: f32) -> f32 {
         let e = &self.edges[edge];
         let a = self.lap_pos[e.from];
@@ -207,9 +232,9 @@ impl RacingLine {
         if b < a - self.lap_len * 0.5 {
             b += self.lap_len;
         }
-        let p = a + (b - a) * t.clamp(0.0, 1.0);
+        let p = a + (b - a) * t.clamp(0.0, 1.0) - self.start;
         if self.lap_len > 0.0 {
-            p % self.lap_len
+            p.rem_euclid(self.lap_len)
         } else {
             p
         }
@@ -350,6 +375,8 @@ pub struct AiDriver {
     mode_timer: f32,
     stuck_timer: f32,
     stuck_attempts: u32,
+    /// The furthest round the lap the rider has got, and how long ago.
+    headway: (f32, f32),
     stuck_at: Vec3,
     off_line: f32,
     /// Where the current no-progress window started, and its age.
@@ -357,8 +384,9 @@ pub struct AiDriver {
     respot: bool,
     /// Edge chosen at each branch node, so a driver commits to one route.
     choice: Option<(usize, usize)>,
-    /// Edge of the last respot and how many times in a row it was used.
-    last_respot: Option<(usize, u32)>,
+    /// Where respots keep happening: the furthest edge and distance the
+    /// rider got to, and how many respots in a row came short of it.
+    last_respot: Option<(usize, f32, u32)>,
     rng: u32,
     /// Distance covered round the line since the start, metres.
     odometer: Odometer,
@@ -384,6 +412,7 @@ impl AiDriver {
             mode_timer: 0.0,
             stuck_timer: 0.0,
             stuck_attempts: 0,
+            headway: (f32::MIN, 0.0),
             stuck_at: position,
             off_line: 0.0,
             window: (position, 0.0, 0.0),
@@ -497,7 +526,9 @@ impl AiDriver {
     }
 
     /// A respot pose: the nearest respot-able node at or behind the quad,
-    /// facing down the line, and the driver is reset there.
+    /// facing down the line, and the driver is reset there. Repeats at the
+    /// same node go further back for a longer run-up, then (the rewrite's
+    /// safety net) past the spot the rider keeps failing at.
     pub fn respot(&mut self, line: &RacingLine) -> (Vec3, Quat) {
         let back_to_respot = |mut e: usize| {
             for _ in 0..line.edges.len() {
@@ -512,18 +543,33 @@ impl AiDriver {
             e
         };
         let mut e = back_to_respot(self.edge);
-        // Respotting at the same node again and again means the quad can't
-        // get going from there (a spot it tips off, say), so each repeat
-        // goes back one more respot node.
-        let repeats = match self.last_respot {
-            Some((last, n)) if last == e => n + 1,
-            _ => 0,
-        };
-        self.last_respot = Some((e, repeats));
-        for _ in 0..repeats.min(4) {
-            if let Some(&p) = line.nodes[line.edges[e].from].inc.first() {
-                e = back_to_respot(p);
+        // Respotting again without getting past where the last one
+        // happened means the quad can't get going from there (a spot it
+        // tips off, a jump it falls short of), so each repeat goes back one
+        // more respot node for a longer run-up.
+        let d = self.distance();
+        let (furthest, at, repeats) = match self.last_respot {
+            Some((edge, at, n)) if d < at + TROUBLE_REACH => {
+                if d > at {
+                    (self.edge, d, n + 1)
+                } else {
+                    (edge, at, n + 1)
+                }
             }
+            _ => (self.edge, d, 0),
+        };
+        self.last_respot = Some((furthest, at, repeats));
+        if repeats < SKIP_AFTER_REPEATS {
+            for _ in 0..repeats {
+                if let Some(&p) = line.nodes[line.edges[e].from].inc.first() {
+                    e = back_to_respot(p);
+                }
+            }
+        } else if let Some(ahead) = self.respot_ahead(line, furthest) {
+            // Still stuck with a longer run-up: the rewrite puts it past
+            // the spot instead.
+            e = ahead;
+            self.last_respot = None;
         }
         let edge = &line.edges[e];
         let (l, r) = line.corridor(e, 0.0);
@@ -536,12 +582,25 @@ impl AiDriver {
         self.mode = Mode::Race;
         self.stuck_timer = 0.0;
         self.stuck_attempts = 0;
+        self.headway = (f32::MIN, 0.0);
         self.off_line = 0.0;
         self.window = (pos, 0.0, 0.0);
         self.offset = 0.0;
         self.steer_pid.reset();
         self.speed_pid.reset();
         (pos, rot)
+    }
+
+    /// The first edge after `edge` that starts at a respot-able node.
+    fn respot_ahead(&mut self, line: &RacingLine, edge: usize) -> Option<usize> {
+        let mut e = edge;
+        for _ in 0..line.edges.len() {
+            e = self.next_edge(line, e)?;
+            if line.nodes[line.edges[e].from].respot {
+                return Some(e);
+            }
+        }
+        None
     }
 
     /// The quad's top speed in m/s, with the original's 10% margin.
@@ -676,7 +735,7 @@ impl AiDriver {
                 } else if speed > 0.894 {
                     input.brake = -out;
                 }
-                input.jump = self.hop(line, pos, fwd, speed);
+                input.jump = self.hop(line, pos, v.velocity, v.params.preload_rate);
             }
             Mode::Reverse => {
                 self.steer_pid.gains[0] = 0.3;
@@ -708,20 +767,28 @@ impl AiDriver {
         false
     }
 
-    /// Jump nodes (0x66380): coming up to one fast and lined up with the
-    /// line, the rider loads the suspension and lets go at the lip, for a
-    /// longer hold the stronger the node's boost.
-    fn hop(&self, line: &RacingLine, pos: Vec3, fwd: Vec3, speed: f32) -> bool {
+    /// Jump nodes (0x66380, 0x66460, 0x5a9e0): passing one at 40 mph or
+    /// more, the original releases a preload of strength `boost / 100`
+    /// times how well the rider's travel lines up with the line. The rider
+    /// here holds the preload button for as long as that charge takes to
+    /// build at `PRELOADRATE` and lets go at the node.
+    fn hop(&self, line: &RacingLine, pos: Vec3, vel: Vec3, preload_rate: f32) -> bool {
         let e = &line.edges[self.edge];
         let node = &line.nodes[e.to];
-        if node.boost == 0
-            || speed < HOP_SPEED
-            || fwd.dot(e.dir.with_y(0.0).normalize_or_zero()) < 0.7
-        {
+        let speed = vel.length();
+        if node.boost == 0 || speed < HOP_SPEED {
+            return false;
+        }
+        let along = vel
+            .with_y(0.0)
+            .normalize_or_zero()
+            .dot(e.dir.with_y(0.0).normalize_or_zero());
+        let strength = (along * f32::from(node.boost) / 100.0).min(1.0);
+        if strength <= 0.0 {
             return false;
         }
         let d = (node.pos - pos).dot(e.dir);
-        let hold = speed * 0.6 * f32::from(node.boost.min(100)) / 100.0;
+        let hold = speed * strength / preload_rate.max(0.01);
         d > 0.5 && d < hold
     }
 
@@ -785,6 +852,15 @@ impl AiDriver {
                 self.respot = true;
             }
             self.window = (pos, 0.0, 0.0);
+        }
+        let d = self.distance();
+        if d > self.headway.0 {
+            self.headway = (d, 0.0);
+        } else {
+            self.headway.1 += dt;
+            if self.headway.1 > HEADWAY_TIMEOUT {
+                self.respot = true;
+            }
         }
         match self.mode {
             Mode::Race => {
@@ -905,6 +981,9 @@ struct PaceCar {
 #[derive(Debug, Clone)]
 pub struct Pacer {
     cars: Vec<PaceCar>,
+    /// The best-rated rider, whose start the pace cars set off from.
+    leader: usize,
+    started: bool,
 }
 
 impl Pacer {
@@ -936,19 +1015,40 @@ impl Pacer {
                 }
             })
             .collect();
-        Some(Self { cars })
+        Some(Self {
+            cars,
+            leader: 0,
+            started: false,
+        })
     }
 
     /// Which pace car each rider follows, from their [`pace_rating`]s
     /// (best first; ties keep grid order).
-    pub fn assign(&self, ratings: &[f32]) -> Vec<usize> {
+    pub fn assign(&mut self, ratings: &[f32]) -> Vec<usize> {
         let mut order: Vec<usize> = (0..ratings.len()).collect();
         order.sort_by(|&a, &b| ratings[b].total_cmp(&ratings[a]));
+        self.leader = order.first().copied().unwrap_or(0);
         let mut car = vec![0; ratings.len()];
         for (rank, &i) in order.iter().enumerate() {
             car[i] = (rank / RIDERS_PER_PACE).min(self.cars.len() - 1);
         }
         car
+    }
+
+    /// Sets the pace cars off level with the best-rated rider, as the
+    /// original does on its first pacing frame (0x6a0c0), so a grid behind
+    /// the start line isn't counted as lost ground. `distances`: each
+    /// rider's [`AiDriver::distance`], in [`Self::assign`] order. Only the
+    /// first call counts.
+    pub fn start(&mut self, distances: &[f32]) {
+        if self.started {
+            return;
+        }
+        self.started = true;
+        let d = distances.get(self.leader).copied().unwrap_or(0.0);
+        for c in &mut self.cars {
+            c.covered = d;
+        }
     }
 
     /// Runs the pace cars on once the race is under way. `players`: the
@@ -1082,6 +1182,11 @@ mod tests {
             o.update(p, 400.0);
         }
         assert!((o.total - 410.0).abs() < 1e-3);
+        // Counted from a start line half way along the third side.
+        let mut l = l;
+        l.set_start(l.point(2, 0.5));
+        assert!(l.lap_position(2, 0.5).abs() < 1e-2);
+        assert!((l.lap_position(1, 0.5) - 300.0).abs() < 1e-2);
     }
 
     #[test]
@@ -1094,11 +1199,14 @@ mod tests {
         // The best three riders follow the fastest car.
         let cars = p.assign(&[0.1, 0.9, 0.5, 0.7, 0.3, 0.2]);
         assert_eq!(cars, vec![1, 0, 0, 0, 1, 1]);
+        // The cars set off from the best rider's place on the grid, once.
+        p.start(&[-30.0, -10.0, -40.0, -50.0, -60.0, -70.0]);
+        p.start(&[0.0; 6]);
         p.tick(1.0, &[]);
-        assert!((p.scale(0, 20.0) - 1.0).abs() < 1e-3);
-        assert!((p.scale(0, 70.0) - 0.5).abs() < 1e-3);
-        assert!((p.scale(0, 0.0) - 1.2).abs() < 1e-3);
-        assert!((p.scale(0, -100.0) - 1.5).abs() < 1e-3);
+        assert!((p.scale(0, 10.0) - 1.0).abs() < 1e-3);
+        assert!((p.scale(0, 60.0) - 0.5).abs() < 1e-3);
+        assert!((p.scale(0, -10.0) - 1.2).abs() < 1e-3);
+        assert!((p.scale(0, -110.0) - 1.5).abs() < 1e-3);
         // A player pulls the car nearest them, at most 600 m.
         for _ in 0..200 {
             p.tick(1.0 / 60.0, &[-300.0]);

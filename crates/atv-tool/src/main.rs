@@ -265,10 +265,13 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
     ];
     let world = World::parse(&game.read(&format!("/Levels/{track}/World/{track}.row"))?)?;
     let col = trk::collision(&world, game, track);
-    let line = RacingLine::from_path(&AiPath::parse(
+    let mut line = RacingLine::from_path(&AiPath::parse(
         &game.read(&format!("/Levels/{track}/World/{track}.aid"))?,
     )?);
     let cps = trk::checkpoints(&world);
+    if let Some(&finish) = cps.first() {
+        line.set_start(finish);
+    }
     let info = setup::entries(&String::from_utf8_lossy(&game.read("/Setup/Tracks.xml")?))
         .into_iter()
         .find(|e| e.name.eq_ignore_ascii_case(track));
@@ -330,7 +333,7 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
             line.lap_length(),
         )
     }).flatten();
-    let pace_car = pacer.as_ref().map(|p| p.assign(&vec![0.0; cars.len()])).unwrap_or_default();
+    let pace_car = pacer.as_mut().map(|p| p.assign(&vec![0.0; cars.len()])).unwrap_or_default();
     let dt = 1.0 / 60.0;
     let mut t = 0.0f32;
     let limit = laps as f32
@@ -351,6 +354,14 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
         if let Some(p) = pacer.as_mut()
             && t >= 1.0
         {
+            let distances: Vec<f32> = cars
+                .iter_mut()
+                .map(|c| {
+                    c.2.follow(&line, c.1.position);
+                    c.2.distance()
+                })
+                .collect();
+            p.start(&distances);
             p.tick(dt, &[]);
         }
         for (i, (_, v, d, next, lap_start, times, armed, respots)) in cars.iter_mut().enumerate() {
@@ -407,7 +418,20 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
                 v.reset(p.with_y(ground + 0.6), r);
                 *respots += 1;
             }
-            if !cps.is_empty() && (cps[*next] - v.position).with_y(0.0).length() < 25.0 {
+            // As in the game, reaching the checkpoint after the next one
+            // counts for both (some routes pass wide of one).
+            let n = cps.len();
+            let near = |k: usize| (cps[k % n] - v.position).with_y(0.0).length() < 25.0;
+            let reached = if n == 0 {
+                0
+            } else if near(*next) {
+                1
+            } else if n > 2 && near(*next + 1) {
+                2
+            } else {
+                0
+            };
+            for _ in 0..reached {
                 if *next == 0 {
                     if *armed {
                         times.push(t - *lap_start);
@@ -415,7 +439,7 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
                     *armed = true;
                     *lap_start = t;
                 }
-                *next = (*next + 1) % cps.len();
+                *next = (*next + 1) % n;
             }
         }
         for i in 0..cars.len() {

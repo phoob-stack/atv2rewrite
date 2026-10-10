@@ -150,6 +150,10 @@ pub fn spawn(
         return;
     }
     let checkpoints = trk::checkpoints(world);
+    let mut line = line;
+    if let Some(&finish) = checkpoints.first() {
+        line.set_start(finish);
+    }
     // A different field each track, the same every time on a track.
     let mut seed = sel.track.bytes().fold(2_166_136_261u32, |h, b| {
         (h ^ b as u32).wrapping_mul(16_777_619)
@@ -167,6 +171,13 @@ pub fn spawn(
         .take(sel.players.saturating_sub(1))
         .filter_map(|(rider, quad)| Some((roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(rider))?, quad.clone())))
         .collect();
+    // The Stadium has no checkpoints and no AI lap times: the original
+    // never races computer riders there, and they'd only circle it.
+    let count = if checkpoints.is_empty() {
+        count.min(humans.len())
+    } else {
+        count
+    };
     let taken = |m: &str| m.eq_ignore_ascii_case(&sel.rider) || humans.iter().any(|h| h.0.model.eq_ignore_ascii_case(m));
     let mut riders: Vec<_> = roster
         .riders
@@ -302,7 +313,8 @@ pub fn spawn(
         1 + humans.len(),
         line.lap_length(),
     );
-    let pace_car = pacer.as_ref().map(|p| p.assign(&ratings)).unwrap_or_default();
+    let mut pacer = pacer;
+    let pace_car = pacer.as_mut().map(|p| p.assign(&ratings)).unwrap_or_default();
     let player_track = AiDriver::new(&line, trk::start_pose(world, collision, sel.player_slot()).0, 0);
     commands.insert_resource(Opponents { line, racers, pacer, pace_car, player_track });
     commands.init_resource::<Standings>();
@@ -363,6 +375,16 @@ fn drive_opponents(
         let players: Vec<f32> = std::iter::once(opp.player_track.distance())
             .chain(opp.racers.iter().filter(|r| r.human.is_some()).map(|r| r.driver.distance()))
             .collect();
+        let line = &opp.line;
+        let distances: Vec<f32> = opp
+            .racers
+            .iter_mut()
+            .map(|r| {
+                r.driver.follow(line, r.vehicle.position);
+                r.driver.distance()
+            })
+            .collect();
+        pacer.start(&distances);
         pacer.tick(dt, &players);
     }
     let traffic: Vec<Traffic> = std::iter::once(&player.0)
