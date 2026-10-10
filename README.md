@@ -77,16 +77,25 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   and Point Distribution shares each place's race and trick points out
   between the race and the trick ranking in 5% steps (Left/Right). Custom
   rounds earn skill points but no medals.
-- **Arcade**: the 16 rounds of the disc's `Setup/Arcade.xml` back to back.
+- **Arcade**: the 15 rounds of the disc's `Setup/Arcade.xml` back to back
+  (the disc lists a sixteenth, Dunes 1 again, which the original never races).
   The clock starts at the track's arcade time (40 s) and the arcade
   checkpoints and the line add more. Win a round (finish first, in time)
   for the next one; each round allows three attempts, and losing the third
   sends Arcade back to round 1 (the disc's "You need to finish in first
   place to move onto the next round" and "Attempts: %d/3"). Seven computer riders race each round, as in the
   original (its arcade mode seats 1 player and 7 AI).
-  The next round is saved after each one (`arcade` in the profile, the
-  original's `mArcadeProgress`); choosing Arcade then offers to continue
-  from it or start a new game. With a profile loaded you ride its rider.
+  The field carries on from round to round as in the original: a new game
+  starts you at the back of the weakest riders, each round's finishing
+  order is the next round's grid, and the last three go out for three new
+  riders, drawn nearer the top of the rankings as the rounds go on. Arcade
+  Status shows the grid (new riders in green), each rider's ranking and who
+  went out before every round, and Arcade Complete the final order after
+  the fifteenth.
+  The next round and its field are saved after each one (`arcade` in the
+  profile, the original's `mArcadeProgress`); choosing Arcade then offers
+  to continue from it or start a new game. With a profile loaded you ride
+  its rider.
 - **Open Freestyle**: roam any track for points against a time limit (1, 3,
   5, 10, 15 or 30 minutes, or unlimited) with the disc's Bronze, Silver and
   Gold targets. Points come from tricks, multi-trick combos, flips and spins,
@@ -174,7 +183,7 @@ track select.
 The quad respots automatically when it is upside down or falls off the world.
 Other options: `--frontend` (show the menus even with `--track`, which
 then preselects), `--screen title|main|rider|atv|track|tricks` (open on that
-front-end screen; also `profiles`), `--mode race|timetrial|arcade|freestyle` with
+front-end screen; also `profiles`, and `arcade` with `--mode arcade`), `--mode race|timetrial|arcade|freestyle` with
 `--minutes N` (freestyle limit, 0 = unlimited) or `--round N` (arcade round),
 `--opponents N` (computer riders in a single race, default 5),
 `--players N` (split screen for N players, in a single race or freestyle),

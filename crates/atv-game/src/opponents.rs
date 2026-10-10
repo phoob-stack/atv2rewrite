@@ -118,7 +118,7 @@ pub struct Standings {
     pub opponents: Vec<(usize, f32)>,
 }
 
-/// Spawns `count` computer riders on the grid slots behind the player.
+/// Spawns `count` computer riders on the grid slots around the player.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
     commands: &mut Commands,
@@ -227,7 +227,9 @@ pub fn spawn(
             tune_for_ai(&mut params, (rider.stats[0] / 5.0).clamp(0.0, 1.0));
         }
         let wheel_x: Vec<f32> = params.wheels.iter().map(|w| w.offset[0]).collect();
-        let (pos, rot) = trk::start_pose(world, collision, i + 2);
+        // The slots around the player's (Arcade's can be further back).
+        let slot = if i + 1 < sel.player_slot() { i + 1 } else { i + 2 };
+        let (pos, rot) = trk::start_pose(world, collision, slot);
         let at = Transform::from_translation(pos).with_rotation(rot);
         let body = match loader.spawn_quad(commands, &quad, at, &wheel_x) {
             Ok(e) => e,
@@ -301,7 +303,7 @@ pub fn spawn(
         line.lap_length(),
     );
     let pace_car = pacer.as_ref().map(|p| p.assign(&ratings)).unwrap_or_default();
-    let player_track = AiDriver::new(&line, trk::start_pose(world, collision, 1).0, 0);
+    let player_track = AiDriver::new(&line, trk::start_pose(world, collision, sel.player_slot()).0, 0);
     commands.insert_resource(Opponents { line, racers, pacer, pace_car, player_track });
     commands.init_resource::<Standings>();
 }

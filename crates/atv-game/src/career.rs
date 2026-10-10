@@ -35,6 +35,8 @@ use bevy::prelude::*;
 
 use atv_formats::{setup, GameSource};
 
+use crate::arcade::{self, ArcadeField};
+
 /// Riders in a career race, the player included.
 pub const FIELD: usize = 8;
 pub const ROUNDS: usize = 5;
@@ -177,8 +179,12 @@ impl Rules {
     }
 
     pub fn certificate(&self, points: u32) -> &'static str {
-        let level = self.skill_level(points) as u32;
-        let i = self.certificates.iter().rposition(|&c| c <= level).unwrap_or(0);
+        self.certificate_at(self.skill_level(points))
+    }
+
+    /// The certificate a skill level reaches.
+    pub fn certificate_at(&self, level: usize) -> &'static str {
+        let i = self.certificates.iter().rposition(|&c| c as usize <= level).unwrap_or(0);
         CERTIFICATES[i]
     }
 
@@ -324,6 +330,8 @@ pub struct Career {
     /// The Arcade round to carry on from (0: start afresh), as the
     /// original's `mArcadeProgress`.
     pub arcade: usize,
+    /// The Arcade field the saved round races (see [`crate::arcade`]).
+    pub arcade_field: Option<ArcadeField>,
     /// Tracks raced in an Arcade or Career round, which opens them (see
     /// [`crate::unlocks`]).
     pub reached: BTreeSet<String>,
@@ -481,6 +489,22 @@ impl Career {
                 "professional" => c.open[2] = v == "true",
                 "custom" => c.open[3] = v == "true",
                 "arcade" => c.arcade = v.parse().unwrap_or(0),
+                "arcade_grid" => c.arcade_field.get_or_insert_default().grid = v.parse().unwrap_or(0),
+                "arcade_rider" => {
+                    // grid rounds model
+                    let mut parts = v.splitn(3, ' ');
+                    if let (Some(Ok(grid)), Some(Ok(rounds)), Some(model)) = (parts.next().map(str::parse), parts.next().map(str::parse), parts.next()) {
+                        c.arcade_field.get_or_insert_default().riders.push(arcade::Entrant { model: model.to_string(), grid, rounds });
+                    }
+                }
+                "arcade_out" => {
+                    // draws model
+                    if let Some((n, model)) = v.split_once(' ')
+                        && let Ok(n) = n.parse()
+                    {
+                        c.arcade_field.get_or_insert_default().out.push((model.to_string(), n));
+                    }
+                }
                 "reached" => {
                     c.reached.insert(v.to_string());
                 }
@@ -563,6 +587,15 @@ impl Career {
         }
         if self.arcade > 0 {
             s += &format!("arcade = {}\n", self.arcade);
+        }
+        if let Some(f) = &self.arcade_field {
+            s += &format!("arcade_grid = {}\n", f.grid);
+            for e in &f.riders {
+                s += &format!("arcade_rider = {} {} {}\n", e.grid, e.rounds, e.model);
+            }
+            for (model, n) in &f.out {
+                s += &format!("arcade_out = {n} {model}\n");
+            }
         }
         for (t, p) in &self.best {
             s += &format!("best = {t} {p}\n");
@@ -900,6 +933,12 @@ mod tests {
         c.challenges.insert(3, (14.25, Some(1)));
         c.challenges.insert(12, (99.5, None));
         c.arcade = 6;
+        assert_eq!(Career::parse(&c.to_text()), c);
+        c.arcade_field = Some(ArcadeField {
+            riders: vec![arcade::Entrant { model: "Male3".into(), grid: 0, rounds: 4 }, arcade::Entrant { model: "Female 2".into(), grid: 7, rounds: 0 }],
+            grid: 1,
+            out: vec![("Male9".into(), 2)],
+        });
         assert_eq!(Career::parse(&c.to_text()), c);
         c.profile = Some(Profile { slot: 0, name: "BUBBA 2".into(), rider: "Male11".into() });
         assert_eq!(Career::parse(&c.to_text()), c);

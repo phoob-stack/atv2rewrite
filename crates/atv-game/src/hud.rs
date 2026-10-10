@@ -650,13 +650,24 @@ fn race_menus(
                 })
                 .flatten();
             // An Arcade round won: the next is where Arcade carries on, and
-            // its track opens. Not won: one of the round's three attempts
-            // gone, and with the last of them Arcade starts again from the
-            // first round.
+            // its track opens; the field lines up in the finishing order and
+            // its last three go out. Not won: one of the round's three
+            // attempts gone, and with the last of them Arcade starts again
+            // from the first round.
             let mut new_track = None;
             if selection.mode == Mode::Arcade {
                 if arcade_won(&p, field.0) {
                     let next = selection.round + 1;
+                    if let Some(f) = career.arcade_field.as_mut() {
+                        let places: Vec<(&str, usize)> = match field {
+                            (Some(s), Some(o)) => o.racers.iter().zip(&s.opponents).map(|(r, p)| (r.model.as_str(), p.0)).collect(),
+                            _ => Vec::new(),
+                        };
+                        f.regrid(|m| places.iter().find(|p| p.0.eq_ignore_ascii_case(m)).map(|p| p.1));
+                        if next < roster.arcade.len() {
+                            f.knock_out(&roster, &selection.rider, next);
+                        }
+                    }
                     career.arcade = if next < roster.arcade.len() { next } else { 0 };
                     if let Some(t) = roster.arcade.get(next).filter(|t| !unlocks::track_open(&career, &roster, &rules, t)) {
                         career.reached.insert(t.clone());
@@ -666,6 +677,7 @@ fn race_menus(
                     selection.failed += 1;
                     if selection.failed >= ARCADE_ATTEMPTS {
                         career.arcade = 0;
+                        career.arcade_field = None;
                     }
                 }
                 career.save();
@@ -684,6 +696,11 @@ fn race_menus(
         Nav::Up | Nav::Down => list.step(nav),
         Nav::Start | Nav::Back if !menu.results => close(&mut commands, &mut virt),
         Nav::Accept => match list.current() {
+            // Arcade's last round won: on to Arcade Complete.
+            "CONTINUE" if menu.results && selection.mode == Mode::Arcade => {
+                fe.return_to = Some(Screen::ArcadeComplete);
+                next.set(AppState::FrontEnd);
+            }
             "CONTINUE" => close(&mut commands, &mut virt),
             "END SESSION" => {
                 if let Some(s) = session.as_mut() {
@@ -692,13 +709,11 @@ fn race_menus(
                 close(&mut commands, &mut virt);
             }
             "RESTART" | "RACE AGAIN" | "TRY AGAIN" | "PLAY AGAIN" => next.set(AppState::Loading),
+            // Arcade Status shows the next round's grid first.
             "NEXT ROUND" => {
-                if let Some(t) = roster.arcade.get(selection.round + 1) {
-                    selection.round += 1;
-                    selection.failed = 0;
-                    selection.track = t.clone();
-                    next.set(AppState::Loading);
-                }
+                selection.failed = 0;
+                fe.return_to = Some(Screen::ArcadeStatus);
+                next.set(AppState::FrontEnd);
             }
             "CHAMPIONSHIP STATUS" => {
                 if selection.mode != Mode::Career {
@@ -781,8 +796,9 @@ fn spawn_race_menu(
             let items: &[&str] = if sel.failed >= ARCADE_ATTEMPTS { &["MAIN MENU"] } else { &["TRY AGAIN", "MAIN MENU"] };
             (title.into(), items)
         }
-        (true, Mode::Arcade) if last_round => ("ARCADE COMPLETED".into(), &["MAIN MENU"]),
-        (true, Mode::Arcade) => (format!("ROUND {} COMPLETE", sel.round + 1), &["NEXT ROUND", "RACE AGAIN", "MAIN MENU"]),
+        // The field has moved on, so a round won isn't raced again.
+        (true, Mode::Arcade) if last_round => ("ARCADE COMPLETED".into(), &["CONTINUE"]),
+        (true, Mode::Arcade) => (format!("ROUND {} COMPLETE", sel.round + 1), &["NEXT ROUND", "MAIN MENU"]),
         (true, Mode::Career) => (format!("ROUND {} COMPLETE", sel.round + 1), &["CHAMPIONSHIP STATUS", "MAIN MENU"]),
         (true, Mode::SingleRace) if run.is_some() => (format!("ROUND {} COMPLETE", sel.round + 1), &["CHAMPIONSHIP STATUS", "MAIN MENU"]),
         (true, _) => ("RACE RESULTS".into(), &["RACE AGAIN", "MAIN MENU"]),
