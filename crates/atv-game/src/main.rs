@@ -16,6 +16,7 @@
 
 mod audio;
 mod convert;
+mod crash;
 mod freestyle;
 mod frontend;
 mod hd;
@@ -44,6 +45,7 @@ use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
 use convert::{SkyDome, WheelVisual};
+use crash::{CrashClips, Wreck};
 use freestyle::{Session, StuntClips};
 use frontend::{FrontEnd, Roster, Screen};
 use opponents::OpponentRider;
@@ -316,7 +318,7 @@ fn main() -> anyhow::Result<()> {
         .add_systems(FixedUpdate, drive.run_if(in_state(AppState::Race)))
         .add_systems(
             Update,
-            (sync_quad, animate_rider, stunts, rider::pose_riders, chase_camera, fly_camera, follow_sky).chain().run_if(in_state(AppState::Race)),
+            (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, chase_camera, fly_camera, follow_sky).chain().run_if(in_state(AppState::Race)),
         )
         .add_systems(Update, auto_screenshot)
         .run();
@@ -357,6 +359,8 @@ fn teardown(mut commands: Commands, mut cams: Query<(Entity, &mut Camera), With<
     commands.remove_resource::<RaceProgress>();
     commands.remove_resource::<Session>();
     commands.remove_resource::<StuntClips>();
+    commands.remove_resource::<Wreck>();
+    commands.remove_resource::<CrashClips>();
     set_ui_camera(&mut commands, &mut cams, true);
 }
 
@@ -413,6 +417,7 @@ fn setup(
                 .and_then(|rig| Rider::new(&game.0, rig));
             match rider {
                 Ok(r) => {
+                    commands.insert_resource(CrashClips::load(&game.0, &r.mirror_map));
                     commands.entity(seat).insert(r);
                 }
                 Err(e) => error!("failed to load rider {}: {e:#}", sel.rider),
@@ -513,6 +518,7 @@ fn setup(
     commands.insert_resource(progress);
     let session = Session::new(&game.0, &sel, &scene.world);
     commands.insert_resource(StuntClips::load(&game.0, &session.tricks));
+    commands.insert_resource(Wreck::default());
     commands.insert_resource(session);
     commands.insert_resource(Race {
         collision,
@@ -587,6 +593,8 @@ fn drive(
     progress: Option<ResMut<RaceProgress>>,
     session: Option<ResMut<Session>>,
     mut controls: Option<ResMut<Controls>>,
+    mut wreck: Option<ResMut<Wreck>>,
+    crash_clips: Option<Res<CrashClips>>,
 ) {
     let (Some(mut race), Some(mut player), Some(mut progress), Some(mut session)) = (race, player, progress, session) else { return };
     let dt = time.delta_secs();
@@ -599,7 +607,11 @@ fn drive(
     // Held on the grid for the countdown; after the flag the autopilot
     // brings the quad home; out of time, it rolls to a stop.
     let over = if freestyle { session.over(progress.clock) } else { progress.over() };
-    let input = if !progress.started() || (over && (freestyle || progress.out_of_time())) {
+    let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
+    let input = if crashed {
+        // Thrown off: the quad rolls on by itself.
+        Input::default()
+    } else if !progress.started() || (over && (freestyle || progress.out_of_time())) {
         // Brake to a stop (braking at a standstill would reverse).
         Input { brake: if over && v.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
     } else if let Some(spot) = session.next_spot(v.position).filter(|_| args.autodrive && freestyle) {
@@ -632,7 +644,27 @@ fn drive(
         progress.wrong_way = if away { progress.wrong_way + dt } else { 0.0 };
     }
 
+    let before = (v.velocity, v.angular_velocity);
+    let air = v.air_time;
     v.step(&input, dt, &race.collision);
+    if let Some(w) = wreck.as_mut() {
+        if crashed {
+            if w.advance(crash_clips.as_deref(), &race.collision, dt) {
+                w.fall = None;
+                let (p, r) = race.safe;
+                v.reset(p + Vec3::Y * 0.5, r);
+                race.upside_down = 0.0;
+            }
+        } else if progress.started() {
+            if let Some((cause, way)) = w.check(v, before, &race.collision, dt) {
+                // Which getting-up clip: any number that varies crash to crash.
+                let pick = ((v.position.x * 12.9898 + v.position.z * 78.233).sin() * 43758.547).fract().abs();
+                w.start(v, cause, way, pick);
+            } else if air > 0.5 && v.air_time == 0.0 {
+                w.landed = true;
+            }
+        }
+    }
     if let Some(c) = controls.as_mut() {
         c.0 = input;
     }
@@ -655,12 +687,19 @@ fn drive(
     }
     race.upside_down = if v.up().y < 0.2 { race.upside_down + dt } else { 0.0 };
     let fell = v.position.y < race.safe.0.y - 40.0;
-    if keys.just_pressed(KeyCode::KeyR) || race.upside_down > 2.5 || fell {
+    let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
+    if keys.just_pressed(KeyCode::KeyR) || (!crashed && race.upside_down > 2.5) || fell {
+        if let Some(w) = wreck.as_mut() {
+            w.fall = None;
+        }
         let (p, r) = race.safe;
         v.reset(p + Vec3::Y * 0.5, r);
         race.upside_down = 0.0;
     }
     if keys.just_pressed(KeyCode::Backspace) {
+        if let Some(w) = wreck.as_mut() {
+            w.fall = None;
+        }
         let (p, r) = race.start;
         v.reset(p, r);
         let on_line = race.checkpoints.first().is_some_and(|&c| (c - p).with_y(0.0).length() < 25.0);

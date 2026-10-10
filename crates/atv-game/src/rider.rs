@@ -7,7 +7,10 @@
 //! is pre-loaded for a hop (`landing`, whose middle is the deepest crouch).
 //! Forward/back lean and crouch are layered on the turn pose as offsets from
 //! each clip's first frame. Tricks blend a stunt clip
-//! (`Animations/Stunts/Bac`) over all of it.
+//! (`Animations/Stunts/Bac`) over all of it. A hard landing plays the
+//! landing clip once on top, and a crash replaces the whole pose with the
+//! crash clips (`Animations/Crashes/Bac`) while the rider tumbles free of
+//! the quad.
 
 use std::sync::Arc;
 
@@ -59,8 +62,12 @@ impl Clip {
         Ok(Clip { frames })
     }
 
+    pub fn frames(&self) -> usize {
+        self.frames.len()
+    }
+
     /// Left-right mirror image, swapping paired bones.
-    fn mirrored(&self, map: &[usize]) -> Self {
+    pub fn mirrored(&self, map: &[usize]) -> Self {
         let frames = self
             .frames
             .iter()
@@ -110,7 +117,18 @@ pub struct Rider {
     /// pose has blended into it; the last stunt is kept to blend out of.
     stunt: Option<(Arc<Clip>, f32)>,
     stunt_weight: f32,
+    /// Seconds into a landing, while one plays.
+    landing: Option<f32>,
+    /// While crashed: the crash clip and how far through it (0..1). The
+    /// pose eases towards it from the last one shown.
+    crash: Option<(Arc<Clip>, f32)>,
+    shown: Vec<Transform>,
+    /// Left-right bone pairs, for mirroring clips.
+    pub mirror_map: Vec<usize>,
 }
+
+/// Rate the one-shot clips play at, frames per second.
+pub const ONE_SHOT_FPS: f32 = 30.0;
 
 /// How far into each clip the controls go. The clips end in extreme poses
 /// (hanging off the side, standing on the pegs); a full input reaches this.
@@ -139,6 +157,10 @@ impl Rider {
             preload: 0.0,
             stunt: None,
             stunt_weight: 0.0,
+            landing: None,
+            crash: None,
+            shown: Vec::new(),
+            mirror_map: map,
         };
         for c in [&rider.turn_right, &rider.forward, &rider.back, &rider.crouch] {
             anyhow::ensure!(c.frames[0].len() == bones, "riding clip has {} bones, skeleton {bones}", c.frames[0].len());
@@ -152,6 +174,27 @@ impl Rider {
         self.steer += (steer.clamp(-1.0, 1.0) - self.steer) * k;
         self.lean += (lean.clamp(-1.0, 1.0) - self.lean) * k;
         self.preload += (preload.clamp(0.0, 1.0) - self.preload) * k;
+        if let Some(t) = &mut self.landing {
+            *t += dt;
+            if *t * ONE_SHOT_FPS >= (self.crouch.frames.len() - 1) as f32 {
+                self.landing = None;
+            }
+        }
+    }
+
+    /// Starts the landing clip from the top.
+    pub fn land(&mut self) {
+        self.landing = Some(0.0);
+    }
+
+    /// Shows a crash clip at `t` (0..1) instead of riding, or rides again
+    /// with `None`.
+    pub fn set_crash(&mut self, crash: Option<(Arc<Clip>, f32)>) {
+        self.crash = crash;
+    }
+
+    pub fn crashed(&self) -> bool {
+        self.crash.is_some()
     }
 
     /// Plays a stunt at `t` (0..1) over the riding pose, or blends back to
@@ -174,15 +217,47 @@ impl Rider {
         }
     }
 
+    /// Local transform of every joint for the current controls, eased
+    /// over `dt` while crashed.
+    fn next_pose(&mut self, dt: f32) -> Vec<Transform> {
+        let target = self.pose();
+        if self.crash.is_none() || self.shown.len() != target.len() {
+            self.shown = target;
+            return self.shown.clone();
+        }
+        let k = 1.0 - (-15.0 * dt).exp();
+        for (s, t) in self.shown.iter_mut().zip(&target) {
+            s.translation = s.translation.lerp(t.translation, k);
+            s.rotation = s.rotation.slerp(t.rotation, k).normalize();
+        }
+        self.shown.clone()
+    }
+
     /// Local transform of every joint for the current controls.
     fn pose(&self) -> Vec<Transform> {
+        if let Some((clip, t)) = self.crash.as_ref().filter(|(c, _)| c.frames[0].len() == self.joints.len()) {
+            // The pelvis sits on the tumbling body; the clip turns it.
+            return clip
+                .sample(*t)
+                .iter()
+                .enumerate()
+                .map(|(b, p)| Transform {
+                    translation: if b == 0 { Vec3::ZERO } else { self.offsets[b] },
+                    rotation: p.rotation,
+                    scale: Vec3::ONE,
+                })
+                .collect();
+        }
         let turn = if self.steer >= 0.0 { &self.turn_right } else { &self.turn_left };
         let base = turn.sample(self.steer.abs() * TURN_REACH);
         let lean = if self.lean >= 0.0 { &self.forward } else { &self.back };
-        let layers = [
+        let mut layers = vec![
             (lean, self.lean.abs() * LEAN_REACH),
             (&self.crouch, self.preload * CROUCH_REACH),
         ];
+        if let Some(t) = self.landing {
+            layers.push((&self.crouch, t * ONE_SHOT_FPS / (self.crouch.frames.len() - 1) as f32));
+        }
         let layers: Vec<(&Vec<BonePose>, Vec<BonePose>)> =
             layers.iter().map(|(c, t)| (&c.frames[0], c.sample(*t))).collect();
         let stunt = self.stunt.as_ref().filter(|(c, _)| c.frames[0].len() == base.len()).map(|(c, t)| c.sample(*t));
@@ -210,9 +285,10 @@ impl Rider {
     }
 }
 
-pub fn pose_riders(riders: Query<&Rider>, mut joints: Query<&mut Transform>) {
-    for rider in &riders {
-        for (e, t) in rider.joints.iter().zip(rider.pose()) {
+pub fn pose_riders(time: Res<Time>, mut riders: Query<&mut Rider>, mut joints: Query<&mut Transform>) {
+    for mut rider in &mut riders {
+        let pose = rider.next_pose(time.delta_secs());
+        for (e, t) in rider.joints.iter().zip(pose) {
             if let Ok(mut jt) = joints.get_mut(*e) {
                 *jt = t;
             }
