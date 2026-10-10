@@ -4,7 +4,9 @@
 //! `Setup/Sound.xml` gives the mix levels, the music sections and the
 //! ambient banks. The engine follows the original's update (0x93c60): two
 //! looping Vehicles-bank samples, "on" (2) and "off" (1), whose volume
-//! and pitch track the revs and throttle.
+//! and pitch track the revs and throttle. Every other quad on the track
+//! runs the same two loops from its own revs, quieter the further it is
+//! from player 1.
 //!
 //! One-shots, as the original plays them: the SpotFX bank in the menus
 //! (0 cursor, 1 select or back) at `mFrontEndSpotFXVol`; a Riders-bank
@@ -200,6 +202,19 @@ struct EngineLoop {
     on: bool,
 }
 
+/// A computer rider's (or another player's) engine loop: racer index.
+#[derive(Component)]
+struct OtherEngine {
+    racer: usize,
+    on: bool,
+}
+
+/// How loud another quad is at `d` metres from player 1 (the original's
+/// falloff isn't decoded; this halves by about 3.3 m and is faint past 30).
+fn falloff(d: f32) -> f32 {
+    (8.0 / (d.max(0.0) + 8.0)).powi(2)
+}
+
 #[derive(Component)]
 struct WheelLoop {
     volume: f32,
@@ -208,6 +223,7 @@ struct WheelLoop {
 
 enum Role {
     Engine(bool),
+    Other(usize, bool),
     Wheel(WheelLoop),
 }
 
@@ -231,6 +247,7 @@ fn start_race_audio(
     sel: Res<Selection>,
     settings: Res<Settings>,
     data: Option<Res<Banks>>,
+    opponents: Option<Res<crate::opponents::Opponents>>,
     mut sounds: ResMut<Assets<Sound>>,
 ) {
     let Some(data) = data else { return };
@@ -245,6 +262,7 @@ fn start_race_audio(
         ));
         match role {
             Some(Role::Engine(on)) => e.insert((PausesWithGame, EngineLoop { on })),
+            Some(Role::Other(racer, on)) => e.insert((PausesWithGame, OtherEngine { racer, on })),
             Some(Role::Wheel(w)) => e.insert((PausesWithGame, w)),
             None => &mut e,
         };
@@ -277,6 +295,10 @@ fn start_race_audio(
     for (index, on) in [(ENGINE_ON, true), (ENGINE_OFF, false)] {
         if let Some(pcm) = data.vehicles.get(index) {
             play(Sound::looped(pcm.clone()), 0.0, Some(Role::Engine(on)));
+            // Everyone else's engines too, by how far off they are.
+            for racer in 0..opponents.as_ref().map_or(0, |o| o.racers.len()) {
+                play(Sound::looped(pcm.clone()), 0.0, Some(Role::Other(racer, on)));
+            }
         }
     }
     if let Some(s) = setup.surface(&env, main_surface(&env)) {
@@ -301,10 +323,11 @@ pub fn engine_mix(r: f32, t: f32, pitch_zero: f32, pitch_span: f32) -> [(f32, f3
 #[allow(clippy::type_complexity)]
 fn engine_and_wheels(
     player: Option<Res<Player>>,
+    opponents: Option<Res<crate::opponents::Opponents>>,
     mix: Option<Res<QuadMix>>,
     settings: Res<Settings>,
     virt: Res<Time<Virtual>>,
-    mut sinks: Query<(&mut AudioSink, Option<&EngineLoop>, Option<&WheelLoop>), With<PausesWithGame>>,
+    mut sinks: Query<(&mut AudioSink, Option<&EngineLoop>, Option<&WheelLoop>, Option<&OtherEngine>), With<PausesWithGame>>,
 ) {
     let paused = virt.is_paused();
     for (sink, ..) in &sinks {
@@ -320,13 +343,20 @@ fn engine_and_wheels(
     let [on, off] = engine_mix(r, v.throttle, mix.pitch_zero, mix.pitch_span);
     let contact = v.wheels.iter().filter(|w| w.contact).count() as f32 / v.wheels.len().max(1) as f32;
     let pace = (v.velocity.length() / 20.0).clamp(0.0, 1.0);
-    for (mut sink, engine, wheel) in &mut sinks {
-        let (vol, pitch) = match (engine, wheel) {
-            (Some(e), _) => {
+    for (mut sink, engine, wheel, other) in &mut sinks {
+        let (vol, pitch) = match (engine, wheel, other) {
+            (Some(e), ..) => {
                 let (vol, pitch) = if e.on { on } else { off };
                 (vol * mix.engine, pitch)
             }
-            (_, Some(w)) => (w.volume * mix.engine * pace * contact, w.pitch * (0.8 + 0.4 * pace)),
+            (_, Some(w), _) => (w.volume * mix.engine * pace * contact, w.pitch * (0.8 + 0.4 * pace)),
+            (.., Some(o)) => {
+                let Some(q) = opponents.as_ref().and_then(|opp| opp.racers.get(o.racer)).map(|r| &r.vehicle) else { continue };
+                let r = (q.revs / q.params.max_revs.max(1.0)).clamp(0.0, 1.0);
+                let [on, off] = engine_mix(r, q.throttle, mix.pitch_zero, mix.pitch_span);
+                let (vol, pitch) = if o.on { on } else { off };
+                (vol * mix.engine * falloff(q.position.distance(v.position)), pitch)
+            }
             _ => continue,
         };
         sink.set_volume(Volume::Linear(vol * gain(settings.effects)));
@@ -461,6 +491,12 @@ mod tests {
     fn empty_sound_ends() {
         let s = Sound { parts: Arc::new([pcm(vec![])]), loop_from: 0 };
         assert_eq!(s.decoder().next(), None);
+    }
+
+    #[test]
+    fn other_engines_fade_with_distance() {
+        assert_eq!(falloff(0.0), 1.0);
+        assert!(falloff(8.0) == 0.25 && falloff(40.0) < 0.03);
     }
 
     #[test]
