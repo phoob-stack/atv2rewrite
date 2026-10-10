@@ -1,0 +1,9 @@
+[package]
+name = "atv-viewer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+atv-formats = { version = "0.1.0", path = "../atv-formats" }
+bevy = "0.20"

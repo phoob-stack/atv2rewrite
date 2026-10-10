@@ -1,0 +1,6 @@
+/target
+# Never commit game data extracted from a player's disc.
+/game-data
+*.bin
+*.cue
+*.iso
