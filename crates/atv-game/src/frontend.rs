@@ -1927,7 +1927,7 @@ fn volume_bar(commands: &mut Commands, ui: &UiAssets, which: usize, left: f32, t
 
 /// Width of a volume bar's lit part for a level, in texels of its 128-wide
 /// sprite: the 16 segments run from x = 3 to 124.
-fn lit_width(level: u8) -> f32 {
+pub(crate) fn lit_width(level: u8) -> f32 {
     if level == 0 { 0.0 } else { 3.0 + 121.0 * f32::from(level.min(VOLUME_STEPS)) / f32::from(VOLUME_STEPS) }
 }
 
@@ -2086,21 +2086,23 @@ fn hint(commands: &mut Commands, ui: &UiAssets, text: &str, top: f32) -> Entity 
 }
 
 /// The controls, pad and keyboard, beside the front of the big pad.
+/// The controls, as the Controller pages list them: action, pad, keys.
+pub(crate) const CONTROLS: [(&str, &str, &str); 12] = [
+    ("ACCELERATE", "RT OR A", "W OR UP"),
+    ("BRAKE AND REVERSE", "LT OR X", "S OR DOWN"),
+    ("STEER", "LEFT STICK", "A D OR LEFT RIGHT"),
+    ("LEAN", "LEFT STICK", "I K"),
+    ("PRE-LOAD AND HOP", "B OR RB", "SPACE"),
+    ("SPEED BOOST", "Y", "SHIFT"),
+    ("KICK", "LB", "E"),
+    ("TRICKS IN THE AIR", "X Y LB RB", "1 2 3 4"),
+    ("CHANGE CAMERA", "BACK", "C"),
+    ("PAUSE", "START", "ESCAPE"),
+    ("BACK ON TRACK", "", "R"),
+    ("RESTART", "", "BACKSPACE"),
+];
+
 fn controls_table(commands: &mut Commands, ui: &UiAssets) -> Entity {
-    const ROWS: [(&str, &str, &str); 12] = [
-        ("ACCELERATE", "RT OR A", "W OR UP"),
-        ("BRAKE AND REVERSE", "LT OR X", "S OR DOWN"),
-        ("STEER", "LEFT STICK", "A D OR LEFT RIGHT"),
-        ("LEAN", "LEFT STICK", "I K"),
-        ("PRE-LOAD AND HOP", "B OR RB", "SPACE"),
-        ("SPEED BOOST", "Y", "SHIFT"),
-        ("KICK", "LB", "E"),
-        ("TRICKS IN THE AIR", "X Y LB RB", "1 2 3 4"),
-        ("CHANGE CAMERA", "BACK", "C"),
-        ("PAUSE", "START", "ESCAPE"),
-        ("BACK ON TRACK", "", "R"),
-        ("RESTART", "", "BACKSPACE"),
-    ];
     let grey = Color::srgb(0.75, 0.82, 0.95);
     commands
         .spawn(Node { position_type: PositionType::Absolute, left: px(24), top: px(140), column_gap: px(14), align_items: AlignItems::Center, ..default() })
@@ -2110,7 +2112,7 @@ fn controls_table(commands: &mut Commands, ui: &UiAssets) -> Entity {
             let scale = ui.big_pad.size.x / 512.0;
             t.spawn(ui.big_pad.region(Rect::from_corners(front.min * scale, front.max * scale), 0.62 / scale));
             t.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(9), ..default() }).with_children(|c| {
-                for (i, (action, pad, keys)) in [("", "PAD", "KEYBOARD")].into_iter().chain(ROWS).enumerate() {
+                for (i, (action, pad, keys)) in [("", "PAD", "KEYBOARD")].into_iter().chain(CONTROLS).enumerate() {
                     c.spawn(Node { column_gap: px(8), ..default() }).with_children(|r| {
                         for (text, width, color) in [(action, 128.0, Color::WHITE), (pad, 88.0, grey), (keys, 116.0, grey)] {
                             let color = if i == 0 { Color::srgb(1.0, 0.85, 0.3) } else { color };

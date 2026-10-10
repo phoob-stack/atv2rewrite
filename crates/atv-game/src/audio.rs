@@ -35,7 +35,7 @@ impl Plugin for AudioPlugin {
             .add_audio_source::<Sound>()
             .add_systems(PreUpdate, load_banks.run_if(resource_exists::<Game>).run_if(not(resource_exists::<Banks>)))
             .add_systems(OnEnter(AppState::Race), start_race_audio)
-            .add_systems(Update, (engine_and_wheels, crash_sounds).run_if(in_state(AppState::Race)))
+            .add_systems(Update, (engine_and_wheels, crash_sounds, bed_volumes).run_if(in_state(AppState::Race)))
             .add_systems(Update, menu_sounds.run_if(in_state(AppState::FrontEnd)))
             .add_systems(Update, pause_menu_sounds.run_if(in_state(AppState::Race)));
     }
@@ -234,6 +234,15 @@ enum Role {
     Engine(bool),
     Other(usize, bool),
     Wheel(WheelLoop),
+    Bed(Bed),
+}
+
+/// Music or ambience: its mix level before the volume bar, so it follows
+/// the bar when the pause menu's Audio page changes it.
+#[derive(Component, Clone, Copy)]
+struct Bed {
+    base: f32,
+    music: bool,
 }
 
 /// Engine and wheel loops stop while the game is paused; music and
@@ -273,6 +282,7 @@ fn start_race_audio(
             Some(Role::Engine(on)) => e.insert((PausesWithGame, EngineLoop { on })),
             Some(Role::Other(racer, on)) => e.insert((PausesWithGame, OtherEngine { racer, on })),
             Some(Role::Wheel(w)) => e.insert((PausesWithGame, w)),
+            Some(Role::Bed(b)) => e.insert(b),
             None => &mut e,
         };
     };
@@ -285,14 +295,15 @@ fn start_race_audio(
         parts.extend(m.sections.iter().filter_map(|n| music(&game.0, n)));
         if parts.len() > usize::from(has_intro) {
             let loop_from = usize::from(has_intro);
-            play(Sound { parts: parts.into(), loop_from }, setup.mix_level("mMusicVol", 1.0) * gain(settings.music), None);
+            let base = setup.mix_level("mMusicVol", 1.0);
+            play(Sound { parts: parts.into(), loop_from }, base * gain(settings.music), Some(Role::Bed(Bed { base, music: true })));
         }
     }
 
-    let ambient_vol = setup.mix_level("mAmbientVol", 0.3) * gain(settings.effects);
+    let ambient = setup.mix_level("mAmbientVol", 0.3);
     for name in setup.ambient(&env).into_iter().chain(setup.crowd(&env)) {
         if let Some(bg) = bank(&game.0, name).into_iter().next() {
-            play(Sound::looped(bg), ambient_vol, None);
+            play(Sound::looped(bg), ambient * gain(settings.effects), Some(Role::Bed(Bed { base: ambient, music: false })));
         }
     }
 
@@ -432,6 +443,16 @@ fn engine_and_wheels(
 }
 
 /// Plays a clip once.
+/// Music and ambience follow the volume bars as they change.
+fn bed_volumes(settings: Res<Settings>, mut sinks: Query<(&Bed, &mut AudioSink)>) {
+    if !settings.is_changed() {
+        return;
+    }
+    for (b, mut sink) in &mut sinks {
+        sink.set_volume(Volume::Linear(b.base * gain(if b.music { settings.music } else { settings.effects })));
+    }
+}
+
 fn one_shot(commands: &mut Commands, sounds: &mut Assets<Sound>, pcm: &Arc<Pcm>, volume: f32, pitch: f32) {
     let sound = Sound { parts: Arc::new([pcm.clone()]), loop_from: 1 };
     commands.spawn((AudioPlayer(sounds.add(sound)), PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)).with_speed(pitch)));
@@ -467,7 +488,7 @@ fn pause_menu_sounds(
     settings: Res<Settings>,
     mut sounds: ResMut<Assets<Sound>>,
     virt: Res<Time<Virtual>>,
-    menus: Query<(), With<crate::hud::RaceMenu>>,
+    menus: Query<&crate::hud::RaceMenu>,
     mut was_paused: Local<bool>,
 ) {
     use crate::ui::Nav;
@@ -477,6 +498,8 @@ fn pause_menu_sounds(
     let Some(banks) = banks else { return };
     let index = match crate::ui::read_nav(&keys, &pads) {
         _ if toggled => 2,
+        // On the Audio, Camera and Controller pages they go back a page.
+        Some(Nav::Start | Nav::Back) if menus.iter().any(|m| m.page.is_some()) => 1,
         // Start and Back close the pause menu: the panel sound covers it.
         // Y does nothing there.
         Some(Nav::Start | Nav::Back | Nav::Extra) => return,
