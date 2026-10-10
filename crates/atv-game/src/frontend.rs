@@ -21,6 +21,7 @@ use crate::challenge;
 use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
+use crate::mp::MpChamp;
 use crate::{AppState, Mode, Selection};
 
 pub struct FrontEndPlugin;
@@ -176,6 +177,9 @@ pub enum Screen {
     /// Split screen: Single Race or Freestyle Battle, then how many play.
     MpMode,
     MpPlayers,
+    /// The split-screen championship: which one, then its standings.
+    MpChamp,
+    MpChampStatus,
 }
 
 /// The Options menu's rows, and the page each opens.
@@ -209,6 +213,8 @@ pub struct FrontEnd {
     /// ATV are being picked (0-based).
     players: usize,
     picking: usize,
+    /// A split-screen championship is being set up.
+    mp_champ: bool,
 }
 
 impl FrontEnd {
@@ -292,7 +298,7 @@ fn navigate(
     mut next: ResMut<NextState<AppState>>,
     mut exit: MessageWriter<AppExit>,
     mut settings: ResMut<Settings>,
-    (mut career, rules, defs): (ResMut<Career>, Res<career::Rules>, Res<challenge::Defs>),
+    (mut career, rules, defs, mut mp_champ): (ResMut<Career>, Res<career::Rules>, Res<challenge::Defs>, ResMut<MpChamp>),
 ) {
     let Some(nav) = read_nav(&keys, &pads) else { return };
     if fe.built != Some(fe.screen) {
@@ -318,6 +324,7 @@ fn navigate(
                     fe.players = 1;
                     sel.players = 1;
                     sel.others.clear();
+                    mp_champ.run = None;
                     match item {
                         Some("FREESTYLE") => fe.screen = Screen::FreestyleType,
                         Some(item @ ("ARCADE" | "SINGLE RACE" | "TIME TRIAL")) => {
@@ -403,6 +410,8 @@ fn navigate(
                         fe.rider = i;
                     }
                     fe.screen = Screen::Rider;
+                } else if fe.mp_champ && fe.players > 1 {
+                    fe.screen = Screen::MpChamp;
                 } else if fe.mode == Mode::Career {
                     let rider = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider));
                     let name = rider.map_or(sel.rider.to_uppercase(), |r| r.name.clone());
@@ -592,6 +601,43 @@ fn navigate(
             Nav::Back => fe.screen = Screen::FreestyleType,
             _ => {}
         },
+        Screen::MpChamp => match nav {
+            Nav::Up | Nav::Down => {
+                if let Some(l) = list.as_mut() {
+                    l.step(nav);
+                }
+            }
+            Nav::Accept | Nav::Start => {
+                let champ = Champ::ALL[list.as_ref().map_or(0, |l| l.selected).min(2)];
+                let name = |model: &str| roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(model)).map_or(model.to_uppercase(), |r| r.name.clone());
+                let players: Vec<(String, String)> =
+                    std::iter::once(&sel.rider).chain(sel.others.iter().map(|o| &o.0)).take(fe.players).map(|m| (name(m), m.clone())).collect();
+                let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos());
+                mp_champ.start(champ, &players, &sel.quad, &career_pool(&roster, &rules, champ), seed);
+                fe.screen = Screen::MpChampStatus;
+            }
+            Nav::Back => fe.screen = Screen::Quad,
+            _ => {}
+        },
+        Screen::MpChampStatus => match nav {
+            Nav::Accept | Nav::Start => {
+                let Some(run) = &mp_champ.run else { return };
+                if run.over() {
+                    mp_champ.run = None;
+                    fe.screen = Screen::Main;
+                    return;
+                }
+                let Some(track) = rules.tracks[run.champ.index()].get(run.round) else { return };
+                sel.mode = Mode::SingleRace;
+                sel.track = track.clone();
+                sel.round = run.round;
+                sel.laps = career::LAPS;
+                sel.field = run.opponents();
+                next.set(AppState::Loading);
+            }
+            Nav::Back => fe.screen = Screen::Main,
+            _ => {}
+        },
         Screen::MpMode => match nav {
             Nav::Up | Nav::Down => {
                 if let Some(l) = list.as_mut() {
@@ -605,6 +651,8 @@ fn navigate(
                 }
                 fe.mode = if l.selected == 1 { Mode::Freestyle } else { Mode::SingleRace };
                 sel.mode = fe.mode;
+                fe.mp_champ = l.selected == 2;
+                mp_champ.run = None;
                 fe.screen = Screen::MpPlayers;
             }
             Nav::Back => fe.screen = Screen::Main,
@@ -661,7 +709,7 @@ fn rebuild(
     mut fe: ResMut<FrontEnd>,
     roster: Res<Roster>,
     settings: Res<Settings>,
-    (career, rules, defs): (Res<Career>, Res<career::Rules>, Res<challenge::Defs>),
+    (career, rules, defs, mp_champ): (Res<Career>, Res<career::Rules>, Res<challenge::Defs>, Res<MpChamp>),
     ui: Option<Res<UiAssets>>,
     roots: Query<Entity, With<ScreenRoot>>,
     sel: Res<Selection>,
@@ -691,6 +739,7 @@ fn rebuild(
     };
     let label = match (split, fe.mode) {
         (true, Mode::Freestyle) => "FREESTYLE BATTLE",
+        (true, _) if fe.mp_champ => "CHAMPIONSHIP",
         (true, _) => "MULTIPLAYER",
         _ => fe.mode.label(),
     };
@@ -711,6 +760,8 @@ fn rebuild(
         Screen::Challenges => ("Freestyle_Challenge", "FREESTYLE"),
         Screen::MpMode => ("Multiplayer_New_Game", ""),
         Screen::MpPlayers => ("Multiplayer_Num_Players", label),
+        Screen::MpChamp => ("Career_Newgame", "CHAMPIONSHIP"),
+        Screen::MpChampStatus => (mp_champ.run.as_ref().map_or("Career_Status_Amateur", |r| r.champ.status_screen()), "CHAMPIONSHIP"),
     };
     let (bg, title) = roster.screen(key);
 
@@ -911,8 +962,7 @@ fn rebuild(
         Screen::MpMode => {
             let list = MenuList::new(&["SINGLE RACE", "FREESTYLE BATTLE", "CHAMPIONSHIP"], 320.0)
                 .with_row(36.0)
-                .select(usize::from(fe.mode == Mode::Freestyle))
-                .disable(&["CHAMPIONSHIP"]);
+                .select(if fe.mp_champ { 2 } else { usize::from(fe.mode == Mode::Freestyle) });
             kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 170.0));
         }
         Screen::FreestyleType => {
@@ -962,6 +1012,28 @@ fn rebuild(
                 top += 15.0;
             }
         }
+        Screen::MpChamp => {
+            let names = Champ::ALL.map(Champ::label);
+            let list = MenuList::new(&names, 320.0).with_row(36.0);
+            kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 150.0));
+            kids.push(hint(&mut commands, &ui, "FIVE ROUNDS AGAINST EACH OTHER AND THE CHAMPIONSHIP'S RIDERS", 330.0));
+        }
+        Screen::MpChampStatus => {
+            if let Some(run) = &mp_champ.run {
+                let head = if run.over() {
+                    let leader = run.standings().first().map_or(String::new(), |e| e.name.clone());
+                    format!("{} CHAMPIONSHIP  -  {leader} WINS", run.champ.label())
+                } else {
+                    let track = rules.tracks[run.champ.index()].get(run.round).map_or(String::new(), |t| track_title(t));
+                    format!("ROUND {} OF {}  -  {}", run.round + 1, career::ROUNDS, track)
+                };
+                kids.push(commands.spawn((BitmapText::new(FontId::Menu, 14.0, head), ui_at(40.0, 80.0))).id());
+                kids.push(standings_table(&mut commands, run, 40.0, 116.0));
+                if let Some(tex) = rules.tracks[run.champ.index()].get(run.round).and_then(|t| ui.tracks.get(&t.to_ascii_lowercase())) {
+                    kids.push(commands.spawn(placed(tex.node(220.0, 220.0), 380.0, 116.0)).id());
+                }
+            }
+        }
         Screen::CareerStatus | Screen::CareerComplete => {
             if let Some(run) = &career.run {
                 let complete = fe.screen == Screen::CareerComplete || run.over();
@@ -996,6 +1068,8 @@ fn rebuild(
         Screen::CareerChamp => &[("controlbuttoncross", "SELECT"), ("controlbuttoncircle", "BACK")],
         Screen::Controller => &[("controlbuttoncross", "CHANGE"), ("controlbuttoncircle", "BACK")],
         Screen::CareerStatus => &[("controlbuttoncross", "RACE"), ("controlbuttoncircle", "BACK")],
+        Screen::MpChampStatus if mp_champ.run.as_ref().is_some_and(|r| r.over()) => &[("controlbuttoncross", "OK")],
+        Screen::MpChampStatus => &[("controlbuttoncross", "RACE"), ("controlbuttoncircle", "BACK")],
         Screen::CareerComplete => &[("controlbuttoncross", "OK")],
         _ => &[("controlbuttoncross", "SELECT"), ("controlbuttoncircle", "BACK")],
     };

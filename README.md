@@ -88,7 +88,10 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   home the others get a minute to finish. Freestyle Battle puts the same
   players on a track against a time limit with no computer riders; the
   most points wins. In split screen player 1's trick buttons are 1-4 and
-  player 2's are Numpad 1-4.
+  player 2's are Numpad 1-4. The multiplayer Championship races the five
+  tracks of the Amateur, Qualifying or Professional championship with the
+  same players, computer riders from it making four, scored with the
+  career's position points.
 
 Tricks are the 28 from `Setup/Tricks.xml`: hold a trick button (or two for
 the level 5-7 tricks: 1+2, 2+3, 3+4) and a direction while airborne. Keep
