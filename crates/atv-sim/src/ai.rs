@@ -62,6 +62,33 @@ const TROUBLE_REACH: f32 = 50.0;
 const JUMP_RUN_UP: f32 = 1.0;
 /// ...and never less than this many metres.
 const JUMP_RUN_UP_MIN: f32 = 10.0;
+/// The original's engine boost for computer riders (factor set at
+/// 0x66200, applied at 0x68250): this long into the race their engine
+/// torque goes up this many times, for the rest of the race...
+const ENGINE_BOOST: f32 = 2.5;
+const ENGINE_BOOST_DELAY: f32 = 6.0;
+/// ...and below this share of the quad's top speed the throttle is held
+/// to `1 / ENGINE_BOOST` (0x68430), which leaves them about as quick as
+/// stock until they are going fast.
+const ENGINE_BOOST_SPEED: f32 = 0.75;
+/// A computer rider presses the boost button (0x67520) on full throttle
+/// when the line runs straight (each link within 20 degrees of the one
+/// before, cos 0.94) for this far, looking at most this many links ahead.
+const BOOST_THROTTLE: f32 = 0.99;
+const BOOST_STRAIGHT: f32 = 100.0;
+const BOOST_LINKS: usize = 5;
+const BOOST_COS: f32 = 0.94;
+/// 0x68430: a computer rider rides with the nearest player when they are
+/// going faster than this (30 mph, m/s) ...
+const PACK_SPEED: f32 = 13.408;
+/// ... within this many metres.
+const PACK_RANGE: f32 = 30.0;
+/// Closer behind than this (metres along the line), a boosted engine is
+/// held back.
+const PACK_CLOSE: f32 = 5.0;
+/// Throttle PID gains racing the line and riding with a player.
+const RACE_GAINS: [f32; 3] = [0.04, 0.1, 0.0];
+const PACK_GAINS: [f32; 3] = [0.015, 0.4, 0.1];
 
 #[derive(Debug, Clone)]
 pub struct LineNode {
@@ -326,28 +353,38 @@ impl Pid {
     }
 
     fn update(&mut self, err: f32, dt: f32) -> f32 {
+        self.update_terms(err, err, err, dt)
+    }
+
+    /// The original's PID takes a separate input for each term.
+    fn update_terms(&mut self, p_in: f32, i_in: f32, d_in: f32, dt: f32) -> f32 {
         let [kp, ki, kd] = self.gains;
-        let p = (err * kp).clamp(-1.0, 1.0);
+        let p = (p_in * kp).clamp(-1.0, 1.0);
         if ki == 0.0 {
             self.integral = 0.0;
         } else if self.output > -1.0 && self.output < 1.0 {
-            self.integral = (self.integral + dt * ki * err).clamp(-1.0, 1.0);
+            self.integral = (self.integral + dt * ki * i_in).clamp(-1.0, 1.0);
         }
         let d = match self.last {
-            Some(last) if kd != 0.0 && dt > 0.0 => ((err - last) / dt * kd).clamp(-1.0, 1.0),
+            Some(last) if kd != 0.0 && dt > 0.0 => ((d_in - last) / dt * kd).clamp(-1.0, 1.0),
             _ => 0.0,
         };
-        self.last = Some(err);
+        self.last = Some(d_in);
         self.output = (p + self.integral + d).clamp(-1.0, 1.0);
         self.output
     }
 }
 
-/// Where another racer is, for passing.
+/// Where another racer is, for passing and for riding with a player.
 #[derive(Debug, Clone, Copy)]
 pub struct Traffic {
     pub position: Vec3,
     pub velocity: Vec3,
+    /// A player on their quad (not thrown off): computer riders ride
+    /// with them.
+    pub player: bool,
+    /// Using the speed boost.
+    pub boosting: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -369,6 +406,12 @@ pub struct AiDriver {
     /// Last steering target and target speed (for debugging views).
     pub target: Vec3,
     pub target_speed: f32,
+    /// The rider wants to use the speed boost this frame (it needs some in
+    /// its meter, which the race keeps).
+    pub boost: bool,
+    /// Seconds of racing left before the engine boost kicks in; `None` for
+    /// a quad that doesn't get it (a player's, on autopilot).
+    engine_delay: Option<f32>,
     steer_pid: Pid,
     speed_pid: Pid,
     /// Sideways shift of the target from the corridor middle, metres.
@@ -407,8 +450,10 @@ impl AiDriver {
             pace: 1.0,
             target: position,
             target_speed: 0.0,
+            boost: false,
+            engine_delay: None,
             steer_pid: Pid::new(1.0, 0.2, 0.01),
-            speed_pid: Pid::new(0.04, 0.1, 0.0),
+            speed_pid: Pid::new(RACE_GAINS[0], RACE_GAINS[1], RACE_GAINS[2]),
             offset: 0.0,
             mode: Mode::Race,
             mode_timer: 0.0,
@@ -423,6 +468,22 @@ impl AiDriver {
             last_respot: None,
             rng: seed.wrapping_mul(2_654_435_761).max(1),
             odometer: Odometer::default(),
+        }
+    }
+
+    /// A computer rider's driver: its quad gets the original's engine
+    /// boost (see [`Self::torque_scale`]).
+    pub fn with_engine_boost(mut self) -> Self {
+        self.engine_delay = Some(ENGINE_BOOST_DELAY);
+        self
+    }
+
+    /// What the quad's engine torque is multiplied by: the computer
+    /// riders' engine boost once it has kicked in, else 1.
+    pub fn torque_scale(&self) -> f32 {
+        match self.engine_delay {
+            Some(d) if d <= 0.0 => ENGINE_BOOST,
+            _ => 1.0,
         }
     }
 
@@ -729,16 +790,74 @@ impl AiDriver {
 
         // Stuck: stopped while trying to go.
         self.update_stuck(pos, speed, dt);
+        if let Some(d) = &mut self.engine_delay {
+            *d -= dt;
+        }
+        let boosted = self.torque_scale() > 1.0;
         let mut input = Input::default();
+        self.boost = false;
         match self.mode {
             Mode::Race => {
                 self.steer_pid.gains[0] = 1.0;
                 input.steer = self.steer_pid.update(sine, dt);
-                let out = self.speed_pid.update(target_speed - speed, dt);
+                // 0x68430: when the nearest racer is a player going faster
+                // than 30 mph within 30 m, a computer rider rides with
+                // them, closing the gap along the line (the original pairs
+                // riders that are each other's nearest first, 0x25bf0;
+                // this takes the nearest). It never brakes for them, and
+                // ignores the speed limits and the pacer while it does.
+                let nearest = traffic
+                    .iter()
+                    .min_by(|a, b| {
+                        a.position
+                            .distance_squared(pos)
+                            .total_cmp(&b.position.distance_squared(pos))
+                    })
+                    .filter(|t| t.player);
+                let pack = nearest.filter(|t| {
+                    self.engine_delay.is_some()
+                        && t.velocity.length() > PACK_SPEED
+                        && t.position.distance(pos) < PACK_RANGE
+                });
+                let they_boost = nearest.is_some_and(|t| t.boosting);
+                let (out, max_throttle, max_brake, racing) = if let Some(t) = pack {
+                    let gap = (t.position - pos).dot(edge.dir);
+                    self.speed_pid.gains = PACK_GAINS;
+                    let out = self
+                        .speed_pid
+                        .update_terms(t.velocity.length(), gap, gap, dt);
+                    // Held back while the boost is on and it is close
+                    // behind or the other rider is boosting.
+                    let cap = if (gap >= PACK_CLOSE && !they_boost) || !boosted {
+                        1.0
+                    } else {
+                        1.0 / ENGINE_BOOST
+                    };
+                    (out, cap, 0.0, false)
+                } else {
+                    self.speed_pid.gains = RACE_GAINS;
+                    let out = self.speed_pid.update(target_speed - speed, dt);
+                    // With the engine boost on, the throttle is held back
+                    // below 75% of top speed or while the nearest racer
+                    // boosts.
+                    let cap = if boosted && (speed < ENGINE_BOOST_SPEED * top || they_boost) {
+                        1.0 / ENGINE_BOOST
+                    } else {
+                        1.0
+                    };
+                    (out, cap, 1.0, true)
+                };
+                // 0x67520: flat out with nothing holding it back on a
+                // straight, the rider boosts.
                 if out >= 0.0 {
-                    input.throttle = out;
+                    input.throttle = out.min(max_throttle);
+                    self.boost = racing
+                        && self.engine_delay.is_some()
+                        && out >= BOOST_THROTTLE
+                        && max_throttle >= BOOST_THROTTLE
+                        && self.straight_ahead(line) >= BOOST_STRAIGHT;
                 } else if speed > 0.894 {
-                    input.brake = -out;
+                    input.brake = (-out).min(max_brake);
                 }
                 input.jump = self.hop(line, pos, v.velocity, v.params.preload_rate);
             }
@@ -749,6 +868,30 @@ impl AiDriver {
             }
         }
         input
+    }
+
+    /// How far the line runs straight from the start of the rider's
+    /// current link (0x66f10): links are added while each turns less than
+    /// 20 degrees from the one before (their `side`s, so steep links count
+    /// as turns too), up to `BOOST_LINKS` of them, until `BOOST_STRAIGHT`
+    /// metres.
+    fn straight_ahead(&self, line: &RacingLine) -> f32 {
+        let mut e = self.edge;
+        let mut run = 0.0;
+        for _ in 0..BOOST_LINKS {
+            let Some(&next) = line.nodes[line.edges[e].to].out.first() else {
+                break;
+            };
+            if line.edges[e].side.dot(line.edges[next].side) <= BOOST_COS {
+                break;
+            }
+            run += line.edges[e].len;
+            if run >= BOOST_STRAIGHT {
+                break;
+            }
+            e = next;
+        }
+        run
     }
 
     /// Whether a jump node (one with a hop boost) is within `reach` metres
@@ -1218,6 +1361,19 @@ mod tests {
         }
         assert!((p.scale(2, -300.0) - 1.0).abs() < 0.01);
         assert!(Pacer::new(0.0, 0.0, 4, 1, 1000.0).is_none());
+    }
+
+    #[test]
+    fn engine_boost_and_straights() {
+        let l = square();
+        let mut d = AiDriver::new(&l, Vec3::ZERO, 1);
+        assert_eq!(d.torque_scale(), 1.0);
+        d = d.with_engine_boost();
+        assert_eq!(d.torque_scale(), 1.0);
+        d.engine_delay = Some(0.0);
+        assert_eq!(d.torque_scale(), ENGINE_BOOST);
+        // Every side of the square turns 90 degrees into the next.
+        assert_eq!(d.straight_ahead(&l), 0.0);
     }
 
     #[test]
