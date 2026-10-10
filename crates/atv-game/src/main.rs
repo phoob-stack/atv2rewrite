@@ -949,10 +949,7 @@ fn drive(
         if crashed {
             if w.advance_in(crash_clips.as_deref(), &race.collision, water.as_deref(), wet, dt) {
                 w.fall = None;
-                let (p, r) = race.safe;
-                v.reset(p + Vec3::Y * 0.5, r);
-                race.upside_down = 0.0;
-                race.respots += 1;
+                put_back(&mut race, v, opponents.as_deref());
             }
         } else if progress.started() {
             let crash = if wet { Some((Cause::Water, crash::way_over(v, None))) } else { w.check(v, before, &race.collision, dt) };
@@ -984,25 +981,20 @@ fn drive(
     // The original's automatic respots, with the rider on the quad.
     let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
     let gates = race.gates.len();
-    let r = &mut *race;
-    if let Some(m) = r.marshal.as_mut() {
-        let racing = progress.racing();
-        if racing && !crashed && m.watch(v.position, v.forward(), r.next_checkpoint % gates.max(1), gates, dt) {
-            let (p, rot) = m.respot(&r.collision);
-            v.reset(p, rot);
-            r.safe = (p, rot);
-            r.safe_timer = 0.0;
-            r.upside_down = 0.0;
-            r.respots += 1;
-        }
+    let next = race.next_checkpoint % gates.max(1);
+    let racing = progress.racing();
+    if race.marshal.as_mut().is_some_and(|m| racing && !crashed && m.watch(v.position, v.forward(), next, gates, dt)) {
+        put_back(&mut race, v, opponents.as_deref());
+    }
+    if let Some(m) = race.marshal.as_ref() {
         if racing {
             progress.wrong_way = m.backwards;
         }
         progress.warning = m.warning().filter(|_| racing);
     }
 
-    // Remember a safe spot; respot there on R, when stuck upside down, or
-    // after falling out of the world.
+    // Remember a safe spot; respot on R, when stuck upside down, or after
+    // falling out of the world.
     race.safe_timer += dt;
     if v.grounded() && v.up().y > 0.9 && race.safe_timer > 1.0 && !v.in_water {
         race.safe = (v.position, v.rotation);
@@ -1015,10 +1007,7 @@ fn drive(
         if let Some(w) = wreck.as_mut() {
             w.fall = None;
         }
-        let (p, r) = race.safe;
-        v.reset(p + Vec3::Y * 0.5, r);
-        race.upside_down = 0.0;
-        race.respots += 1;
+        put_back(&mut race, v, opponents.as_deref());
     } else if let Some((p, r)) = opponents.as_mut().filter(|_| demo.is_some() && !crashed).and_then(|o| o.respot_player()) {
         // The demo's computer rider gives up where the others would.
         let ground = race.collision.raycast(p + Vec3::Y * 3.0, Vec3::NEG_Y, 20.0).map_or(p.y, |h| h.point.y);
@@ -1030,6 +1019,23 @@ fn drive(
         // riders, the score and the clocks start over too.
         restart.set(AppState::Loading);
     }
+}
+
+/// Puts player 1 back: in a race on the racing line, as the original puts
+/// back a racer whatever the reason (0x90ac0), else at the last spot where
+/// the quad was upright on the ground.
+fn put_back(race: &mut Race, v: &mut Vehicle, opponents: Option<&opponents::Opponents>) {
+    if let Some(m) = race.marshal.as_mut() {
+        let others: Vec<Vec3> = opponents.iter().flat_map(|o| &o.racers).map(|r| r.vehicle.position).collect();
+        race.safe = m.respot(&race.collision, &others);
+        race.safe_timer = 0.0;
+        v.reset(race.safe.0, race.safe.1);
+    } else {
+        let (p, r) = race.safe;
+        v.reset(p + Vec3::Y * 0.5, r);
+    }
+    race.upside_down = 0.0;
+    race.respots += 1;
 }
 
 fn sync_quad(
