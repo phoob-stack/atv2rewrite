@@ -675,12 +675,15 @@ fn race_menus(
                 mp_champ.score(&rules, &order, &tricks);
                 mp_champ.keep(&mut career);
             }
-            // A finished challenge run: its medal and bonus.
+            // A challenge run: its medal and bonus, or the respot that
+            // failed it.
             let outcome = (selection.mode == Mode::Challenge)
                 .then(|| {
+                    if course.as_ref().is_some_and(|c| c.failed) {
+                        return Some(Outcome::FAILED);
+                    }
                     let (time, def) = (p.finished?, defs.get(selection.challenge)?);
-                    let penalties = course.as_ref().map_or(0.0, |c| c.penalties);
-                    let o = challenge::score(&mut career, &rules, def, selection.challenge, time, penalties);
+                    let o = challenge::score(&mut career, &rules, def, selection.challenge, time);
                     career.save();
                     Some(o)
                 })
@@ -867,7 +870,11 @@ fn spawn_race_menu(
         (false, Mode::Freestyle) => ("PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "RESTART", "QUIT RACE"]),
         (false, Mode::Challenge) => ("PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "RESTART CHALLENGE", "CHALLENGES", "QUIT RACE"]),
         (false, _) => ("RACE PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "RESTART RACE", "QUIT RACE"]),
-        (true, Mode::Challenge) => (format!("CHALLENGE {} COMPLETE", sel.challenge), &["TRY AGAIN", "CHALLENGES", "MAIN MENU"]),
+        // Passed with a medal (strings 0x58, 0x53; 0x55780).
+        (true, Mode::Challenge) => {
+            let passed = outcome.is_some_and(|o| o.medal.is_some());
+            (format!("CHALLENGE {}", if passed { "PASSED" } else { "FAILED" }), &["TRY AGAIN", "CHALLENGES", "MAIN MENU"])
+        }
         (true, Mode::Freestyle) if battle.is_some() => ("FREESTYLE BATTLE".into(), &["PLAY AGAIN", "MAIN MENU"]),
         (true, Mode::Freestyle) => ("FREESTYLE RESULTS".into(), &["PLAY AGAIN", "MAIN MENU"]),
         (true, Mode::Arcade) if !arcade_won(p, standings) => {
@@ -895,7 +902,7 @@ fn spawn_race_menu(
         (true, true) if let Some(b) = &battle => 1 + b.len(),
         (true, true) => 7,
         (true, false) if let Some(o) = outcome => {
-            2 + usize::from(o.penalties > 0.0) + usize::from(o.skill_points > 0) + usize::from(o.new_level.is_some()) + usize::from(o.unlocked.is_some())
+            if o.time.is_none() { 1 } else { 2 + usize::from(o.skill_points > 0) + usize::from(o.new_level.is_some()) + usize::from(o.unlocked.is_some()) }
         }
         (true, false) => {
             p.lap_times.len()
@@ -970,10 +977,11 @@ fn spawn_race_menu(
                         });
                     } else if let (true, Some(o)) = (results, outcome) {
                         box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), margin: UiRect::vertical(px(6)), ..default() }).with_children(|rows| {
-                            row(rows, "TIME", &fmt_time(o.time), o.best_time);
-                            if o.penalties > 0.0 {
-                                row(rows, "CONE PENALTIES", &format!("+{:.0} SEC", o.penalties), false);
-                            }
+                            let Some(time) = o.time else {
+                                row(rows, "RESPOTTED", "RUN OVER", false);
+                                return;
+                            };
+                            row(rows, "TIME", &fmt_time(time), o.best_time);
                             match o.medal {
                                 Some(m) => row(rows, "MEDAL", MEDALS[m], true),
                                 None => row(rows, "NO MEDAL", "RECORDS NOT BEATEN", false),

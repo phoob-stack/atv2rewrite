@@ -326,7 +326,18 @@ left alone.
   (the bare `<Unlockable>` is ignored). All twelve run on Stadium 2: the
   course of challenge N is the `checkpoint` locators N*100..N*100+39 in
   `Stadium2.row` (lower-case, sometimes with a trailing space or words
-  after the number, `checkpoint 600 endo box`), and `startN` is its start.
+  after the number, `checkpoint 600 endo box`; 1003 is there twice and
+  either counts), passed in order (0x90bb0) and won at the last
+  (0x99d50). A checkpoint is passed when the quad's hull touches the far
+  (+Z) face of its box, `pos ± sx/2·R0 ± sy/2·R1 + sz/2·R2` (0x64440,
+  0x64ac0). Every challenge starts at `start1` (0x86e00); the `startN`
+  locators go unused. The clock counts up from the start with no limit
+  (0x265a0), and the first respot fails the run (`player+0xac`, counted
+  by 0x25f20 and checked by 0x803c0). The challenge goal (vtable
+  0x1c40c0) ignores tricks, so the bicycle and endo challenges only want
+  their gates, and the cone penalty never applies: 0x9ad90 gives props of
+  type 0x11 a 5 s penalty (`prop+0x454`, taken once by 0x23750), but the
+  `FREE n` cones are type 0x19.
   Props whose flags carry numbers after the first word (`FREE 1` cones,
   `GEN_Start_gate 1 2 3 5 6`, `GEN_stasignfloor 2 3`) are only out in those
   challenges; `GEN_stasignfloor` has no model on the disc. Challenge 12

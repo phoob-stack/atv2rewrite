@@ -1,15 +1,22 @@
 //! Freestyle Challenges: twelve timed runs on Stadium 2, with Bronze,
 //! Silver and Gold record times from `Setup/Freestyle.xml` (`FSChallenge`).
 //!
-//! The rules follow the original's challenge code:
+//! The rules follow the original's challenge code (game type 5):
 //! - Challenge N's course is the `checkpoint` locators numbered N*100 to
-//!   N*100+39 in `Stadium2.row`, passed in order; the run starts at the
-//!   `startN` locator.
+//!   N*100+39 in `Stadium2.row`, passed in order (0x90bb0); the run is won
+//!   at the last one (0x99d50). A gate is the far (+Z) face of its box,
+//!   passed when the quad touches it (0x64440, 0x64ac0). Every run starts
+//!   at `start1` (0x86e00).
 //! - Props whose flags carry challenge numbers (`FREE 1` cones,
 //!   `GEN_Start_gate 1 2 3 5 6`, the floor arrows) are only out in those
 //!   challenges (see [`Instance::in_play`]).
-//! - The clock counts up; a time under a record (strictly) earns its
-//!   medal. Hitting a cone adds a second.
+//! - The clock counts up from the start (0x265a0); a time under a record
+//!   (strictly) earns its medal (0x99cb0). There is no time limit.
+//! - The first respot ends the run, failed (0x803c0, 0x25f20).
+//! - Cones cost nothing, whatever the challenge text says: the original
+//!   arms a 5 s penalty (0x9ad90) only on a prop type it never makes. Nor
+//!   does it check tricks: the bicycle and endo challenges (5 to 7) only
+//!   want their gates.
 //! - A better medal than before pays the medal's bonus in skill points
 //!   once for each tier it climbs, as the original does (a first gold pays
 //!   the gold bonus three times).
@@ -20,10 +27,8 @@
 //! - A challenge opens once every earlier one has a medal (or with the
 //!   ALLCHALS cheat).
 //!
-//! The disc gives no rules for the trick challenges beyond their text, so
-//! these are the rewrite's: in 5 and 7 each gate counts only when crossed
-//! in a bicycle; in 6 the endo box must be crossed end to end in one endo.
-//! Challenge 12 ("burst all the balloons") has no course on the disc.
+//! Challenge 12 ("burst all the balloons") has no course on the disc, so
+//! it can't be won, in the original either.
 //!
 //! [`Instance::in_play`]: atv_formats::row::Instance::in_play
 
@@ -34,16 +39,17 @@ use atv_formats::{setup, GameSource};
 use atv_sim::track as trk;
 
 use crate::career::{Career, Rules};
-use crate::freestyle::{Ground, PopupKind, Session, MEDALS};
+use crate::freestyle::{PopupKind, Session, MEDALS};
 use crate::race::{fmt_time, RaceProgress};
 use crate::ui::{read_nav, set_text, BitmapText, FontId, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::{AppState, Args, Mode, Player, Race, Selection};
 
 pub const COUNT: usize = 12;
 pub const TRACK: &str = "Stadium2";
-const CONE_PENALTY: f32 = 1.0;
-/// Quad half-width plus a cone's radius.
-const CONE_HIT: f32 = 1.1;
+/// The quad's hull for touching a gate: three spheres along it (front
+/// rack, middle, rear rack), each about as wide as the quad.
+const HULL: [f32; 3] = [0.75, 0.0, -0.85];
+const HULL_RADIUS: f32 = 0.6;
 
 /// One challenge as the select screen shows it.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -128,57 +134,85 @@ impl Def {
     }
 }
 
-/// The trick a challenge's gates want.
-pub fn needs(n: usize) -> Option<Ground> {
-    match n {
-        5 | 7 => Some(Ground::Bicycle),
-        6 => Some(Ground::Endo),
-        _ => None,
-    }
-}
-
 /// Whether challenge `n` can be picked: every earlier one has a medal.
 pub fn is_open(career: &Career, n: usize) -> bool {
     career.cheats & crate::unlocks::CHALS != 0 || (1..n).all(|k| career.challenges.get(&k).is_some_and(|c| c.1.is_some()))
 }
 
-/// The gate a quad has to pass: the locator's box.
+/// One face of a gate: a rectangle, `half` its half-size in its own x
+/// and y.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Gate {
+pub struct Face {
     pub center: Vec3,
     rot: Quat,
-    half: Vec3,
+    half: Vec2,
+}
+
+impl Face {
+    /// The far (+Z, in the game's frame) face of a locator's box (0x64ac0):
+    /// `pos ± sx/2·R0 ± sy/2·R1 + sz/2·R2`.
+    fn of(l: &atv_formats::rom::Locator) -> Self {
+        let rot = trk::rotation_to_sim(&l.rotation);
+        let half = Vec3::from(l.scale).abs() * 0.5;
+        // The sim frame mirrors Z, so the game's +Z is the box's local -Z.
+        Self { center: trk::to_sim(l.pos) + rot * Vec3::new(0.0, 0.0, -half.z), rot, half: half.truncate() }
+    }
+
+    /// How far `p` is from the rectangle.
+    fn distance(&self, p: Vec3) -> f32 {
+        let l = self.rot.inverse() * (p - self.center);
+        let on = l.truncate().clamp(-self.half, self.half);
+        (l - on.extend(0.0)).length()
+    }
+}
+
+/// A gate a quad has to pass: the face of each checkpoint locator with its
+/// number (Stadium 2 has two of 1003, and either counts).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Gate {
+    faces: Vec<Face>,
 }
 
 impl Gate {
-    fn local(&self, p: Vec3) -> Vec3 {
-        self.rot.inverse() * (p - self.center)
+    /// Where the guide arrow points.
+    pub fn center(&self) -> Vec3 {
+        self.faces[0].center
     }
 
-    /// Inside the box; thin gates get a metre either side, so a fast quad
-    /// can't step over one.
-    fn contains(&self, p: Vec3) -> bool {
-        let l = self.local(p).abs();
-        l.x <= self.half.x && l.y <= self.half.y && l.z <= self.half.z.max(1.0)
+    /// Whether a hull sphere at any of `points` touches a face.
+    fn touched(&self, points: &[Vec3]) -> bool {
+        self.faces.iter().any(|f| points.iter().any(|&p| f.distance(p) <= HULL_RADIUS))
     }
 }
 
 /// Challenge `n`'s gates, in order (`checkpoint 600 endo box` counts as
-/// 600; a repeated number keeps its first box).
+/// 600).
 pub fn course(world: &World, n: usize) -> Vec<Gate> {
     let lo = n as u32 * 100;
-    let mut gates: Vec<(u32, Gate)> = world
+    let mut faces: Vec<(u32, Face)> = world
         .locators
         .iter()
         .filter_map(|l| {
             let name = l.name.trim().to_ascii_lowercase();
             let id: u32 = name.strip_prefix("checkpoint")?.split_whitespace().next()?.parse().ok()?;
-            (lo..lo + 40).contains(&id).then(|| (id, Gate { center: trk::to_sim(l.pos), rot: trk::rotation_to_sim(&l.rotation), half: Vec3::from(l.scale).abs() }))
+            (lo..lo + 40).contains(&id).then(|| (id, Face::of(l)))
         })
         .collect();
-    gates.sort_by_key(|g| g.0);
-    gates.dedup_by_key(|g| g.0);
+    faces.sort_by_key(|f| f.0);
+    let mut gates: Vec<(u32, Gate)> = Vec::new();
+    for (id, f) in faces {
+        match gates.last_mut() {
+            Some(g) if g.0 == id => g.1.faces.push(f),
+            _ => gates.push((id, Gate { faces: vec![f] })),
+        }
+    }
     gates.into_iter().map(|g| g.1).collect()
+}
+
+/// Points along the quad for its hull spheres.
+pub fn hull(v: &atv_sim::vehicle::Vehicle) -> [Vec3; 3] {
+    let mid = v.position + v.up() * 0.3;
+    HULL.map(|z| mid + v.forward() * z)
 }
 
 /// The challenge being run.
@@ -187,97 +221,35 @@ pub struct Course {
     pub n: usize,
     pub gates: Vec<Gate>,
     pub next: usize,
-    /// Cones out in this challenge, and whether each has been hit.
-    cones: Vec<(Vec3, bool)>,
-    pub penalties: f32,
-    need: Option<Ground>,
-    /// Endo box: the end the current attempt started from.
-    side: Option<f32>,
-    /// Inside the next gate last step (one warning per pass).
-    inside: bool,
+    /// Ended by a respot.
+    pub failed: bool,
 }
 
 impl Course {
     pub fn new(world: &World, n: usize) -> Self {
-        let cones = world
-            .instances
-            .iter()
-            .filter(|i| i.model.to_ascii_lowercase().starts_with("gen_cone") && i.challenges().contains(&n))
-            .map(|i| (trk::to_sim(i.pos), false))
-            .collect();
-        Self { n, gates: course(world, n), next: 0, cones, penalties: 0.0, need: needs(n), side: None, inside: false }
+        Self { n, gates: course(world, n), next: 0, failed: false }
     }
 
     fn reset(&mut self) {
         self.next = 0;
-        self.penalties = 0.0;
-        self.side = None;
-        self.inside = false;
-        for c in &mut self.cones {
-            c.1 = false;
-        }
+        self.failed = false;
     }
 
     pub fn done(&self) -> bool {
         !self.gates.is_empty() && self.next >= self.gates.len()
     }
 
-    /// One step at `at` holding `trick`; the messages to show.
-    fn step(&mut self, at: Vec3, trick: Option<Ground>) -> Vec<(String, PopupKind)> {
-        let mut out = Vec::new();
-        for c in self.cones.iter_mut().filter(|c| !c.1 && (c.0 - at).with_y(0.0).length() < CONE_HIT && (c.0.y - at.y).abs() < 2.0) {
-            c.1 = true;
-            self.penalties += CONE_PENALTY;
-            out.push(("CONE  +1 SEC".to_string(), PopupKind::Bail));
+    /// One step with the quad's hull at `hull`; the message to show.
+    fn step(&mut self, hull: &[Vec3]) -> Option<String> {
+        if !self.gates.get(self.next)?.touched(hull) {
+            return None;
         }
-        let Some(gate) = self.gates.get(self.next).copied() else { return out };
-        let inside = gate.contains(at);
-        let entered = inside && !self.inside;
-        self.inside = inside;
-        match self.need {
-            // The endo box: from one end to the other in one endo.
-            Some(Ground::Endo) => {
-                let l = gate.local(at);
-                let at_end = inside && gate.half.z - l.z.abs() < 6.0;
-                let endo = trick == Some(Ground::Endo);
-                match self.side {
-                    _ if !inside => self.side = None,
-                    None if at_end && endo => self.side = Some(l.z.signum()),
-                    Some(_) if !endo => {
-                        self.side = None;
-                        out.push(("ENDO LOST  -  START AGAIN FROM AN END".to_string(), PopupKind::Bail));
-                    }
-                    Some(s) if at_end && l.z.signum() != s => self.pass(&mut out),
-                    _ => {}
-                }
-                if entered && !endo {
-                    out.push(("ENDO ACROSS THE BOX".to_string(), PopupKind::Bonus));
-                }
-            }
-            Some(need) if inside => {
-                if trick == Some(need) {
-                    self.pass(&mut out);
-                } else if entered {
-                    out.push(("BICYCLE THROUGH THE GATE".to_string(), PopupKind::Bonus));
-                }
-            }
-            None if inside => self.pass(&mut out),
-            _ => {}
-        }
-        out
-    }
-
-    fn pass(&mut self, out: &mut Vec<(String, PopupKind)>) {
         self.next += 1;
-        self.inside = false;
-        self.side = None;
-        if !self.done() {
-            out.push((format!("GATE {}/{}", self.next, self.gates.len()), PopupKind::Trick));
-        }
+        (!self.done()).then(|| format!("GATE {}/{}", self.next, self.gates.len()))
     }
 }
 
-/// Keeps the course: gates, cones and the finish.
+/// Keeps the course: the gates, the finish, and the respot that fails it.
 pub fn follow_course(
     sel: Res<Selection>,
     player: Option<Res<Player>>,
@@ -293,22 +265,26 @@ pub fn follow_course(
     if !p.started() {
         // On the grid (again, after a quick restart).
         course.reset();
-    } else if p.finished.is_none() {
-        for (text, kind) in course.step(player.0.position, session.ground_trick()) {
-            session.popup(text, kind);
+        race.respots = 0;
+    } else if !p.over() && race.respots > 0 {
+        course.failed = true;
+        p.dnf = true;
+    } else if !p.over() {
+        if let Some(text) = course.step(&hull(&player.0)) {
+            session.popup(text, PopupKind::Trick);
         }
         if course.done() {
-            p.finished = Some(p.clock + course.penalties);
+            p.finished = Some(p.clock);
         }
     }
     race.next_checkpoint = course.next.min(race.checkpoints.len().saturating_sub(1));
 }
 
-/// What a finished run earned.
+/// What a run earned.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Outcome {
-    pub time: f32,
-    pub penalties: f32,
+    /// None when a respot ended it.
+    pub time: Option<f32>,
     pub medal: Option<usize>,
     pub best_time: bool,
     pub skill_points: u32,
@@ -316,8 +292,13 @@ pub struct Outcome {
     pub unlocked: Option<String>,
 }
 
-/// Records a finished run of challenge `n` in `time` (penalties included).
-pub fn score(career: &mut Career, rules: &Rules, def: &Def, n: usize, time: f32, penalties: f32) -> Outcome {
+impl Outcome {
+    /// A run a respot ended: nothing is recorded.
+    pub const FAILED: Self = Self { time: None, medal: None, best_time: false, skill_points: 0, new_level: None, unlocked: None };
+}
+
+/// Records a finished run of challenge `n` in `time`.
+pub fn score(career: &mut Career, rules: &Rules, def: &Def, n: usize, time: f32) -> Outcome {
     let medal = def.medal(time);
     let prev = career.challenges.get(&n).copied();
     let old = prev.and_then(|p| p.1);
@@ -332,7 +313,7 @@ pub fn score(career: &mut Career, rules: &Rules, def: &Def, n: usize, time: f32,
     let best_time = prev.is_none_or(|p| time < p.0);
     career.challenges.insert(n, (if best_time { time } else { prev.map_or(time, |p| p.0) }, medal.max(old)));
     let unlocked = (medal == Some(2) && old != Some(2)).then(|| def.reward.clone()).flatten();
-    Outcome { time, penalties, medal, best_time, skill_points, new_level, unlocked }
+    Outcome { time: Some(time), medal, best_time, skill_points, new_level, unlocked }
 }
 
 /// A rider entry name as the menus show it (`JASON LUBURGH`).
@@ -474,7 +455,6 @@ fn dismiss(
 enum Readout {
     Time,
     Gates,
-    Penalties,
 }
 
 /// The guide arrow over the next gate.
@@ -500,7 +480,6 @@ fn spawn_hud(mut commands: Commands, course: Res<Course>, defs: Res<Defs>) {
                         r.spawn(BitmapText::new(FontId::Small, 8.0, "TIME"));
                         r.spawn((BitmapText::new(FontId::Chrome, 18.0, "0:00.00"), Readout::Time));
                     });
-                    c.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(1.0, 0.45, 0.3)), Readout::Penalties));
                 });
         });
 }
@@ -509,11 +488,9 @@ fn update_hud(course: Option<Res<Course>>, progress: Option<Res<RaceProgress>>, 
     let (Some(c), Some(p)) = (course, progress) else { return };
     for (r, mut t) in &mut readouts {
         let text = match r {
-            Readout::Time => fmt_time(p.finished.unwrap_or(p.clock + c.penalties)),
+            Readout::Time => fmt_time(p.finished.unwrap_or(p.clock)),
             Readout::Gates if c.gates.is_empty() => "NO COURSE ON THE DISC".to_string(),
             Readout::Gates => format!("GATES {}/{}", c.next, c.gates.len()),
-            Readout::Penalties if c.penalties > 0.0 => format!("PENALTIES +{:.0} SEC", c.penalties),
-            Readout::Penalties => String::new(),
         };
         set_text(&mut t, &text);
     }
@@ -528,7 +505,7 @@ fn guide_arrow(time: Res<Time>, course: Option<Res<Course>>, player: Option<Res<
         match c.gates.get(c.next) {
             Some(g) => {
                 // The model points down its own -Z once in the Bevy frame.
-                let dir = (g.center - at).with_y(0.0).normalize_or(Vec3::NEG_Z);
+                let dir = (g.center() - at).with_y(0.0).normalize_or(Vec3::NEG_Z);
                 let bob = 0.15 * (time.elapsed_secs() * 3.0).sin();
                 *t = Transform::from_translation(at + Vec3::Y * (2.1 + bob)).looking_to(-dir, Vec3::Y).with_scale(Vec3::splat(0.07));
                 *vis = Visibility::Inherited;
@@ -591,63 +568,57 @@ mod tests {
         let rules = Rules::parse("");
         let mut c = Career::new();
         assert!(is_open(&c, 1) && !is_open(&c, 2));
-        let o = score(&mut c, &rules, d.get(1).unwrap(), 1, 14.5, 0.0);
+        let o = score(&mut c, &rules, d.get(1).unwrap(), 1, 14.5);
         assert_eq!((o.medal, o.skill_points, o.unlocked.as_deref()), (Some(0), 200, None));
         assert!(is_open(&c, 2));
         // Bronze to gold climbs two tiers: twice the gold bonus.
-        let o = score(&mut c, &rules, d.get(1).unwrap(), 1, 12.0, 1.0);
+        let o = score(&mut c, &rules, d.get(1).unwrap(), 1, 12.0);
         assert_eq!((o.medal, o.skill_points, o.unlocked.as_deref()), (Some(2), 2000, Some("Jason_Luburgh")));
         assert_eq!(c.skill_points, 2200);
         // No better medal, no bonus; the best time stays.
-        let o = score(&mut c, &rules, d.get(1).unwrap(), 1, 12.5, 0.0);
+        let o = score(&mut c, &rules, d.get(1).unwrap(), 1, 12.5);
         assert_eq!((o.skill_points, o.best_time, o.unlocked), (0, false, None));
         assert_eq!(c.challenges[&1], (12.0, Some(2)));
         // A first gold pays three times.
-        let o = score(&mut c, &rules, d.get(2).unwrap(), 2, 10.0, 0.0);
+        let o = score(&mut c, &rules, d.get(2).unwrap(), 2, 10.0);
         assert_eq!(o.skill_points, 300);
     }
 
-    #[test]
-    fn gates_in_order_and_cones() {
-        let gate = |z: f32| Gate { center: Vec3::new(0.0, 0.0, z), rot: Quat::IDENTITY, half: Vec3::new(5.0, 5.0, 0.5) };
-        let mut c = Course { n: 1, gates: vec![gate(10.0), gate(20.0)], next: 0, cones: vec![(Vec3::new(0.0, 0.0, 5.0), false)], penalties: 0.0, need: None, side: None, inside: false };
-        // The second gate doesn't count before the first.
-        c.step(Vec3::new(0.0, 0.0, 20.0), None);
-        assert_eq!(c.next, 0);
-        c.step(Vec3::new(0.3, 0.0, 5.0), None);
-        c.step(Vec3::new(0.3, 0.0, 5.1), None);
-        assert_eq!(c.penalties, 1.0);
-        c.step(Vec3::new(0.0, 0.0, 10.4), None);
-        c.step(Vec3::new(0.0, 0.0, 20.0), None);
-        assert!(c.done());
-        // A bicycle gate wants the bicycle.
-        c.reset();
-        c.need = Some(Ground::Bicycle);
-        c.step(Vec3::new(0.0, 0.0, 10.0), Some(Ground::Wheelie));
-        assert_eq!(c.next, 0);
-        c.step(Vec3::new(0.0, 0.0, 10.0), Some(Ground::Bicycle));
-        assert_eq!(c.next, 1);
+    fn world(locators: &[(&str, [f32; 3])]) -> World {
+        let box_ = |(name, pos): &(&str, [f32; 3])| atv_formats::rom::Locator { name: name.to_string(), pos: *pos, scale: [10.0, 6.0, 2.0], rotation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] };
+        World { fog_color: 0, materials: vec![], locators: locators.iter().map(box_).collect(), lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] }
     }
 
     #[test]
-    fn endo_box_end_to_end() {
-        let gate = Gate { center: Vec3::ZERO, rot: Quat::IDENTITY, half: Vec3::new(10.0, 10.0, 30.0) };
-        let mut c = Course { n: 6, gates: vec![gate], next: 0, cones: Vec::new(), penalties: 0.0, need: Some(Ground::Endo), side: None, inside: false };
-        let endo = Some(Ground::Endo);
-        // Starting mid-box doesn't count; nor does dropping the endo.
-        c.step(Vec3::new(0.0, 0.0, 0.0), endo);
-        c.step(Vec3::new(0.0, 0.0, -27.0), endo);
-        assert!(!c.done());
-        c.step(Vec3::new(0.0, 0.0, 40.0), None);
-        c.step(Vec3::new(0.0, 0.0, 27.0), endo);
-        c.step(Vec3::new(0.0, 0.0, 0.0), None);
-        c.step(Vec3::new(0.0, 0.0, -27.0), endo);
-        assert!(!c.done());
-        c.step(Vec3::new(0.0, 0.0, 40.0), None);
-        c.step(Vec3::new(0.0, 0.0, 27.0), endo);
-        c.step(Vec3::new(0.0, 0.0, 0.0), endo);
-        c.step(Vec3::new(0.0, 0.0, -27.0), endo);
+    fn a_gate_is_its_boxs_far_face() {
+        // A 10 x 6 x 2 box at game z 10: its +Z face is at game z 11, sim -11.
+        let gates = course(&world(&[("checkpoint 100", [0.0, 0.0, 10.0])]), 1);
+        assert_eq!(gates[0].center(), Vec3::new(0.0, 0.0, -11.0));
+        let touched = |p: Vec3| gates[0].touched(&[p]);
+        assert!(touched(Vec3::new(0.0, 0.0, -11.0)));
+        assert!(touched(Vec3::new(4.9, 2.9, -11.5)));
+        // The box's middle is a metre short of the face; past an edge
+        // doesn't count either.
+        assert!(!touched(Vec3::new(0.0, 0.0, -10.0)));
+        assert!(!touched(Vec3::new(5.7, 0.0, -11.0)));
+    }
+
+    #[test]
+    fn gates_in_order() {
+        let w = world(&[("checkpoint 101", [0.0, 0.0, 20.0]), ("Checkpoint 100 ", [0.0, 0.0, 10.0]), ("checkpoint 102", [0.0, 0.0, 30.0]), ("checkpoint 102", [50.0, 0.0, 30.0]), ("checkpoint 200", [0.0, 0.0, 40.0])]);
+        let mut c = Course::new(&w, 1);
+        assert_eq!(c.gates.len(), 3);
+        let at = |z: f32| [Vec3::new(0.0, 0.0, -z)];
+        // The second gate doesn't count before the first.
+        assert_eq!(c.step(&at(21.0)), None);
+        assert_eq!(c.next, 0);
+        assert_eq!(c.step(&at(11.0)).as_deref(), Some("GATE 1/3"));
+        c.step(&at(21.0));
+        // Either copy of a repeated number counts; the last gate finishes.
+        assert_eq!(c.step(&[Vec3::new(50.0, 0.0, -31.0)]), None);
         assert!(c.done());
+        c.reset();
+        assert_eq!((c.next, c.failed), (0, false));
     }
 
     #[test]

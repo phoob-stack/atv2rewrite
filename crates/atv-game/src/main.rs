@@ -207,6 +207,9 @@ struct Race {
     safe: (Vec3, Quat),
     safe_timer: f32,
     upside_down: f32,
+    /// Times player 1 was put back on the track (a challenge fails on the
+    /// first).
+    respots: u32,
 }
 
 #[derive(Resource)]
@@ -562,17 +565,11 @@ fn setup(
         commands.entity(e).insert(scoped.clone());
     }
     let collision = trk::collision(&scene.world, &game.0, &sel.track);
-    // A challenge starts at its own `startN` (Stadium 2 has one by each
-    // course), else the grid's first slot.
-    let slot = if in_challenge && trk::start_locator(&scene.world, sel.challenge).is_some_and(|l| l.name.trim().eq_ignore_ascii_case(&format!("start{}", sel.challenge))) {
-        sel.challenge
-    } else {
-        sel.player_slot()
-    };
-    let start = trk::start_pose(&scene.world, &collision, slot);
+    // A challenge starts at `start1` too, wherever its course is (0x86e00).
+    let start = trk::start_pose(&scene.world, &collision, sel.player_slot());
     let course = in_challenge.then(|| challenge::Course::new(&scene.world, sel.challenge));
     let checkpoints = match &course {
-        Some(c) => c.gates.iter().map(|g| g.center).collect(),
+        Some(c) => c.gates.iter().map(|g| g.center()).collect(),
         None => trk::checkpoints(&scene.world),
     };
 
@@ -742,6 +739,7 @@ fn setup(
         safe: start,
         safe_timer: 0.0,
         upside_down: 0.0,
+        respots: 0,
     });
     commands.insert_resource(Player(vehicle));
     commands.init_resource::<Controls>();
@@ -931,6 +929,7 @@ fn drive(
                 let (p, r) = race.safe;
                 v.reset(p + Vec3::Y * 0.5, r);
                 race.upside_down = 0.0;
+                race.respots += 1;
             }
         } else if progress.started() {
             let crash = if wet { Some((Cause::Water, crash::way_over(v, None))) } else { w.check(v, before, &race.collision, dt) };
@@ -976,6 +975,7 @@ fn drive(
         let (p, r) = race.safe;
         v.reset(p + Vec3::Y * 0.5, r);
         race.upside_down = 0.0;
+        race.respots += 1;
     } else if let Some((p, r)) = opponents.as_mut().filter(|_| demo.is_some() && !crashed).and_then(|o| o.respot_player()) {
         // The demo's computer rider gives up where the others would.
         let ground = race.collision.raycast(p + Vec3::Y * 3.0, Vec3::NEG_Y, 20.0).map_or(p.y, |h| h.point.y);

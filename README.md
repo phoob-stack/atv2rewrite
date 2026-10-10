@@ -213,6 +213,14 @@ the countdown. A Freestyle Challenge shows its own intro page instead:
 the challenge's name and task over the waiting quad, and the countdown
 starts when you press Start (or A, Enter). `--no-intro` skips both.
 
+**Freestyle Challenges**, as in the original: twelve timed runs on Stadium
+2 against the disc's Bronze, Silver and Gold times. Every run starts on the
+start line and is won at the course's last gate, with the gates taken in
+order (the arrow over the quad points at the next one). The first respot,
+on R or after a crash, fails the run. As in the original, cones cost no
+time and the trick challenges don't check the trick, whatever their text
+says. Challenge 12 has no course on the disc.
+
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on
 track select.
