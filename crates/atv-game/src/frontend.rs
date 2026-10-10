@@ -5,7 +5,8 @@
 //! Open Freestyle picks a time limit on it instead of laps. Options holds
 //! the Audio, Camera and Controller pages (see [`crate::settings`]).
 //! Career picks a championship, then rider and ATV, and comes back to the
-//! championship's status page between rounds (see [`crate::career`]).
+//! championship's status page between rounds (see [`crate::career`]); the
+//! Custom championship picks its tracks, laps and points split first.
 //! Multiplayer picks how many play, then each player picks a rider and ATV
 //! in turn before track select (see [`crate::mp`]). Y (or T) on rider
 //! select, track select and the career status opens the Trick Book (see
@@ -18,7 +19,7 @@ use atv_formats::setup::{self, Entry};
 use atv_formats::GameSource;
 
 use crate::freestyle::{self, limit_label, TrickDef, MEDALS, TIME_LIMITS};
-use crate::career::{self, Career, Champ, Run};
+use crate::career::{self, Career, Champ, CustomSetup, Plan, Run};
 use crate::challenge;
 use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
@@ -208,6 +209,9 @@ pub enum Screen {
     TrickBook,
     /// Arcade with a saved round: carry on from it or start again.
     ArcadeNew,
+    /// The Custom championship's tracks and laps, then its points split.
+    CustomTracks,
+    CustomPoints,
 }
 
 /// The Options menu's rows, and the page each opens.
@@ -231,8 +235,9 @@ pub struct FrontEnd {
     pub track: usize,
     /// The Options menu's cursor.
     option: usize,
-    /// The championship being set up.
+    /// The championship being set up, and a Custom one's tracks and points.
     champ: Champ,
+    custom: CustomSetup,
     /// Where to come back to from a race, instead of the usual.
     pub return_to: Option<Screen>,
     /// The Freestyle Challenge picked (1-based).
@@ -492,12 +497,14 @@ fn navigate(
                     fe.screen = Screen::Rider;
                 } else if fe.mp_champ && fe.players > 1 {
                     fe.screen = Screen::MpChamp;
+                } else if fe.mode == Mode::Career && fe.champ == Champ::Custom {
+                    // Its tracks start out as last set (none at first).
+                    if fe.custom.rows.is_empty() {
+                        fe.custom = CustomSetup::new(&custom_tracks(&roster, &rules));
+                    }
+                    fe.screen = Screen::CustomTracks;
                 } else if fe.mode == Mode::Career {
-                    let rider = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider));
-                    let name = rider.map_or(sel.rider.to_uppercase(), |r| r.name.clone());
-                    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos());
-                    career.start(fe.champ, (&name, &sel.rider), &sel.quad, &career_pool(&roster, &rules, fe.champ), seed);
-                    career.save();
+                    start_career(&mut career, Plan::set(&rules, fe.champ), &roster, &rules, &sel);
                     fe.screen = Screen::CareerStatus;
                 } else if fe.mode == Mode::Challenge {
                     sel.track = challenge::TRACK.into();
@@ -644,11 +651,11 @@ fn navigate(
                     fe.screen = Screen::CareerComplete;
                     return;
                 }
-                let Some(track) = rules.tracks[run.champ.index()].get(run.round) else { return };
+                let Some((track, laps)) = run.next_round() else { return };
                 sel.mode = Mode::Career;
-                sel.track = track.clone();
+                sel.track = track.to_string();
                 sel.round = run.round;
-                sel.laps = career::LAPS;
+                sel.laps = laps;
                 sel.rider = run.rider.clone();
                 sel.quad = run.quad.clone();
                 sel.field = run.opponents();
@@ -726,7 +733,7 @@ fn navigate(
                 let players: Vec<(String, String)> =
                     std::iter::once(&sel.rider).chain(sel.others.iter().map(|o| &o.0)).take(fe.players).map(|m| (name(m), m.clone())).collect();
                 let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos());
-                mp_champ.start(champ, &players, &sel.quad, &career_pool(&roster, &rules, champ), seed);
+                mp_champ.start(Plan::set(&rules, champ), &players, &sel.quad, &career_pool(&roster, &rules, champ), seed);
                 fe.screen = Screen::MpChampStatus;
             }
             Nav::Back => fe.screen = Screen::Quad,
@@ -740,15 +747,60 @@ fn navigate(
                     fe.screen = Screen::Main;
                     return;
                 }
-                let Some(track) = rules.tracks[run.champ.index()].get(run.round) else { return };
+                let Some((track, laps)) = run.next_round() else { return };
                 sel.mode = Mode::SingleRace;
-                sel.track = track.clone();
+                sel.track = track.to_string();
                 sel.round = run.round;
-                sel.laps = career::LAPS;
+                sel.laps = laps;
                 sel.field = run.opponents();
                 next.set(AppState::Loading);
             }
             Nav::Back => fe.screen = Screen::Main,
+            _ => {}
+        },
+        Screen::CustomTracks => {
+            let cs = &mut fe.custom;
+            let on_continue = cs.cursor >= cs.rows.len();
+            let ready = cs.count() > 0;
+            match nav {
+                Nav::Up | Nav::Down if cs.editing => cs.step_laps(nav == Nav::Up),
+                Nav::Up | Nav::Down => {
+                    if let Some(l) = list.as_mut() {
+                        l.step(nav);
+                        cs.cursor = l.selected;
+                    }
+                }
+                Nav::Right if !on_continue && cs.rows[cs.cursor].round.is_some() => cs.editing = true,
+                Nav::Left => cs.editing = false,
+                Nav::Accept if cs.editing => cs.editing = false,
+                Nav::Accept if !on_continue => cs.toggle(),
+                Nav::Accept | Nav::Start | Nav::Extra => {
+                    if ready {
+                        cs.editing = false;
+                        fe.screen = Screen::CustomPoints;
+                    }
+                    return;
+                }
+                Nav::Back if cs.editing => cs.editing = false,
+                Nav::Back => {
+                    fe.screen = Screen::Quad;
+                    return;
+                }
+                _ => return,
+            }
+            // The rounds, laps and hints follow each change.
+            fe.built = None;
+        }
+        Screen::CustomPoints => match nav {
+            Nav::Left | Nav::Right => {
+                fe.custom.step_split(nav == Nav::Right);
+                fe.built = None;
+            }
+            Nav::Accept | Nav::Start => {
+                start_career(&mut career, fe.custom.plan(), &roster, &rules, &sel);
+                fe.screen = Screen::CareerStatus;
+            }
+            Nav::Back => fe.screen = Screen::CustomTracks,
             _ => {}
         },
         Screen::MpMode => match nav {
@@ -790,14 +842,30 @@ fn navigate(
     }
 }
 
-/// The championship menu: carrying on with one in progress, then the three.
+/// The championship menu: carrying on with one in progress, then the four.
 fn champ_items(career: &Career) -> Vec<(String, Option<Champ>)> {
     let mut items = Vec::new();
     if let Some(r) = career.run.as_ref().filter(|r| !r.over()) {
         items.push((format!("CONTINUE {}", r.champ.label()), None));
     }
-    items.extend(Champ::ALL.map(|c| (c.label().to_string(), Some(c))));
+    items.extend(Champ::EVERY.map(|c| (c.label().to_string(), Some(c))));
     items
+}
+
+/// Starts a championship for the picked rider and ATV, and saves it.
+fn start_career(career: &mut Career, plan: Plan, roster: &Roster, rules: &career::Rules, sel: &Selection) {
+    let rider = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider));
+    let name = rider.map_or(sel.rider.to_uppercase(), |r| r.name.clone());
+    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos());
+    let pool = career_pool(roster, rules, plan.champ);
+    career.start(plan, (&name, &sel.rider), &sel.quad, &pool, seed);
+    career.save();
+}
+
+/// The tracks Choose Your Tracks lists: the championships' fifteen, in
+/// `Tracks.xml` order.
+fn custom_tracks(roster: &Roster, rules: &career::Rules) -> Vec<String> {
+    roster.tracks.iter().filter(|t| rules.tracks.iter().flatten().any(|c| c.eq_ignore_ascii_case(t))).cloned().collect()
 }
 
 /// The riders a championship may draw its field from, as (name, model).
@@ -877,6 +945,8 @@ fn rebuild(
         Screen::MpChampStatus => (mp_champ.run.as_ref().map_or("Career_Status_Amateur", |r| r.champ.status_screen()), "CHAMPIONSHIP"),
         Screen::ArcadeNew => ("Arcade_Newgame", "ARCADE"),
         Screen::TrickBook => ("Trickbook", ""),
+        Screen::CustomTracks => ("Career_Custom_Tracks", "CAREER"),
+        Screen::CustomPoints => ("Career_Custom_Points_Distrib", "CAREER"),
     };
     let (bg, title) = roster.screen(key);
 
@@ -1147,12 +1217,11 @@ fn rebuild(
                     let leader = run.standings().first().map_or(String::new(), |e| e.name.clone());
                     format!("{} CHAMPIONSHIP  -  {leader} WINS", run.champ.label())
                 } else {
-                    let track = rules.tracks[run.champ.index()].get(run.round).map_or(String::new(), |t| track_title(t));
-                    format!("ROUND {} OF {}  -  {}", run.round + 1, career::ROUNDS, track)
+                    round_head(run)
                 };
                 kids.push(commands.spawn((BitmapText::new(FontId::Menu, 14.0, head), ui_at(40.0, 80.0))).id());
                 kids.push(standings_table(&mut commands, run, 40.0, 116.0));
-                if let Some(tex) = rules.tracks[run.champ.index()].get(run.round).and_then(|t| ui.tracks.get(&t.to_ascii_lowercase())) {
+                if let Some(tex) = run.next_round().and_then(|(t, _)| ui.tracks.get(&t.to_ascii_lowercase())) {
                     kids.push(commands.spawn(placed(tex.node(220.0, 220.0), 380.0, 116.0)).id());
                 }
             }
@@ -1201,26 +1270,93 @@ fn rebuild(
                 }
             }
         }
+        Screen::CustomTracks => {
+            let cs = &fe.custom;
+            let (top, row) = (96.0, 20.0);
+            let mut names: Vec<String> = cs.rows.iter().map(|r| track_title(&r.track)).collect();
+            names.push("CONTINUE".into());
+            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            let mut list = MenuList::new(&refs, 200.0).with_row(row).select(cs.cursor);
+            if cs.count() == 0 {
+                list = list.disable(&["CONTINUE"]);
+            }
+            kids.push(menu(&mut commands, &ui, list, 100.0, top));
+            // Column heads, then each round's number and laps beside its track.
+            let dim = Color::srgb(0.75, 0.82, 0.95);
+            let gold = Color::srgb(1.0, 0.85, 0.3);
+            for (text, x) in [("ROUND", 40.0), ("TRACK", 176.0), ("LAPS", 318.0)] {
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, text).color(dim), ui_at(x, top - 18.0))).id());
+            }
+            for (i, r) in cs.rows.iter().enumerate() {
+                let Some(round) = r.round else { continue };
+                let y = top + i as f32 * row + 5.0;
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 9.0, (round + 1).to_string()), ui_at(56.0, y))).id());
+                let editing = cs.editing && i == cs.cursor;
+                let laps = if editing { format!("< {} >", r.laps) } else { r.laps.to_string() };
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 9.0, laps).color(if editing { gold } else { Color::WHITE }), ui_at(if editing { 316.0 } else { 328.0 }, y))).id());
+            }
+            if let Some(tex) = cs.rows.get(cs.cursor).and_then(|r| ui.tracks.get(&r.track.to_ascii_lowercase())) {
+                kids.push(commands.spawn(placed(tex.node(200.0, 200.0), 400.0, 96.0)).id());
+            }
+            let lines: &[&str] = match cs.rows.get(cs.cursor) {
+                _ if cs.editing => &["UP AND DOWN SET THE LAPS"],
+                Some(r) if r.round.is_some() => &["RIGHT SETS ITS LAPS", "SELECT TAKES IT OUT"],
+                Some(_) => &["SELECT ADDS IT AS A ROUND"],
+                None => &["ON TO THE POINTS"],
+            };
+            for (k, l) in lines.iter().enumerate() {
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, *l).color(dim), ui_at(400.0, 310.0 + 15.0 * k as f32))).id());
+            }
+            let total = match cs.count() {
+                1 => "1 ROUND".to_string(),
+                n => format!("{n} ROUNDS"),
+            };
+            kids.push(commands.spawn((BitmapText::new(FontId::Menu, 13.0, total), ui_at(400.0, 360.0))).id());
+        }
+        Screen::CustomPoints => {
+            // As the original lays it out: each place's race points, its bar
+            // with the slider on it, then its bonus (trick) points.
+            let split = fe.custom.split;
+            let (race, bonus) = rules.split_points(split);
+            let (bar_x, top, row) = (228.0, 124.0, 30.6);
+            let dim = Color::srgb(0.75, 0.82, 0.95);
+            let small = ui.font(FontId::Small);
+            for (text, right, x) in [("RACE POINTS", true, bar_x - 6.0), ("BONUS POINTS", false, bar_x + 190.0)] {
+                let x = if right { x - small.width(text, 8.0) } else { x };
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, text).color(dim), ui_at(x, top - 20.0))).id());
+            }
+            kids.push(commands.spawn(placed(ui.points.node("HBAR8", 1.0), bar_x, top)).id());
+            for i in 0..career::FIELD {
+                let y = top + i as f32 * row;
+                let place = ordinal(i + 1);
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 9.0, place.clone()).color(dim), ui_at(150.0 - small.width(&place, 9.0), y + 10.0))).id());
+                let r = race[i].to_string();
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 9.0, r.clone()), ui_at(bar_x - 6.0 - small.width(&r, 9.0), y + 10.0))).id());
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 9.0, bonus[i].to_string()), ui_at(bar_x + 190.0, y + 10.0))).id());
+                kids.push(commands.spawn(placed(ui.points.node("BLOB1", 1.0), bar_x + 5.0 + 1.44 * split as f32, y)).id());
+            }
+            kids.push(hint(&mut commands, &ui, &format!("{}% RACE   -   {split}% TRICKS", 100 - split), 380.0));
+            kids.push(hint(&mut commands, &ui, "LEFT AND RIGHT SHARE THE POINTS OUT  -  BONUS POINTS GO BY TRICK SCORE", 398.0));
+        }
         Screen::CareerStatus | Screen::CareerComplete => {
             if let Some(run) = &career.run {
                 let complete = fe.screen == Screen::CareerComplete || run.over();
                 let head = if complete {
                     format!("{} CHAMPIONSHIP  -  YOU FINISHED {}", run.champ.label(), ordinal(run.player_place()))
                 } else {
-                    let track = rules.tracks[run.champ.index()].get(run.round).map_or(String::new(), |t| track_title(t));
-                    format!("ROUND {} OF {}  -  {}", run.round + 1, career::ROUNDS, track)
+                    round_head(run)
                 };
                 kids.push(commands.spawn((BitmapText::new(FontId::Menu, 14.0, head), ui_at(40.0, 80.0))).id());
                 kids.push(standings_table(&mut commands, run, 40.0, 116.0));
                 if complete {
-                    let next = Champ::ALL.get(run.champ.index() + 1).filter(|c| career.is_open(**c));
+                    let next = run.champ.next().filter(|c| career.is_open(*c));
                     let msg = match next {
                         Some(c) if run.player_place() <= 3 => format!("{} CHAMPIONSHIP OPEN", c.label()),
                         _ if run.player_place() > 3 => "FINISH IN THE TOP 3 TO OPEN THE NEXT CHAMPIONSHIP".to_string(),
                         _ => "ALL CHAMPIONSHIPS OPEN".to_string(),
                     };
                     kids.push(hint(&mut commands, &ui, &msg, 380.0));
-                } else if let Some(tex) = rules.tracks[run.champ.index()].get(run.round).and_then(|t| ui.tracks.get(&t.to_ascii_lowercase())) {
+                } else if let Some(tex) = run.next_round().and_then(|(t, _)| ui.tracks.get(&t.to_ascii_lowercase())) {
                     kids.push(commands.spawn(placed(tex.node(220.0, 220.0), 380.0, 116.0)).id());
                 }
             }
@@ -1240,6 +1376,17 @@ fn rebuild(
         Screen::MpChampStatus if mp_champ.run.as_ref().is_some_and(|r| r.over()) => &[("controlbuttoncross", "OK")],
         Screen::MpChampStatus => &[("controlbuttoncross", "RACE"), ("controlbuttoncircle", "BACK")],
         Screen::CareerComplete => &[("controlbuttoncross", "OK")],
+        Screen::CustomTracks if fe.custom.cursor < fe.custom.rows.len() && !fe.custom.editing => {
+            let on = fe.custom.rows[fe.custom.cursor].round.is_some();
+            if fe.custom.count() > 0 {
+                &[("controlbuttoncross", if on { "REMOVE TRACK" } else { "ADD TRACK" }), ("YButton", "CONTINUE"), ("controlbuttoncircle", "BACK")]
+            } else {
+                &[("controlbuttoncross", "ADD TRACK"), ("controlbuttoncircle", "BACK")]
+            }
+        }
+        Screen::CustomTracks if fe.custom.editing => &[("controlbuttoncross", "OK"), ("controlbuttoncircle", "BACK")],
+        Screen::CustomTracks => &[("controlbuttoncross", "CONTINUE"), ("controlbuttoncircle", "BACK")],
+        Screen::CustomPoints => &[("controlbuttoncross", "CONTINUE"), ("controlbuttoncircle", "BACK")],
         _ => &[("controlbuttoncross", "SELECT"), ("controlbuttoncircle", "BACK")],
     };
     let footer = commands
@@ -1315,6 +1462,13 @@ fn standings_table(commands: &mut Commands, run: &Run, left: f32, top: f32) -> E
             }
         })
         .id()
+}
+
+/// "ROUND 2 OF 5  -  FOREST 1" for a championship's next round.
+fn round_head(run: &Run) -> String {
+    let (track, laps) = run.next_round().map_or((String::new(), 0), |(t, l)| (track_title(t), l));
+    let laps = if run.champ == Champ::Custom { format!("  -  {laps} {}", if laps == 1 { "LAP" } else { "LAPS" }) } else { String::new() };
+    format!("ROUND {} OF {}  -  {track}{laps}", run.round + 1, run.rounds())
 }
 
 fn hint(commands: &mut Commands, ui: &UiAssets, text: &str, top: f32) -> Entity {

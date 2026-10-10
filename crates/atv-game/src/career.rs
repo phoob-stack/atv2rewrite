@@ -16,6 +16,12 @@
 //!   of the winner's time doesn't finish, and places last.
 //! - The field is drawn once per championship from the riders
 //!   `RiderAvailability` allows in it.
+//! - A top-3 Professional finish opens the Custom championship (the
+//!   original's `mCustomUnlocked`). Its rounds are the tracks the player
+//!   adds on Choose Your Tracks, each with its own laps (1 to 20; a new
+//!   track takes the last laps set, 1 at first), and Point Distribution
+//!   shares each place's race and trick points (together 50 for a win) out
+//!   between the two rankings in steps of 5% (0x426a0, 0x42ea0, 0x43680).
 //!
 //! Progress is saved to `career.cfg` beside the options.
 
@@ -38,17 +44,27 @@ pub enum Champ {
     /// `QUAL` in the original's menus, `Open` in `Career.xml`.
     Qualifying,
     Professional,
+    /// The player's own: their tracks, laps and points split.
+    Custom,
 }
 
 impl Champ {
+    /// The three with set tracks (`TrackOrder`).
     pub const ALL: [Champ; 3] = [Champ::Amateur, Champ::Qualifying, Champ::Professional];
+    pub const EVERY: [Champ; 4] = [Champ::Amateur, Champ::Qualifying, Champ::Professional, Champ::Custom];
 
     pub fn label(self) -> &'static str {
         match self {
             Champ::Amateur => "AMATEUR",
             Champ::Qualifying => "QUALIFYING",
             Champ::Professional => "PROFESSIONAL",
+            Champ::Custom => "CUSTOM",
         }
+    }
+
+    /// The championship a top-3 finish in this one opens.
+    pub fn next(self) -> Option<Champ> {
+        Self::EVERY.get(self.index() + 1).copied()
     }
 
     pub fn index(self) -> usize {
@@ -61,6 +77,7 @@ impl Champ {
             Champ::Amateur => "Amateur",
             Champ::Qualifying => "Open",
             Champ::Professional => "Professional",
+            Champ::Custom => "Custom",
         }
     }
 
@@ -70,11 +87,12 @@ impl Champ {
             Champ::Amateur => "Career_Status_Amateur",
             Champ::Qualifying => "Career_Status_Pro",
             Champ::Professional => "Career_Status_Pro2",
+            Champ::Custom => "Career_Status_Custom",
         }
     }
 
     fn from_key(s: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|c| c.key() == s)
+        Self::EVERY.into_iter().find(|c| c.key() == s)
     }
 }
 
@@ -90,8 +108,9 @@ pub struct Rules {
     pub position_points: [u32; FIELD],
     pub trick_points: [u32; FIELD],
     pub tracks: [Vec<String>; 3],
-    /// Rider entry names (`Doug_Gust`) allowed in each championship.
-    pub riders: [Vec<String>; 3],
+    /// Rider entry names (`Doug_Gust`) allowed in each championship
+    /// ([`Champ::index`]).
+    pub riders: [Vec<String>; 4],
     /// Gold medals needed, and the ATV it unlocks.
     pub unlockables: Vec<(u32, String)>,
     /// A rider who hasn't finished by this share of the winner's time
@@ -130,7 +149,7 @@ impl Rules {
             (0..ROUNDS).filter_map(|r| m.as_ref()?.get(&format!("Round{r}")).cloned()).collect()
         });
         let avail = setup::children(xml, "RiderAvailability");
-        let riders = Champ::ALL.map(|c| avail.iter().filter(|e| e.get(c.key()) == Some("1")).map(|e| e.name.clone()).collect());
+        let riders = Champ::EVERY.map(|c| avail.iter().filter(|e| e.get(c.key()) == Some("1")).map(|e| e.name.clone()).collect());
         let unlockables = setup::entries(xml)
             .into_iter()
             .filter(|e| e.name.starts_with("Unlockable") && e.name != "Unlockable" && e.get("mATV") == Some("1"))
@@ -160,6 +179,22 @@ impl Rules {
         CERTIFICATES[i]
     }
 
+    /// A set championship's rounds: its `TrackOrder`, [`LAPS`] each (none
+    /// for Custom, whose tracks the player picks).
+    pub fn schedule(&self, champ: Champ) -> Vec<(String, u32)> {
+        self.tracks.get(champ.index()).map_or(Vec::new(), |t| t.iter().map(|t| (t.clone(), LAPS)).collect())
+    }
+
+    /// Custom's points tables (race, trick ranking) for a split: `split`%
+    /// of each place's race and trick points together go to the trick
+    /// ranking, the rest to the race (0x43680).
+    pub fn split_points(&self, split: u32) -> ([u32; FIELD], [u32; FIELD]) {
+        let split = split.min(100);
+        let total: [u32; FIELD] = std::array::from_fn(|i| self.position_points[i] + self.trick_points[i]);
+        let bonus = total.map(|t| t * split / 100);
+        (std::array::from_fn(|i| total[i] - bonus[i]), bonus)
+    }
+
     /// ATVs still locked with this many gold medals, and the golds each needs.
     pub fn locked_atvs(&self, golds: u32) -> Vec<(String, u32)> {
         self.unlockables.iter().filter(|(c, _)| *c > golds).map(|(c, atv)| (atv.clone(), *c)).collect()
@@ -176,20 +211,61 @@ pub struct Entrant {
     pub player: bool,
 }
 
+/// What a championship races: which one, its rounds (track and laps) and,
+/// for Custom, the points split.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plan {
+    pub champ: Champ,
+    pub schedule: Vec<(String, u32)>,
+    pub split: Option<u32>,
+}
+
+impl Plan {
+    /// A set championship as `Career.xml` has it.
+    pub fn set(rules: &Rules, champ: Champ) -> Self {
+        Self { champ, schedule: rules.schedule(champ), split: None }
+    }
+}
+
 /// A championship in progress.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Run {
     pub champ: Champ,
-    /// Next round to race (0-based); [`ROUNDS`] once it's over.
+    /// Next round to race (0-based); the number of rounds once it's over.
     pub round: usize,
     pub rider: String,
     pub quad: String,
     pub field: Vec<Entrant>,
+    /// Each round's track and laps.
+    pub schedule: Vec<(String, u32)>,
+    /// Custom's points split (see [`Rules::split_points`]).
+    pub split: Option<u32>,
 }
 
 impl Run {
+    pub fn new(plan: Plan, rider: String, quad: String, field: Vec<Entrant>) -> Self {
+        Self { champ: plan.champ, round: 0, rider, quad, field, schedule: plan.schedule, split: plan.split }
+    }
+
+    pub fn rounds(&self) -> usize {
+        self.schedule.len()
+    }
+
     pub fn over(&self) -> bool {
-        self.round >= ROUNDS
+        self.round >= self.rounds()
+    }
+
+    /// The next round's track and laps.
+    pub fn next_round(&self) -> Option<(&str, u32)> {
+        self.schedule.get(self.round).map(|(t, l)| (t.as_str(), *l))
+    }
+
+    /// The points tables (race, trick ranking) this championship scores by.
+    pub fn points(&self, rules: &Rules) -> ([u32; FIELD], [u32; FIELD]) {
+        match self.split {
+            Some(s) => rules.split_points(s),
+            None => (rules.position_points, rules.trick_points),
+        }
     }
 
     /// The field by points, best first (the player first on a tie).
@@ -225,8 +301,8 @@ pub struct Award {
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct Career {
     pub skill_points: u32,
-    /// Qualifying and Professional opened (Amateur always is).
-    pub open: [bool; 3],
+    /// Qualifying, Professional and Custom opened (Amateur always is).
+    pub open: [bool; 4],
     /// Best career finish per track (1-based).
     pub best: BTreeMap<String, usize>,
     pub run: Option<Run>,
@@ -249,7 +325,7 @@ impl Career {
     }
 
     pub fn new() -> Self {
-        Self { open: [true, false, false], ..default() }
+        Self { open: [true, false, false, false], ..default() }
     }
 
     pub fn is_open(&self, c: Champ) -> bool {
@@ -260,9 +336,17 @@ impl Career {
         self.best.values().filter(|&&p| p == 1).count() as u32
     }
 
+    /// Fills in the rounds of a set championship saved before they were
+    /// saved with it.
+    pub fn upgrade(&mut self, rules: &Rules) {
+        if let Some(r) = self.run.as_mut().filter(|r| r.schedule.is_empty()) {
+            r.schedule = rules.schedule(r.champ);
+        }
+    }
+
     /// Starts a championship with a field drawn from the riders allowed in
     /// it (models from the roster, never the player's own rider).
-    pub fn start(&mut self, champ: Champ, rider: (&str, &str), quad: &str, pool: &[(String, String)], seed: u32) {
+    pub fn start(&mut self, plan: Plan, rider: (&str, &str), quad: &str, pool: &[(String, String)], seed: u32) {
         let mut seed = seed | 1;
         let mut pick = |n: usize| {
             seed ^= seed << 13;
@@ -276,7 +360,7 @@ impl Career {
             let (name, model) = pool.swap_remove(pick(pool.len()));
             field.push(Entrant { name: name.clone(), model: model.clone(), points: 0, player: false });
         }
-        self.run = Some(Run { champ, round: 0, rider: rider.1.to_string(), quad: quad.to_string(), field });
+        self.run = Some(Run::new(plan, rider.1.to_string(), quad.to_string(), field));
     }
 
     /// Scores a finished round. `order`: field indices in finishing order
@@ -284,12 +368,13 @@ impl Career {
     pub fn score(&mut self, rules: &Rules, track: &str, order: &[usize], tricks: &[u32]) -> Option<Award> {
         let golds_before = self.golds();
         let run = self.run.as_mut().filter(|r| !r.over())?;
+        let (position_points, trick_points) = run.points(rules);
         let mut award = Award::default();
         // Trick ranking: higher score first, finishing order breaks ties.
         let mut by_tricks = order.to_vec();
         by_tricks.sort_by_key(|&i| std::cmp::Reverse(tricks.get(i).copied().unwrap_or(0)));
         for (place, &i) in order.iter().enumerate() {
-            let pts = rules.position_points.get(place).copied().unwrap_or(0);
+            let pts = position_points.get(place).copied().unwrap_or(0);
             if let Some(e) = run.field.get_mut(i) {
                 e.points += pts;
                 if e.player {
@@ -299,7 +384,7 @@ impl Career {
             }
         }
         for (place, &i) in by_tricks.iter().enumerate() {
-            let pts = rules.trick_points.get(place).copied().unwrap_or(0);
+            let pts = trick_points.get(place).copied().unwrap_or(0);
             if let Some(e) = run.field.get_mut(i) {
                 e.points += pts;
                 if e.player {
@@ -322,9 +407,12 @@ impl Career {
         let level = rules.skill_level(self.skill_points);
         award.new_level = (level > level_before).then_some(level);
 
-        let best = self.best.entry(track.to_string()).or_insert(usize::MAX);
-        award.gold = award.place == 1 && *best != 1;
-        *best = (*best).min(award.place.max(1));
+        // Medals are the set championships' (a Custom round can be a lap).
+        if run.champ != Champ::Custom {
+            let best = self.best.entry(track.to_string()).or_insert(usize::MAX);
+            award.gold = award.place == 1 && *best != 1;
+            *best = (*best).min(award.place.max(1));
+        }
         let golds = self.golds();
         award.unlocked = rules.unlockables.iter().filter(|(c, _)| *c > golds_before && *c <= golds).map(|(_, a)| a.clone()).collect();
 
@@ -332,7 +420,7 @@ impl Career {
         run.round += 1;
         if run.over() && run.player_place() <= 3 {
             // The next championship opens.
-            if let Some(next) = Champ::ALL.get(run.champ.index() + 1) {
+            if let Some(next) = run.champ.next() {
                 self.open[next.index()] = true;
             }
         }
@@ -349,6 +437,7 @@ impl Career {
                 "skill_points" => c.skill_points = v.parse().unwrap_or(0),
                 "qualifying" => c.open[1] = v == "true",
                 "professional" => c.open[2] = v == "true",
+                "custom" => c.open[3] = v == "true",
                 "arcade" => c.arcade = v.parse().unwrap_or(0),
                 "best" => {
                     if let Some((t, p)) = v.rsplit_once(' ')
@@ -365,12 +454,25 @@ impl Career {
                 }
                 "champ" => {
                     if let Some(champ) = Champ::from_key(v) {
-                        run = Some(Run { champ, round: 0, rider: String::new(), quad: String::new(), field: Vec::new() });
+                        run = Some(Run::new(Plan { champ, schedule: Vec::new(), split: None }, String::new(), String::new(), Vec::new()));
                     }
                 }
                 "round" => {
                     if let Some(r) = run.as_mut() {
-                        r.round = v.parse::<usize>().unwrap_or(0).min(ROUNDS);
+                        r.round = v.parse::<usize>().unwrap_or(0);
+                    }
+                }
+                "track" => {
+                    // track laps
+                    if let (Some(r), Some((t, l))) = (run.as_mut(), v.rsplit_once(' '))
+                        && let Ok(l) = l.parse()
+                    {
+                        r.schedule.push((t.to_string(), l));
+                    }
+                }
+                "split" => {
+                    if let Some(r) = run.as_mut() {
+                        r.split = v.parse::<u32>().ok().map(|s| s.min(100));
                     }
                 }
                 "rider" => {
@@ -394,12 +496,19 @@ impl Career {
                 _ => {}
             }
         }
-        c.run = run.filter(|r| r.field.iter().any(|e| e.player));
+        c.run = run.filter(|r| r.field.iter().any(|e| e.player)).map(|mut r| {
+            // Saves from before the rounds were saved have five.
+            r.round = r.round.min(if r.schedule.is_empty() { ROUNDS } else { r.rounds() });
+            r
+        });
         c
     }
 
     pub fn to_text(&self) -> String {
         let mut s = format!("skill_points = {}\nqualifying = {}\nprofessional = {}\n", self.skill_points, self.open[1], self.open[2]);
+        if self.open[3] {
+            s += "custom = true\n";
+        }
         if self.arcade > 0 {
             s += &format!("arcade = {}\n", self.arcade);
         }
@@ -411,6 +520,12 @@ impl Career {
         }
         if let Some(r) = &self.run {
             s += &format!("champ = {}\nround = {}\nrider = {}\nquad = {}\n", r.champ.key(), r.round, r.rider, r.quad);
+            for (t, l) in &r.schedule {
+                s += &format!("track = {t} {l}\n");
+            }
+            if let Some(split) = r.split {
+                s += &format!("split = {split}\n");
+            }
             for e in &r.field {
                 let model = if e.model.is_empty() { "-" } else { &e.model };
                 s += &format!("{} = {} {} {}\n", if e.player { "player" } else { "entrant" }, e.points, model, e.name);
@@ -430,6 +545,92 @@ impl Career {
         if let Err(e) = write() {
             warn!("couldn't save the career to {}: {e}", path.display());
         }
+    }
+}
+
+/// Most laps a Custom round can have.
+pub const MAX_LAPS: u32 = 20;
+/// Point Distribution moves in steps of this many percent.
+pub const SPLIT_STEP: u32 = 5;
+
+/// One track on Choose Your Tracks.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomRow {
+    pub track: String,
+    /// Its round (0-based) while it's in the championship.
+    pub round: Option<usize>,
+    pub laps: u32,
+}
+
+/// A Custom championship being set up: the original's Choose Your Tracks
+/// and Point Distribution pages.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CustomSetup {
+    pub rows: Vec<CustomRow>,
+    pub cursor: usize,
+    /// Setting the highlighted track's laps rather than moving.
+    pub editing: bool,
+    /// The laps a newly added track takes: the last set, 1 at first.
+    pub laps: u32,
+    /// Share of the points for the trick ranking, percent (50 at first).
+    pub split: u32,
+}
+
+impl Default for CustomSetup {
+    fn default() -> Self {
+        Self::new(&[])
+    }
+}
+
+impl CustomSetup {
+    pub fn new(tracks: &[String]) -> Self {
+        let rows = tracks.iter().map(|t| CustomRow { track: t.clone(), round: None, laps: 1 }).collect();
+        Self { rows, cursor: 0, editing: false, laps: 1, split: 50 }
+    }
+
+    /// Tracks in the championship so far.
+    pub fn count(&self) -> usize {
+        self.rows.iter().filter(|r| r.round.is_some()).count()
+    }
+
+    /// Adds the highlighted track as the next round, or takes it out and
+    /// moves the later rounds up.
+    pub fn toggle(&mut self) {
+        let n = self.count();
+        let laps = self.laps;
+        let Some(row) = self.rows.get_mut(self.cursor) else { return };
+        match row.round.take() {
+            None => {
+                row.round = Some(n);
+                row.laps = laps;
+            }
+            Some(gone) => {
+                for r in &mut self.rows {
+                    if let Some(k) = r.round.as_mut().filter(|k| **k > gone) {
+                        *k -= 1;
+                    }
+                }
+                self.editing = false;
+            }
+        }
+    }
+
+    /// One more or one fewer lap on the highlighted track.
+    pub fn step_laps(&mut self, more: bool) {
+        let Some(row) = self.rows.get_mut(self.cursor).filter(|r| r.round.is_some()) else { return };
+        row.laps = if more { (row.laps + 1).min(MAX_LAPS) } else { row.laps.saturating_sub(1).max(1) };
+        self.laps = row.laps;
+    }
+
+    pub fn step_split(&mut self, more: bool) {
+        self.split = if more { (self.split + SPLIT_STEP).min(100) } else { self.split.saturating_sub(SPLIT_STEP) };
+    }
+
+    /// The rounds, in order.
+    pub fn plan(&self) -> Plan {
+        let mut rounds: Vec<&CustomRow> = self.rows.iter().filter(|r| r.round.is_some()).collect();
+        rounds.sort_by_key(|r| r.round);
+        Plan { champ: Champ::Custom, schedule: rounds.into_iter().map(|r| (r.track.clone(), r.laps)).collect(), split: Some(self.split) }
     }
 }
 
@@ -493,7 +694,7 @@ mod tests {
     fn a_round_scores_both_rankings() {
         let rules = Rules::parse(XML);
         let mut c = Career::new();
-        c.start(Champ::Qualifying, ("ME", "Male1"), "Bandit", &pool(), 7);
+        c.start(Plan::set(&rules, Champ::Qualifying), ("ME", "Male1"), "Bandit", &pool(), 7);
         let run = c.run.as_ref().unwrap();
         assert_eq!(run.field.len(), FIELD);
         assert!(run.field.iter().filter(|e| !e.player).all(|e| e.model != "Male1"));
@@ -515,7 +716,7 @@ mod tests {
     fn amateur_skill_is_capped_and_winning_opens_the_next() {
         let rules = Rules::parse(XML);
         let mut c = Career::new();
-        c.start(Champ::Amateur, ("ME", "Male1"), "Bandit", &pool(), 3);
+        c.start(Plan::set(&rules, Champ::Amateur), ("ME", "Male1"), "Bandit", &pool(), 3);
         let order: Vec<usize> = (0..FIELD).collect();
         let mut tricks = vec![0; FIELD];
         tricks[0] = 5000;
@@ -537,10 +738,76 @@ mod tests {
     }
 
     #[test]
+    fn custom_tracks_laps_and_points() {
+        let rules = Rules::parse(XML);
+        let tracks: Vec<String> = ["Dunes1", "Forest1", "Swamp1"].map(String::from).to_vec();
+        let mut cs = CustomSetup::new(&tracks);
+        // Swamp 1 first, then Dunes 1 with 3 laps, then Forest 1 (taking
+        // the last laps set); taking Swamp 1 out moves the others up.
+        cs.cursor = 2;
+        cs.toggle();
+        cs.cursor = 0;
+        cs.toggle();
+        cs.step_laps(true);
+        cs.step_laps(true);
+        cs.cursor = 1;
+        cs.step_laps(true);
+        assert_eq!(cs.rows[1].laps, 1, "laps only change on a track that's in");
+        cs.toggle();
+        cs.cursor = 2;
+        cs.toggle();
+        assert_eq!(cs.plan().schedule, [("Dunes1".to_string(), 3), ("Forest1".to_string(), 3)]);
+        for _ in 0..30 {
+            cs.cursor = 0;
+            cs.step_laps(true);
+            cs.step_split(false);
+        }
+        assert_eq!((cs.rows[0].laps, cs.split), (MAX_LAPS, 0));
+        // 50% shares each place's 25 + 25 evenly; 0% puts it all on the race.
+        assert_eq!(rules.split_points(50).0[0..3], [25, 20, 16]);
+        assert_eq!(rules.split_points(50).1[0..3], [25, 20, 16]);
+        assert_eq!(rules.split_points(0).0[0..3], [50, 40, 32]);
+        assert_eq!(rules.split_points(30).1[0..3], [15, 12, 9]);
+
+        // Two rounds; winning both opens nothing and earns no medals.
+        let mut c = Career::new();
+        c.start(cs.plan(), ("ME", "Male1"), "Bandit", &pool(), 5);
+        let order: Vec<usize> = (0..FIELD).collect();
+        let a = c.score(&rules, "Dunes1", &order, &[0; FIELD]).unwrap();
+        assert_eq!((a.position_points, a.trick_points, a.gold), (50, 0, false));
+        assert_eq!(c.run.as_ref().unwrap().next_round(), Some(("Forest1", 3)));
+        c.score(&rules, "Forest1", &order, &[0; FIELD]);
+        assert!(c.run.as_ref().unwrap().over());
+        assert_eq!(c.golds(), 0);
+        assert_eq!(Career::parse(&c.to_text()), c);
+    }
+
+    #[test]
+    fn professional_opens_custom() {
+        let rules = Rules::parse(XML);
+        let mut c = Career::new();
+        c.start(Plan::set(&rules, Champ::Professional), ("ME", "Male1"), "Bandit", &pool(), 9);
+        let order: Vec<usize> = (0..FIELD).collect();
+        while c.score(&rules, "Dunes3", &order, &[0; FIELD]).is_some() {}
+        assert!(c.is_open(Champ::Custom));
+        assert!(Career::parse(&c.to_text()).is_open(Champ::Custom));
+    }
+
+    #[test]
+    fn old_saves_get_their_rounds() {
+        let rules = Rules::parse(XML);
+        let mut c = Career::parse("champ = Open\nround = 2\nplayer = 30 - ME\n");
+        assert!(c.run.as_ref().unwrap().over());
+        c.upgrade(&rules);
+        let run = c.run.as_ref().unwrap();
+        assert_eq!((run.round, run.rounds(), run.next_round()), (2, ROUNDS, Some(("Swamp2", LAPS))));
+    }
+
+    #[test]
     fn save_round_trip() {
         let rules = Rules::parse(XML);
         let mut c = Career::new();
-        c.start(Champ::Professional, ("JOHNNY HALE", "Male5"), "Storm", &pool(), 11);
+        c.start(Plan::set(&rules, Champ::Professional), ("JOHNNY HALE", "Male5"), "Storm", &pool(), 11);
         let order: Vec<usize> = (0..FIELD).rev().collect();
         c.score(&rules, "Dunes3", &order, &[10; FIELD]);
         c.open[1] = true;

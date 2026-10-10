@@ -367,14 +367,15 @@ fn main() -> anyhow::Result<()> {
         selection.track = t.clone();
     }
     // Career races the saved championship's next round.
-    let career = career::Career::load();
+    let mut career = career::Career::load();
+    career.upgrade(&career_rules);
     if args.mode == Mode::Career
         && let Some(run) = career.run.as_ref().filter(|r| !r.over())
-        && let Some(t) = career_rules.tracks[run.champ.index()].get(run.round)
+        && let Some((t, laps)) = run.next_round()
     {
-        selection.track = t.clone();
+        selection.track = t.to_string();
         selection.round = run.round;
-        selection.laps = career::LAPS;
+        selection.laps = laps;
         selection.rider = run.rider.clone();
         selection.quad = run.quad.clone();
         selection.field = run.opponents();

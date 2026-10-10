@@ -247,6 +247,8 @@ pub struct UiAssets {
     /// The Trick Book's pad picture (`PAD`), the spots of its buttons
     /// (`BUTTON0`-`BUTTON9`) and the glows that light them.
     pub trick_pad: Sheet,
+    /// Point Distribution's bars (`HBAR8`, `ONEBAR`) and slider (`BLOB1`).
+    pub points: Sheet,
     pub big_pad: UiTex,
     pub logo: UiTex,
     pub mugs: UiTex,
@@ -315,6 +317,7 @@ impl UiAssets {
             sound_bar: l.sheet("FrontEnd/SoundBar")?,
             checkbox: l.sheet("FrontEnd/checkbox")?,
             trick_pad: l.sheet("FrontEnd/TrickPad_XBox")?,
+            points: l.sheet("FrontEnd/PointsTpage")?,
             big_pad: l.tex("FrontEnd/BigPad_Xbox")?,
             logo: l.tex("FrontEnd/ATVLogoBIG")?,
             mugs: l.tex("FrontEnd/RiderMugs")?,

@@ -358,7 +358,26 @@ with the original's addresses.
   Amateur); a rider not home by `mTimePercentage` of the winner's time
   doesn't finish; a top-3 championship finish opens the next one
   (Amateur, then Open shown as Qualifying, Professional, Custom). The
-  status screens are `Career_Status_Amateur`, `_Pro` and `_Pro2`.
+  status screens are `Career_Status_Amateur`, `_Pro` and `_Pro2`, and
+  `_Custom` (Current Standings).
+- Custom championship (`CustomChampSM`, 0x97850; `mCustomUnlocked` in the
+  profile's `Unlockables`): rider and ATV, then `Career_Custom_Tracks`
+  (0x426a0 builds it, 0x42ea0 takes input) lists the fifteen race tracks
+  with a round and laps column. A adds the highlighted track as the next
+  round (0x42530) or takes it out and moves the later rounds up (0x42570);
+  Right on an added track edits its laps, Up/Down 1 to 20, and a new track
+  takes the last laps set (1 at first). Continue needs one track and hands
+  the rounds in order to the championship (0x42d80, 0x11730).
+  `Career_Custom_Points_Distrib` (0x43210, 0x425d0, 0x43680) holds one
+  value, 0 to 100 in steps of 5 (50 at first): each place's
+  `PositionPoints` + `TrickPoints` total goes that share to Bonus Points
+  (the trick ranking) and the rest to Race Points. It draws `PointsTpage`
+  `HBAR8` (eight bars) with a `BLOB1` slider on each place's bar. The
+  page is skipped while `mCustomUnlocked` is clear, which only matters
+  for multiplayer, whose Championship runs the same state machine with
+  two to four players (track choice included). Custom fields come from
+  `RiderAvailability`'s `Custom` column. `Career_Custom_Rider_AI_Change`
+  (Opponent Difficulty) is built but never opened.
 - Multiplayer (no setup file; from `Frontend.xml`, the strings and the
   front-end code): Main menu `MULTIPLAYER` opens `Multiplayer_New_Game`
   (Single Race, Freestyle Battle, Championship), then

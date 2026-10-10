@@ -69,8 +69,17 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   riders (`--opponents N` for 0-7). They drive the original game's AI along
   each track's racing line. The lap meter shows everyone's place, and the
   results show where you finished.
-- **Time Trial**: the same without opponents, against the clock. Career
-  stays locked for now.
+- **Time Trial**: the same without opponents, against the clock.
+- **Career**: the Amateur, Qualifying and Professional championships of
+  `Setup/Career.xml`, five rounds each against seven computer riders, with
+  race and trick points, skill points, gold medals and ATV unlocks; a top-3
+  finish opens the next. Professional opens **Custom**, as in the original:
+  after rider and ATV, Choose Your Tracks lists the fifteen championship
+  tracks (A adds the highlighted one as the next round or takes it out,
+  Right then Up/Down sets its laps from 1 to 20, Y or Continue goes on),
+  and Point Distribution shares each place's race and trick points out
+  between the race and the trick ranking in 5% steps (Left/Right). Custom
+  rounds earn skill points but no medals.
 - **Arcade**: the 16 rounds of the disc's `Setup/Arcade.xml` back to back.
   The clock starts at the track's arcade time (40 s) and the arcade
   checkpoints and the line add more. Win a round (finish first, in time)
