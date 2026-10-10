@@ -59,7 +59,9 @@ const SKIP_AFTER_REPEATS: u32 = 2;
 const TROUBLE_REACH: f32 = 50.0;
 /// Seconds of travel ahead a jump node keeps the pacer from slowing a
 /// rider.
-const JUMP_RUN_UP: f32 = 4.0;
+const JUMP_RUN_UP: f32 = 1.0;
+/// ...and never less than this many metres.
+const JUMP_RUN_UP_MIN: f32 = 10.0;
 
 #[derive(Debug, Clone)]
 pub struct LineNode {
@@ -654,13 +656,16 @@ impl AiDriver {
         // original's between jumps, so a rider well ahead of its pace car
         // would be held back to a crawl and come up to some jumps too slow
         // to clear them (Swamp 2's ramp onto the jetty). Coming up to a
-        // jump node, the pacer doesn't slow it.
-        let pace =
-            if self.pace < 1.0 && self.jump_ahead(line, (speed.abs() * JUMP_RUN_UP).max(40.0)) {
-                1.0
-            } else {
-                self.pace
-            };
+        // jump node (the last second or 10 m before it), the pacer
+        // doesn't slow it. Any longer and Swamp 2 riders lap 25 s quicker
+        // than the original's window.
+        let pace = if self.pace < 1.0
+            && self.jump_ahead(line, (speed.abs() * JUMP_RUN_UP).max(JUMP_RUN_UP_MIN))
+        {
+            1.0
+        } else {
+            self.pace
+        };
 
         // Walk forward along the line.
         let top = Self::top_speed(v);
