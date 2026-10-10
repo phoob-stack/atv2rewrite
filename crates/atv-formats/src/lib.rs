@@ -14,8 +14,11 @@ pub mod lzss;
 pub mod rom;
 pub mod row;
 pub mod setup;
+pub mod sound;
 pub mod source;
+pub mod wav;
 pub mod xiso;
+pub mod xwb;
 
 pub use source::GameSource;
 
