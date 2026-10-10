@@ -12,7 +12,7 @@ or a folder the disc was extracted to.
 | `atv-formats` | Engine-free readers: Xbox disc filesystem, "Bark" archive + LZSS, BOG textures (DXT1/DXT5, swizzled ARGB, 8-bit palettized), ROM 1.26 models (meshes + Bezier patches), ROW 2.25 track worlds. |
 | `atv-sim` | Engine-free vehicle physics: reads the game's `.params` tuning files, raycast-wheel suspension and tyre model, auto gearbox, preload jumps, rider lean, and track collision built from the track's meshes and patches. |
 | `atv-tool` | Command line: `list`, `extract <dir>`, `check` (parses every texture, model and track), `sim` (headless autopilot lap test). |
-| `atv-game` | The game (binary `atv2`): a drivable quad on any track, chase camera, keyboard and gamepad input, HUD. |
+| `atv-game` | The game (binary `atv2`): a drivable quad with its rider on any track, chase camera, keyboard and gamepad input, HUD. |
 
 ## Running
 
@@ -21,7 +21,7 @@ or a folder the disc was extracted to.
 export ATV2_GAME="/path/to/ATV Quad Power Racing 2.bin"
 
 cargo run --release -p atv-tool -- check
-cargo run --release -p atv-game -- --track Dunes1 --quad Bandit
+cargo run --release -p atv-game -- --track Dunes1 --quad Bandit --rider Male1
 cargo run --release -p atv-tool -- sim --track Dunes1 --quad Bandit --seconds 120
 ```
 
@@ -43,6 +43,7 @@ mouse to look), `--screenshot out.png --after 8` (saves a frame and exits).
 Tracks: Dunes1-3, Forest1-3, Glacier1-3, Industrial1-3, Swamp1-3, Stadium1-2.
 Quads: ATC, Bandit, Blaze, Bullet, Challenger, Charger, Dimension, Nitro,
 Rocket, Skyline, Storm.
+Riders: Male1-18, Female1-6 (the folders under `Characters`).
 
 Linux build dependencies: `libasound2-dev libudev-dev libxkbcommon-dev
 libwayland-dev` (standard Bevy requirements).

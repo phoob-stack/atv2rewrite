@@ -2,10 +2,12 @@
 //! the player's own copy of the game.
 //!
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
+//!             [--rider Male1]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz]
 
 mod convert;
+mod rider;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,6 +16,7 @@ use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::light::GlobalAmbientLight;
+use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
@@ -23,12 +26,14 @@ use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
 use convert::{SkyDome, WheelVisual};
+use rider::Rider;
 
 #[derive(Resource, Clone)]
 struct Args {
     game: PathBuf,
     track: String,
     quad: String,
+    rider: String,
     screenshot: Option<PathBuf>,
     screenshot_after: f32,
     camera: Option<[f32; 6]>,
@@ -53,6 +58,10 @@ struct Race {
 #[derive(Resource)]
 struct Player(Vehicle);
 
+/// The controls applied on the last physics step (the rider follows them).
+#[derive(Resource, Default)]
+struct Controls(Input);
+
 #[derive(Component)]
 struct QuadBody;
 
@@ -76,6 +85,7 @@ fn parse_args() -> anyhow::Result<Args> {
         game: std::env::var_os("ATV2_GAME").map(PathBuf::from).unwrap_or_default(),
         track: "Dunes1".into(),
         quad: "Bandit".into(),
+        rider: "Male1".into(),
         screenshot: None,
         screenshot_after: 8.0,
         camera: None,
@@ -88,6 +98,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--game" => a.game = PathBuf::from(val()),
             "--track" => a.track = val(),
             "--quad" => a.quad = val(),
+            "--rider" => a.rider = val(),
             "--screenshot" => a.screenshot = Some(PathBuf::from(val())),
             "--after" => a.screenshot_after = val().parse()?,
             "--autodrive" => a.autodrive = true,
@@ -122,7 +133,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(game)
         .add_systems(Startup, setup)
         .add_systems(FixedUpdate, drive)
-        .add_systems(Update, (sync_quad, chase_camera, fly_camera, follow_sky, hud, auto_screenshot).chain())
+        .add_systems(Update, (sync_quad, animate_rider, rider::pose_riders, chase_camera, fly_camera, follow_sky, hud, auto_screenshot).chain())
         .run();
     Ok(())
 }
@@ -134,6 +145,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
 ) {
@@ -160,6 +172,19 @@ fn setup(
     match loader.spawn_quad(&mut commands, &args.quad, at, &wheel_x) {
         Ok(e) => {
             commands.entity(e).insert(QuadBody);
+            // The riding animations are in the quad model's space, which
+            // hangs below the physics body like the quad's own model.
+            let seat = commands.spawn((Transform::from_xyz(0.0, -convert::COM_HEIGHT, 0.0), Visibility::default())).id();
+            commands.entity(e).add_child(seat);
+            let rider = loader
+                .spawn_rider(&mut commands, &mut bindposes, &args.rider, seat)
+                .and_then(|rig| Rider::new(&game.0, rig));
+            match rider {
+                Ok(r) => {
+                    commands.entity(seat).insert(r);
+                }
+                Err(e) => error!("failed to load rider {}: {e:#}", args.rider),
+            }
         }
         Err(e) => error!("failed to load quad {}: {e:#}", args.quad),
     }
@@ -234,6 +259,7 @@ fn setup(
         upside_down: 0.0,
     });
     commands.insert_resource(Player(vehicle));
+    commands.init_resource::<Controls>();
 }
 
 fn read_input(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> Input {
@@ -267,6 +293,7 @@ fn drive(
     pads: Query<&Gamepad>,
     race: Option<ResMut<Race>>,
     player: Option<ResMut<Player>>,
+    mut controls: Option<ResMut<Controls>>,
 ) {
     let (Some(mut race), Some(mut player)) = (race, player) else { return };
     let dt = time.delta_secs();
@@ -286,6 +313,9 @@ fn drive(
     }
 
     v.step(&input, dt, &race.collision);
+    if let Some(c) = controls.as_mut() {
+        c.0 = input;
+    }
 
     // Remember a safe spot; respot there on R, when stuck upside down, or
     // after falling out of the world.
@@ -334,6 +364,19 @@ fn sync_quad(
         t.translation = w.base + Vec3::Y * (comp + 0.07);
         let spin = if w.mirror { spin } else { -spin };
         t.rotation = Quat::from_rotation_y(steer) * Quat::from_rotation_x(spin);
+    }
+}
+
+fn animate_rider(
+    time: Res<Time>,
+    player: Option<Res<Player>>,
+    controls: Option<Res<Controls>>,
+    mut riders: Query<&mut Rider>,
+) {
+    let (Some(player), Some(controls)) = (player, controls) else { return };
+    let v = &player.0;
+    for mut r in &mut riders {
+        r.update_controls(v.steer, controls.0.lean, v.preload, time.delta_secs());
     }
 }
 
