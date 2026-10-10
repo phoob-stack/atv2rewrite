@@ -148,8 +148,10 @@ struct Selection {
     rider: String,
     laps: u32,
     mode: Mode,
-    /// Arcade round being raced (index into the roster's rounds).
+    /// Arcade round being raced (index into the roster's rounds), and the
+    /// tries at it that didn't win (three and Arcade is over).
     round: usize,
+    failed: usize,
     /// Open Freestyle's time limit in minutes (None = unlimited).
     time_limit: Option<u32>,
     /// The computer riders' models, when the field is set (career).
@@ -334,6 +336,7 @@ fn main() -> anyhow::Result<()> {
         laps: args.laps.clamp(1, 9),
         mode: args.mode,
         round: args.round,
+        failed: 0,
         time_limit: args.minutes,
         field: Vec::new(),
         challenge: args.challenge,
