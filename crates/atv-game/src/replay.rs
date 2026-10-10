@@ -169,7 +169,8 @@ impl Plugin for ReplayPlugin {
         .add_systems(
             PostUpdate,
             (
-                (record, broadcast).run_if(not(resource_exists::<Playback>)),
+                // The race intro flies the camera before the race starts.
+                (record, broadcast).run_if(not(resource_exists::<Playback>)).run_if(not(resource_exists::<crate::intro::Intro>)),
                 (play, captions).chain().run_if(resource_exists::<Playback>),
             )
                 .before(TransformSystems::Propagate)

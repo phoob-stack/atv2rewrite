@@ -31,6 +31,7 @@ mod frontend;
 mod hd;
 mod mud;
 mod hud;
+mod intro;
 mod knock;
 mod water;
 mod mp;
@@ -107,6 +108,8 @@ struct Args {
     players: usize,
     /// Cheats to enter (see [`unlocks::CHEATS`]).
     cheats: Vec<String>,
+    /// Skip the race intro's camera flights (see [`intro`]).
+    no_intro: bool,
 }
 
 /// The game modes on the main menu.
@@ -255,6 +258,7 @@ fn parse_args() -> anyhow::Result<Args> {
         challenge: 1,
         players: 1,
         cheats: Vec::new(),
+        no_intro: false,
     };
     let mut frontend = false;
     let mut it = std::env::args().skip(1);
@@ -327,6 +331,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--autodrive" => a.autodrive = true,
             "--hd" => a.hd = Some(PathBuf::from(val())),
             "--no-hd" => a.use_hd = false,
+            "--no-intro" => a.no_intro = true,
             "--fullscreen" => a.fullscreen = true,
             "--resolution" => {
                 let v = val();
@@ -459,6 +464,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin, mp::MpPlugin, knock::KnockPlugin, water::WaterPlugin, unlocks::UnlocksPlugin))
         .add_plugins(replay::ReplayPlugin)
         .add_plugins(demo::DemoPlugin)
+        .add_plugins(intro::IntroPlugin)
         .add_plugins(effects::EffectsPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
