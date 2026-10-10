@@ -24,6 +24,43 @@ pub struct RaceProgress {
     pub wrong_way: f32,
     /// How far round the current lap the quad is, 0..1.
     pub lap_fraction: f32,
+    /// Arcade mode's checkpoint clock, if this race has one.
+    pub arcade: Option<ArcadeClock>,
+}
+
+/// Arcade's countdown: the race starts with `mArcadeStartTime` seconds
+/// (Tracks.xml) and the arcade checkpoints (`Checkpoint N arcade`
+/// locators) and the line each add time. Running out ends the race.
+#[derive(Debug, Clone)]
+pub struct ArcadeClock {
+    pub left: f32,
+    /// Checkpoint index (0 = the line) and the seconds it adds.
+    gates: Vec<(usize, f32)>,
+    /// Race time and seconds of the last extension.
+    pub last_bonus: Option<(f32, f32)>,
+    pub out_of_time: bool,
+}
+
+impl ArcadeClock {
+    /// `gates`: indices of the arcade checkpoints in lap order (without the
+    /// line). Each gate, and the line, adds the share of `lap_time` it takes
+    /// to reach the next one (the disc gives no per-gate figure; this is the
+    /// track's slowest AI lap time spread over the lap).
+    pub fn new(start: f32, lap_time: f32, checkpoints: usize, gates: &[usize]) -> Self {
+        let n = checkpoints.max(1);
+        let mut all: Vec<usize> = std::iter::once(0).chain(gates.iter().copied().filter(|&g| g > 0 && g < n)).collect();
+        all.sort_unstable();
+        all.dedup();
+        let gates = all
+            .iter()
+            .enumerate()
+            .map(|(i, &g)| {
+                let next = all.get(i + 1).copied().unwrap_or(n);
+                (g, lap_time * (next - g) as f32 / n as f32)
+            })
+            .collect();
+        Self { left: start, gates, last_bonus: None, out_of_time: false }
+    }
 }
 
 impl RaceProgress {
@@ -43,7 +80,22 @@ impl RaceProgress {
             last_lap: None,
             wrong_way: 0.0,
             lap_fraction: 0.0,
+            arcade: None,
         }
+    }
+
+    pub fn with_arcade(mut self, clock: ArcadeClock) -> Self {
+        self.arcade = Some(clock);
+        self
+    }
+
+    pub fn out_of_time(&self) -> bool {
+        self.arcade.as_ref().is_some_and(|a| a.out_of_time)
+    }
+
+    /// Finished, or out of time.
+    pub fn over(&self) -> bool {
+        self.finished.is_some() || self.out_of_time()
     }
 
     /// Whether the next pass of checkpoint 1 completes a lap.
@@ -56,14 +108,21 @@ impl RaceProgress {
     }
 
     pub fn racing(&self) -> bool {
-        self.started() && self.finished.is_none()
+        self.started() && !self.over()
     }
 
     pub fn tick(&mut self, dt: f32) {
         if self.countdown > 0.0 {
             self.countdown -= dt;
-        } else if self.finished.is_none() {
+        } else if !self.over() {
             self.clock += dt;
+            if let Some(a) = self.arcade.as_mut() {
+                a.left -= dt;
+                if a.left <= 0.0 {
+                    a.left = 0.0;
+                    a.out_of_time = true;
+                }
+            }
         }
     }
 
@@ -71,6 +130,12 @@ impl RaceProgress {
     pub fn reach(&mut self, index: usize) {
         if !self.racing() {
             return;
+        }
+        if let Some(a) = self.arcade.as_mut()
+            && let Some(&(_, secs)) = a.gates.iter().find(|g| g.0 == index)
+        {
+            a.left += secs;
+            a.last_bonus = Some((self.clock, secs));
         }
         if index != 0 {
             self.last_checkpoint = Some(self.clock);
@@ -103,6 +168,23 @@ impl RaceProgress {
     }
 }
 
+/// Indices into [`atv_sim::track::checkpoints`] of the checkpoints that
+/// also have an arcade locator (`Checkpoint 3 arcade`; Forest 3 spells it
+/// `acade`).
+pub fn arcade_gates(world: &atv_formats::row::World) -> Vec<usize> {
+    let number = |name: &str| -> Option<u32> { name.trim().to_ascii_lowercase().strip_prefix("checkpoint ")?.split_whitespace().next()?.parse().ok() };
+    let mut all: Vec<u32> = world.locators.iter().filter_map(|l| number(&l.name)).collect();
+    all.sort_unstable();
+    all.dedup();
+    let arcade: Vec<u32> = world
+        .locators
+        .iter()
+        .filter(|l| l.name.to_ascii_lowercase().contains("cade"))
+        .filter_map(|l| number(&l.name))
+        .collect();
+    all.iter().enumerate().filter(|(_, n)| arcade.contains(n)).map(|(i, _)| i).collect()
+}
+
 /// `m:ss.hh`, as the original shows race and lap times.
 pub fn fmt_time(t: f32) -> String {
     let hundredths = (t.max(0.0) * 100.0) as u32;
@@ -131,6 +213,24 @@ mod tests {
         assert!(p.finished.is_some());
         assert_eq!(p.best_lap(), Some(5.0));
         assert_eq!(fmt_time(65.432), "1:05.43");
+    }
+
+    #[test]
+    fn arcade_clock() {
+        // 10 checkpoints, gates at 3 and 7: the line buys 3/10 of a lap,
+        // gate 3 buys 4/10 and gate 7 the last 3/10.
+        let mut p = RaceProgress::new(1, true).with_arcade(ArcadeClock::new(5.0, 100.0, 10, &[3, 7]));
+        p.tick(RaceProgress::COUNTDOWN + 0.01);
+        p.tick(1.0);
+        p.reach(3);
+        assert!((p.arcade.as_ref().unwrap().left - 44.0).abs() < 0.01);
+        p.reach(4);
+        assert!((p.arcade.as_ref().unwrap().left - 44.0).abs() < 0.01, "plain checkpoints add nothing");
+        p.tick(50.0);
+        assert!(p.out_of_time() && !p.racing());
+        let clock = p.clock;
+        p.tick(1.0);
+        assert_eq!(p.clock, clock, "the clock stops once out of time");
     }
 
     #[test]

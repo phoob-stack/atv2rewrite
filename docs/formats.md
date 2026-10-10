@@ -209,6 +209,33 @@ What the UI uses:
 `Strings/Strings_ENG.txt` is one string per line with no keys (the keys are
 in the executable), so the UI uses the same English labels directly.
 
+## Game-mode rules (Setup/*.xml)
+
+- `Arcade.xml`: `RoundN TrackName=` in order (16 rounds, Dunes 1 twice).
+  `Tracks.xml` gives each track's `mArcadeStartTime` (40 s everywhere) and
+  `mAIBestLapTime`/`mAIWorstLapTime`. Tracks mark their time-extension gates
+  with extra `Checkpoint N arcade` locators (Forest 3 spells it `acade`) at
+  the same spot as `Checkpoint N`. The disc gives no seconds per gate; the
+  rewrite shares the slowest AI lap time out over the gates by how much of
+  the lap each covers.
+- `Freestyle.xml`: `OpenFSRecords/TimeNMinute(s)` and `TimeUnlimited` each
+  hold Bronze/Silver/Gold `Record=` scores for Open Freestyle; `FSChallenge`
+  has 12 challenges (not built yet) and `Unlockable*` rewards.
+- `Tricks.xml`: one element per trick with `mControlCombo="KeyAHeld,
+  StickUp"` (buttons D, A, B, E for levels 1-4, `KeyCombo1/3/2` for 5-7),
+  `mScorePoints`, `mHoldPoints`, `mTotalTrickTimeSec`, `mTrickEndTimeSec`
+  and an `AnimData` child naming the stunt clip (`Anim Stunt Seat Grab`). The
+  clips are `Animations/Stunts/Bac/*.bac` (31 bones, rider space, same as
+  the riding clips); most names match with spaces dropped, the rest are
+  Scarecrow = `crucifixtion`, Scissors = `leg_splt`, Spin Bike = `bike_spin`,
+  Reverse Spin = `reverse_spin_grab`, Yogi = `Y`. `*_bike.bac` (1 bone) move
+  the quad for the tricks that spin it. `Wheelie`, `Bicycle` and `Endo` give
+  ground-trick points; `SpeedBoost` is the race boost tricks earn.
+- `TrickBoxes.xml`: per track, `TBOXn Name Points LinkedBox`. Only the
+  stadiums have real ones; they are the `TBOXn` locator boxes in the
+  `.row` (scale = half size), several boxes per id for hoops. Linked boxes
+  are the two ends of a gap.
+
 ## Still unknown
 
 `.kdt` (likely collision tree), `.hsc` (prop collision hulls), `.aid` (AI

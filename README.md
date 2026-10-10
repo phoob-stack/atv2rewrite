@@ -12,7 +12,7 @@ or a folder the disc was extracted to.
 | `atv-formats` | Engine-free readers: Xbox disc filesystem, "Bark" archive + LZSS, BOG textures (DXT1/DXT5, swizzled ARGB, 8-bit palettized), BED sprite sheets and bitmap fonts, ROM 1.26 models (meshes + Bezier patches), ROW 2.25 track worlds, `Setup/*.xml` rule files. |
 | `atv-sim` | Engine-free vehicle physics ported from the original game (see `docs/physics.md`): reads the game's `.params` tuning files, spring-strut wheels, body-level ground forces, auto gearbox, wheelies, preload jumps, air control, and track collision built from the track's meshes and patches. |
 | `atv-tool` | Command line: `list`, `extract <dir>`, `check` (parses every texture, model and track), `sim` (headless autopilot lap test). |
-| `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, loading screen) into a race with the original HUD (rev gauge, laps, times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
+| `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, loading screen) into a race with the original HUD (rev gauge, laps, times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); Single Race, Time Trial, Arcade and Open Freestyle modes; tricks with the original stunt animations; a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
 | `atv-launcher` | The launcher (binary `atv2-launcher`): pick your disc image or extracted folder once, choose track, quad, resolution and fullscreen, press Play. |
 
 ## Running
@@ -53,14 +53,37 @@ cargo run --release -p atv-tool -- sim --track Dunes1 --quad Bandit --seconds 12
 | Respot | R | |
 | Restart | Backspace | |
 | Pause | Escape | Start |
+| Tricks (in the air) | 1 / 2 / 3 / 4 + direction | X / Y / LB / RB + left stick |
+
+## Game modes
+
+- **Single Race** and **Time Trial**: pick rider, ATV, track and laps, then
+  race the clock (there are no AI riders yet, so Career stays locked).
+- **Arcade**: the 16 rounds of the disc's `Setup/Arcade.xml` back to back.
+  The clock starts at the track's arcade time (40 s) and the arcade
+  checkpoints and the line add more; run out and it's over. Finish a round
+  for the next one.
+- **Open Freestyle**: roam any track for points against a time limit (1, 3,
+  5, 10, 15 or 30 minutes, or unlimited) with the disc's Bronze, Silver and
+  Gold targets. Points come from tricks, multi-trick combos, flips and spins,
+  big air, wheelies, endos and bicycles, the Stadium trick boxes (Cage Jump,
+  Bus Leap, Hoopa...) and the first visit to each of the track's spots.
+
+Tricks are the 28 from `Setup/Tricks.xml`: hold a trick button (or two for
+the level 5-7 tricks: 1+2, 2+3, 3+4) and a direction while airborne. Keep
+holding at the peak for extra points; land before the trick's recovery and
+you bail and lose the jump. Different tricks in one jump multiply.
 
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
-back; left/right changes the lap count on track select.
+back; left/right changes the lap count (or Open Freestyle's time limit) on
+track select.
 
 The quad respots automatically when it is upside down or falls off the world.
 Other options: `--frontend` (show the menus even with `--track`, which
 then preselects), `--screen title|main|rider|atv|track` (open on that
-front-end screen), `--autodrive` (autopilot chases checkpoints), `--camera
+front-end screen), `--mode race|timetrial|arcade|freestyle` with
+`--minutes N` (freestyle limit, 0 = unlimited) or `--round N` (arcade round),
+`--autodrive` (autopilot chases checkpoints and throws tricks), `--camera
 x,y,z,tx,ty,tz` (free-fly camera in game coordinates: WASD, Q/E, Shift, right
 mouse to look), `--screenshot out.png --after 8` (saves a frame and exits),
 `--resolution 1920x1080`, `--fullscreen` (borderless, desktop resolution).

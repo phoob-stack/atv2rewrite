@@ -1,6 +1,8 @@
 //! The front end: title, main menu, then rider, ATV and track select into a
 //! race, using the original backgrounds, fonts and panels. Which background
 //! and title each screen uses comes from the disc's `Setup/Frontend.xml`.
+//! Arcade skips track select (it races `Setup/Arcade.xml`'s rounds);
+//! Open Freestyle picks a time limit on it instead of laps.
 
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
@@ -8,9 +10,10 @@ use bevy::prelude::*;
 use atv_formats::setup::{self, Entry};
 use atv_formats::GameSource;
 
+use crate::freestyle::{self, limit_label, MEDALS, TIME_LIMITS};
 use crate::hud::track_title;
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
-use crate::{AppState, Selection};
+use crate::{AppState, Mode, Selection};
 
 pub struct FrontEndPlugin;
 
@@ -35,7 +38,27 @@ pub struct Roster {
     pub riders: Vec<RiderInfo>,
     pub quads: Vec<QuadInfo>,
     pub tracks: Vec<String>,
+    /// Arcade's rounds, in order (the ones on this disc).
+    pub arcade: Vec<String>,
+    /// Open Freestyle's Bronze/Silver/Gold scores per [`TIME_LIMITS`] entry.
+    pub freestyle_medals: Vec<Option<[u32; 3]>>,
+    info: Vec<(String, TrackInfo)>,
     screens: Vec<Entry>,
+}
+
+/// Per-track rules from `Tracks.xml`.
+#[derive(Clone, Copy, Debug)]
+pub struct TrackInfo {
+    /// Arcade's starting clock, seconds.
+    pub arcade_start: f32,
+    /// The AI's slowest lap, seconds; arcade's checkpoints share it out.
+    pub worst_lap: f32,
+}
+
+impl Default for TrackInfo {
+    fn default() -> Self {
+        Self { arcade_start: 40.0, worst_lap: 100.0 }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -80,12 +103,32 @@ impl Roster {
                 name: e.name,
             })
             .collect();
-        let tracks = setup::entries(&read("/Setup/Tracks.xml"))
+        let track_entries: Vec<Entry> = setup::entries(&read("/Setup/Tracks.xml"))
             .into_iter()
-            .map(|e| e.name)
-            .filter(|t| game.exists(&format!("/Levels/{t}/World/{t}.row")))
+            .filter(|e| game.exists(&format!("/Levels/{0}/World/{0}.row", e.name)))
             .collect();
-        Self { riders, quads, tracks, screens: setup::entries(&read("/Setup/Frontend.xml")) }
+        let d = TrackInfo::default();
+        let info = track_entries
+            .iter()
+            .map(|e| {
+                (e.name.clone(), TrackInfo {
+                    arcade_start: e.num("mArcadeStartTime").filter(|v| *v > 0.0).unwrap_or(d.arcade_start),
+                    worst_lap: e.num("mAIWorstLapTime").filter(|v| *v > 0.0).unwrap_or(d.worst_lap),
+                })
+            })
+            .collect();
+        let tracks: Vec<String> = track_entries.into_iter().map(|e| e.name).collect();
+        let arcade = setup::entries(&read("/Setup/Arcade.xml"))
+            .into_iter()
+            .filter_map(|e| e.get("TrackName").map(str::to_owned))
+            .filter(|t| tracks.iter().any(|k| k.eq_ignore_ascii_case(t)))
+            .collect();
+        let freestyle_medals = TIME_LIMITS.iter().map(|&l| freestyle::medal_targets(game, l)).collect();
+        Self { riders, quads, tracks, arcade, freestyle_medals, info, screens: setup::entries(&read("/Setup/Frontend.xml")) }
+    }
+
+    pub fn info(&self, track: &str) -> TrackInfo {
+        self.info.iter().find(|(t, _)| t.eq_ignore_ascii_case(track)).map(|i| i.1).unwrap_or_default()
     }
 
     /// Background and title for a screen from `Frontend.xml`.
@@ -111,7 +154,9 @@ pub enum Screen {
 pub struct FrontEnd {
     pub screen: Screen,
     built: Option<Screen>,
-    pub time_trial: bool,
+    pub mode: Mode,
+    /// Open Freestyle's time limit, an index into [`TIME_LIMITS`].
+    pub limit: usize,
     pub rider: usize,
     pub quad: usize,
     pub track: usize,
@@ -137,6 +182,7 @@ enum Field {
     QuadName,
     TrackName,
     Laps,
+    Targets,
 }
 #[derive(Component)]
 struct StatBar(usize);
@@ -154,6 +200,8 @@ fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>) {
         fe.screen = Screen::Main;
     }
     fe.built = None;
+    fe.mode = sel.mode;
+    fe.limit = TIME_LIMITS.iter().position(|&l| l == sel.time_limit).unwrap_or(1);
     fe.rider = roster.riders.iter().position(|r| r.model.eq_ignore_ascii_case(&sel.rider)).unwrap_or(fe.rider);
     fe.quad = roster.quads.iter().position(|q| q.name.eq_ignore_ascii_case(&sel.quad)).unwrap_or(fe.quad);
     fe.track = roster.tracks.iter().position(|t| t.eq_ignore_ascii_case(&sel.track)).unwrap_or(fe.track);
@@ -188,8 +236,14 @@ fn navigate(
                 }
             }
             Nav::Accept | Nav::Start => match list.as_ref().map(|l| l.current().to_string()).as_deref() {
-                Some("SINGLE RACE") | Some("TIME TRIAL") => {
-                    fe.time_trial = list.as_ref().is_some_and(|l| l.current() == "TIME TRIAL");
+                Some(item @ ("ARCADE" | "SINGLE RACE" | "TIME TRIAL" | "FREESTYLE")) => {
+                    fe.mode = match item {
+                        "ARCADE" => Mode::Arcade,
+                        "TIME TRIAL" => Mode::TimeTrial,
+                        "FREESTYLE" => Mode::Freestyle,
+                        _ => Mode::SingleRace,
+                    };
+                    sel.mode = fe.mode;
                     fe.screen = Screen::Rider;
                 }
                 Some("QUIT GAME") => {
@@ -227,7 +281,17 @@ fn navigate(
                 if let Some(q) = roster.quads.get(fe.quad) {
                     sel.quad = q.name.clone();
                 }
-                fe.screen = Screen::Track;
+                if fe.mode == Mode::Arcade {
+                    // Arcade starts on its first round.
+                    if let Some(t) = roster.arcade.first() {
+                        sel.round = 0;
+                        sel.track = t.clone();
+                        sel.laps = 3;
+                        next.set(AppState::Loading);
+                    }
+                } else {
+                    fe.screen = Screen::Track;
+                }
             }
             Nav::Back => fe.screen = Screen::Rider,
             _ => {}
@@ -238,6 +302,11 @@ fn navigate(
                     l.step(nav);
                     fe.track = l.selected;
                 }
+            }
+            Nav::Left | Nav::Right if fe.mode == Mode::Freestyle => {
+                let n = TIME_LIMITS.len();
+                fe.limit = if nav == Nav::Left { (fe.limit + n - 1) % n } else { (fe.limit + 1) % n };
+                sel.time_limit = TIME_LIMITS[fe.limit];
             }
             Nav::Left => sel.laps = (sel.laps + 8) % 9 + 1,
             Nav::Right => sel.laps = sel.laps % 9 + 1,
@@ -261,15 +330,22 @@ fn rebuild(mut commands: Commands, mut fe: ResMut<FrontEnd>, roster: Res<Roster>
         commands.entity(e).despawn();
     }
     fe.built = Some(fe.screen);
-    let mode = if fe.time_trial { "TimeTrial" } else { "SingleRace" };
-    let (key, watermark) = match fe.screen {
-        Screen::Title => ("Main_Menu".to_string(), ""),
-        Screen::Main => ("Main_Menu".to_string(), ""),
-        Screen::Rider => (format!("{mode}_Rider"), if fe.time_trial { "TIME TRIAL" } else { "SINGLE RACE" }),
-        Screen::Quad => (format!("{mode}_ATV"), if fe.time_trial { "TIME TRIAL" } else { "SINGLE RACE" }),
-        Screen::Track => (format!("{mode}_Track"), if fe.time_trial { "TIME TRIAL" } else { "SINGLE RACE" }),
+    // Frontend.xml's screen names per mode.
+    let (rider_key, atv_key, track_key) = match fe.mode {
+        Mode::SingleRace => ("SingleRace_Rider", "SingleRace_ATV", "SingleRace_Track"),
+        Mode::TimeTrial => ("TimeTrial_Rider", "TimeTrial_ATV", "TimeTrial_Track"),
+        Mode::Arcade => ("Arcade_Rider", "Arcade_ATV", "SingleRace_Track"),
+        Mode::Freestyle => ("Freestyle_Open_Rider", "Freestyle_Open_ATV", "Freestyle_Open"),
     };
-    let (bg, title) = roster.screen(&key);
+    let label = fe.mode.label();
+    let (key, watermark) = match fe.screen {
+        Screen::Title => ("Main_Menu", ""),
+        Screen::Main => ("Main_Menu", ""),
+        Screen::Rider => (rider_key, label),
+        Screen::Quad => (atv_key, label),
+        Screen::Track => (track_key, label),
+    };
+    let (bg, title) = roster.screen(key);
 
     // Background stretched over the window; the screen itself is laid out
     // on a centred 640x480 frame.
@@ -319,10 +395,21 @@ fn rebuild(mut commands: Commands, mut fe: ResMut<FrontEnd>, roster: Res<Roster>
         Screen::Main => {
             let w = 400.0;
             kids.push(commands.spawn(placed(ui.logo.node(w, w / 4.0), (SCREEN_W - w) / 2.0, 34.0)).id());
+            let current = match fe.mode {
+                Mode::Arcade => 0,
+                Mode::SingleRace => 2,
+                Mode::TimeTrial => 3,
+                Mode::Freestyle => 4,
+            };
+            // Career needs AI riders to race, and there are no options yet.
+            let mut off = vec!["CAREER", "OPTIONS"];
+            if roster.arcade.is_empty() {
+                off.push("ARCADE");
+            }
             let list = MenuList::new(&["ARCADE", "CAREER", "SINGLE RACE", "TIME TRIAL", "FREESTYLE", "OPTIONS", "QUIT GAME"], 280.0)
                 .with_row(36.0)
-                .select(if fe.time_trial { 3 } else { 2 })
-                .disable(&["ARCADE", "CAREER", "FREESTYLE", "OPTIONS"]);
+                .select(current)
+                .disable(&off);
             kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 280.0) / 2.0, 160.0));
         }
         Screen::Rider => {
@@ -366,18 +453,22 @@ fn rebuild(mut commands: Commands, mut fe: ResMut<FrontEnd>, roster: Res<Roster>
                 .id();
             kids.push(preview);
             kids.push(commands.spawn((BitmapText::new(FontId::Menu, 16.0, ""), ui_at(300.0, 340.0), Field::TrackName)).id());
+            let freestyle = fe.mode == Mode::Freestyle;
             let laps = commands
                 .spawn(Node { position_type: PositionType::Absolute, left: px(300), top: px(370), align_items: AlignItems::Center, column_gap: px(10), ..default() })
                 .with_children(|r| {
-                    r.spawn(BitmapText::new(FontId::Small, 10.0, "LAPS"));
+                    r.spawn(BitmapText::new(FontId::Small, 10.0, if freestyle { "TIME" } else { "LAPS" }));
                     let (n, mut img) = ui.design.node("DARKLRARROW", 0.6);
                     img.flip_x = true;
                     r.spawn((n, img));
-                    r.spawn((BitmapText::new(FontId::Chrome, 16.0, "3"), Field::Laps));
+                    r.spawn((if freestyle { BitmapText::new(FontId::Menu, 13.0, "") } else { BitmapText::new(FontId::Chrome, 16.0, "3") }, Field::Laps));
                     r.spawn(ui.design.node("DARKLRARROW", 0.6));
                 })
                 .id();
             kids.push(laps);
+            if freestyle {
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(1.0, 0.85, 0.3)), ui_at(300.0, 398.0), Field::Targets)).id());
+            }
         }
     }
 
@@ -530,7 +621,15 @@ fn update_track_panel(
     for (f, mut text) in &mut fields {
         match f {
             Field::TrackName => set_text(&mut text, &track_title(t)),
+            Field::Laps if fe.mode == Mode::Freestyle => set_text(&mut text, &limit_label(TIME_LIMITS[fe.limit])),
             Field::Laps => set_text(&mut text, &sel.laps.to_string()),
+            Field::Targets => {
+                let s = match roster.freestyle_medals.get(fe.limit).copied().flatten() {
+                    Some(m) => (0..3).rev().map(|i| format!("{} {}", MEDALS[i], m[i])).collect::<Vec<_>>().join("   "),
+                    None => String::new(),
+                };
+                set_text(&mut text, &s);
+            }
             _ => {}
         }
     }
@@ -569,7 +668,10 @@ fn show_loading(mut commands: Commands, ui: Option<Res<UiAssets>>, sel: Res<Sele
                 let (mut n, img) = ui.loading.node(SCREEN_W, SCREEN_H);
                 n.position_type = PositionType::Absolute;
                 f.spawn((n, img));
-                let t = format!("LOADING {}", track_title(&sel.track));
+                let t = match sel.mode {
+                    Mode::Arcade => format!("ROUND {}  LOADING {}", sel.round + 1, track_title(&sel.track)),
+                    _ => format!("LOADING {}", track_title(&sel.track)),
+                };
                 let w = ui.font(FontId::Menu).width(&t, 14.0);
                 f.spawn((BitmapText::new(FontId::Menu, 14.0, t), ui_at(SCREEN_W - 32.0 - w, 440.0)));
             });
