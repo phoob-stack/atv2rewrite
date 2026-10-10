@@ -820,8 +820,8 @@ fn spawn_race_menu(
                     let sub = match sel.mode {
                         Mode::Freestyle => format!("{}  -  {}", track_title(&sel.track), limit_label(sel.time_limit)),
                         Mode::Arcade => format!("ROUND {}/{}  -  {}", sel.round + 1, roster.arcade.len(), track_title(&sel.track)),
-                        Mode::Career => format!("ROUND {}/{}  -  {}", sel.round + 1, career::ROUNDS, track_title(&sel.track)),
-                        Mode::SingleRace if run.is_some() => format!("ROUND {}/{}  -  {}", sel.round + 1, career::ROUNDS, track_title(&sel.track)),
+                        Mode::Career => format!("ROUND {}/{}  -  {}", sel.round + 1, run.map_or(career::ROUNDS, Run::rounds), track_title(&sel.track)),
+                        Mode::SingleRace if run.is_some() => format!("ROUND {}/{}  -  {}", sel.round + 1, run.map_or(career::ROUNDS, Run::rounds), track_title(&sel.track)),
                         Mode::Challenge => format!("FREESTYLE CHALLENGE  -  {}", track_title(&sel.track)),
                         _ => format!("{}  -  {}", track_title(&sel.track), sel.quad.to_uppercase()),
                     };

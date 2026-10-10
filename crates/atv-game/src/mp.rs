@@ -23,7 +23,7 @@ use bevy::camera::Viewport;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::career::{self, Champ, Entrant, Run};
+use crate::career::{self, Entrant, Plan, Run};
 use crate::freestyle::Session;
 use crate::frontend::Roster;
 use crate::hud::ordinal;
@@ -101,7 +101,7 @@ pub struct MpChamp {
 impl MpChamp {
     /// `players`: each player's (name, model); `pool`: the computer riders
     /// to draw from.
-    pub fn start(&mut self, champ: Champ, players: &[(String, String)], quad: &str, pool: &[(String, String)], seed: u32) {
+    pub fn start(&mut self, plan: Plan, players: &[(String, String)], quad: &str, pool: &[(String, String)], seed: u32) {
         let mut seed = seed | 1;
         let mut pool: Vec<&(String, String)> = pool.iter().filter(|(_, m)| !players.iter().any(|p| p.1.eq_ignore_ascii_case(m))).collect();
         let mut field: Vec<Entrant> = players
@@ -117,7 +117,7 @@ impl MpChamp {
             field.push(Entrant { name: name.clone(), model: model.clone(), points: 0, player: false });
         }
         let rider = players.first().map_or(String::new(), |p| p.1.clone());
-        self.run = Some(Run { champ, round: 0, rider, quad: quad.to_string(), field });
+        self.run = Some(Run::new(plan, rider, quad.to_string(), field));
     }
 
     /// Scores a finished round: `order` is field indices, winner first.
@@ -268,7 +268,8 @@ mod tests {
         let mut c = MpChamp::default();
         let players = [("ANN".to_string(), "Female1".to_string()), ("BOB".to_string(), "Male1".to_string())];
         let pool: Vec<(String, String)> = (2..8).map(|i| (format!("R{i}"), format!("Male{i}"))).collect();
-        c.start(Champ::Amateur, &players, "Bandit", &pool, 7);
+        let plan = Plan { champ: career::Champ::Amateur, schedule: vec![("Dunes1".into(), career::LAPS); career::ROUNDS], split: None };
+        c.start(plan, &players, "Bandit", &pool, 7);
         let run = c.run.as_ref().unwrap();
         assert_eq!(run.field.len(), FIELD);
         assert_eq!(run.field[1].name, "P2 BOB");
