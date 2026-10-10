@@ -400,11 +400,6 @@ impl Session {
         self.spots.iter().filter(|s| s.1).count()
     }
 
-    /// The ground trick being held right now.
-    pub fn ground_trick(&self) -> Option<Ground> {
-        self.ground.map(|g| g.0)
-    }
-
     /// The medal the score has earned (0 = bronze).
     pub fn medal(&self) -> Option<usize> {
         let m = self.medals?;
