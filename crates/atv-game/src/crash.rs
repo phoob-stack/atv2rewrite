@@ -11,6 +11,10 @@
 //!   body touches, or after a few seconds with a wheel or less down.
 //! - The clip follows which way the quad went over: nose first, over the
 //!   back, or onto a side (mirrored for the right side).
+//! - Coming down fast just over water, the rider braces (`Plunge`); with
+//!   the quad's centre or the thrown rider a metre under the surface, the
+//!   rider treads water until the quad is put back (0xd7f60, 0x2cca0,
+//!   0x2ca40, 0x26e30).
 
 use std::sync::Arc;
 
@@ -20,6 +24,7 @@ use atv_formats::GameSource;
 use atv_sim::{TrackCollision, Vehicle};
 
 use crate::rider::{Clip, Rider, ONE_SHOT_FPS};
+use crate::water::{Water, UNDER};
 
 const DIR: &str = "/Animations/Crashes/Bac/";
 
@@ -31,7 +36,7 @@ pub struct CrashClips {
 }
 
 /// Every clip a crash can use.
-const NAMES: [&str; 13] = [
+const NAMES: [&str; 15] = [
     "head_over_heels",
     "crash_front_1",
     "fall_front_endo",
@@ -45,6 +50,8 @@ const NAMES: [&str; 13] = [
     "push_up_B",
     "push_up_C",
     "reach_out",
+    "Plunge",
+    "Tread_water",
 ];
 
 impl CrashClips {
@@ -86,11 +93,14 @@ pub enum Cause {
     Rollover,
     /// Hit the ground or a wall with the body.
     Impact,
+    /// Went into deep water (the original's crash type 5).
+    Water,
 }
 
 /// The crash clips to play, in order, for a crash.
 pub fn clips_for(cause: Cause, way: Way, speed: f32, airborne: bool, pick: f32) -> Vec<&'static str> {
     let first = match (cause, way) {
+        (Cause::Water, _) => "Tread_water",
         (Cause::Rollover, Way::Front) => "fall_front_endo",
         (Cause::Impact, Way::Front) if speed * speed <= 800.0 => "head_over_heels",
         (Cause::Impact, Way::Front) => "crash_front_1",
@@ -151,6 +161,8 @@ pub struct Wreck {
     /// The hardest a thrown rider's body hit the world since the sound
     /// last looked, and how fast it was going.
     pub thump: Option<(f32, f32)>,
+    /// Seconds since the seated rider began bracing for the water.
+    plunge: Option<f32>,
 }
 
 pub struct Fall {
@@ -165,6 +177,10 @@ pub struct Fall {
     /// Seconds spent lying still after the last clip.
     rest: f32,
     age: f32,
+    /// Treading water.
+    floating: bool,
+    /// Seconds since the quad or the rider went into the water.
+    wet: Option<f32>,
 }
 
 /// Chassis spheres (centre relative to the centre of mass, game frame,
@@ -181,6 +197,23 @@ const LIE_STILL: f32 = 1.0;
 /// How hard the ground slows a sliding rider, m/s².
 /// (More than gravity down any slope, so a rider comes to rest.)
 const SLIDE_DECEL: f32 = 25.0;
+/// Coming down faster than this (0.08 m in a 60 Hz frame) less than
+/// [`PLUNGE_HEIGHT`] over water, the seated rider braces (0xd7f60).
+const PLUNGE_SPEED: f32 = 4.8;
+const PLUNGE_HEIGHT: f32 = 3.0;
+/// In the water (0x2ca40) the original pulls the rider's body up by
+/// `FLOAT_PULL × (FLOAT_LEVEL − height over the surface − 0.5 × rising
+/// speed)` and damps its motion at [`WATER_DRAG`] a second. Against the
+/// game's gravity that floats the body 0.2 m under the surface. (The
+/// original measures from the water box's top and only pulls a body a
+/// metre under it; here the body floats by the water you can see.)
+const FLOAT_PULL: f32 = 50.0;
+const FLOAT_LEVEL: f32 = 0.3;
+const WATER_DRAG: f32 = 25.0;
+const FLOAT_GRAVITY: f32 = atv_sim::vehicle::GRAVITY;
+/// Seconds in the water before the quad is put back: 1.5 until the
+/// original starts its respot (0x26e30), and its 0.5 s fade (0x25f20).
+const WET_TIME: f32 = 2.0;
 
 impl Wreck {
     /// Checks the step just taken for a crash. `before` is the quad's
@@ -228,6 +261,33 @@ impl Wreck {
         None
     }
 
+    /// Watches the quad over water (0xd7f60): coming down fast just over
+    /// the surface, the seated rider braces (`Plunge`, 0x2cca0). Returns
+    /// whether the quad is in the water, its centre [`UNDER`] the surface.
+    pub fn over_water(&mut self, v: &Vehicle, surface: Option<f32>, dt: f32) -> bool {
+        if let Some(t) = &mut self.plunge {
+            *t += dt;
+            // Once it's over, it can play again.
+            if *t > 1.0 || self.fall.is_some() {
+                self.plunge = None;
+            }
+        }
+        let Some(height) = surface.map(|s| v.position.y - s) else { return false };
+        if self.fall.is_none() && self.plunge.is_none() && height < PLUNGE_HEIGHT && -v.velocity.y > PLUNGE_SPEED {
+            self.plunge = Some(0.0);
+        }
+        height <= -UNDER
+    }
+
+    /// The `Plunge` clip and how far through it, while the seated rider
+    /// braces for the water.
+    pub fn plunge(&self, clips: &CrashClips) -> Option<(Arc<Clip>, f32)> {
+        let t = self.plunge?;
+        let clip = clips.get("Plunge")?;
+        let len = (clip.frames() - 1).max(1) as f32 / ONE_SHOT_FPS;
+        (t <= len).then(|| (clip, t / len))
+    }
+
     /// Throws the rider off.
     pub fn start(&mut self, v: &Vehicle, cause: Cause, way: Way, pick: f32) {
         let speed = v.velocity.length();
@@ -244,14 +304,48 @@ impl Wreck {
             t: 0.0,
             rest: 0.0,
             age: 0.0,
+            floating: cause == Cause::Water,
+            wet: (cause == Cause::Water).then_some(0.0),
         });
     }
 
     /// Moves the rider along. Returns true when the crash is over and the
     /// quad should be put back.
     pub fn advance(&mut self, clips: Option<&CrashClips>, world: &TrackCollision, dt: f32) -> bool {
+        self.advance_in(clips, world, None, false, dt)
+    }
+
+    /// [`Wreck::advance`] by the track's water; `quad_wet` is whether the
+    /// quad is in it.
+    pub fn advance_in(&mut self, clips: Option<&CrashClips>, world: &TrackCollision, water: Option<&Water>, quad_wet: bool, dt: f32) -> bool {
         let Some(f) = &mut self.fall else { return false };
         f.age += dt;
+        let frames = |name: &str| clips.and_then(|c| c.get(name)).map_or(1, |c| c.frames());
+        let surface = water.and_then(|w| w.surface(f.body));
+        if !f.floating && surface.is_some_and(|s| s - f.body.y >= UNDER) {
+            // A thrown rider landing in deep water treads water too.
+            f.floating = true;
+            f.clips = vec![clips_for(Cause::Water, Way::Front, 0.0, false, 0.0)[0]];
+            f.clip = 0;
+            f.t = 0.0;
+        }
+        if f.floating || quad_wet {
+            *f.wet.get_or_insert(0.0) += dt;
+        }
+        if let (true, Some(s)) = (f.floating, water.and_then(|w| w.level(f.body))) {
+            let height = f.body.y - s;
+            f.vel.y += (FLOAT_PULL * (FLOAT_LEVEL - height - 0.5 * f.vel.y) - FLOAT_GRAVITY) * dt;
+            f.vel *= (-WATER_DRAG * dt).exp();
+            f.body += f.vel * dt;
+            if let Some(hit) = world.sphere(f.body, BODY_RADIUS) {
+                f.body += hit.normal * hit.t;
+                f.vel -= hit.normal * f.vel.dot(hit.normal).min(0.0);
+            }
+            // Treading water over and over.
+            let len = (frames(f.clips[f.clip]) - 1).max(1) as f32 / ONE_SHOT_FPS;
+            f.t = (f.t + dt) % len;
+            return f.wet.is_some_and(|w| w >= WET_TIME);
+        }
         f.vel.y -= 9.81 * dt;
         f.body += f.vel * dt;
         // A little margin so a rider resting on the ground counts as on it.
@@ -270,7 +364,6 @@ impl Wreck {
             let slow = (SLIDE_DECEL * dt).min(vt.length());
             f.vel -= vt.normalize_or_zero() * slow;
         }
-        let frames = |name: &str| clips.and_then(|c| c.get(name)).map_or(1, |c| c.frames());
         f.t += dt;
         let len = (frames(f.clips[f.clip]) - 1) as f32 / ONE_SHOT_FPS;
         if f.t >= len {
@@ -288,8 +381,14 @@ impl Wreck {
             }
         }
         let done = f.clip + 1 == f.clips.len() && f.rest > LIE_STILL;
-        // However it lands, it's over after a while.
-        done || f.age > 8.0
+        // However it lands, it's over after a while; sooner with the quad
+        // in the water.
+        done || f.age > 8.0 || f.wet.is_some_and(|w| w >= WET_TIME)
+    }
+
+    /// Where the thrown rider is treading water, if they are.
+    pub fn floating(&self) -> Option<Vec3> {
+        self.fall.as_ref().filter(|f| f.floating).map(|f| f.body)
     }
 
     /// The crash clip and how far through it, for the rider.
@@ -346,5 +445,64 @@ mod tests {
         assert_eq!(clips_for(Cause::Rollover, Way::Back, 0.0, true, 0.0), ["fall_high_wheelie"]);
         assert_eq!(clips_for(Cause::Impact, Way::Side(true), 5.0, false, 0.0), ["fall_side_A~"]);
         assert_eq!(clips_for(Cause::Rollover, Way::Side(false), 5.0, false, 0.0), ["fall_onto_back"]);
+        assert_eq!(clips_for(Cause::Water, Way::Back, 20.0, true, 0.5), ["Tread_water"]);
+    }
+
+    /// A wide pond: its surface at height 0 over a flat bed 10 m down.
+    fn pond() -> (Water, TrackCollision) {
+        let s = 100.0;
+        let tri = |y: f32| vec![[Vec3::new(-s, y, -s), Vec3::new(s, y, -s), Vec3::new(0.0, y, s)]];
+        let lake = atv_formats::rom::Locator { name: "waterbox".into(), pos: [0.0, -5.0, 0.0], scale: [s, 10.0, s], rotation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] };
+        (Water(TrackCollision::new(tri(0.0), 8.0), vec![crate::water::WaterBox::from_locator(&lake)]), TrackCollision::new(tri(-10.0), 8.0))
+    }
+
+    fn quad_at(y: f32) -> Vehicle {
+        Vehicle::new(atv_sim::VehicleParams::from_files("", None), Vec3::new(0.0, y, 0.0), Quat::IDENTITY)
+    }
+
+    #[test]
+    fn plunges_then_treads_water_until_put_back() {
+        let (water, bed) = pond();
+        let dt = 1.0 / 60.0;
+        let mut w = Wreck::default();
+        // Coming down fast 2 m over the surface: the rider braces.
+        let mut v = quad_at(2.0);
+        v.velocity = Vec3::new(0.0, -8.0, -10.0);
+        assert!(!w.over_water(&v, water.surface(v.position), dt));
+        assert!(w.plunge.is_some());
+        // Half a metre under isn't in yet; a metre under is.
+        let v = quad_at(-0.5);
+        assert!(!w.over_water(&v, water.surface(v.position), dt));
+        let v = quad_at(-1.0);
+        assert!(w.over_water(&v, water.surface(v.position), dt));
+        w.start(&v, Cause::Water, Way::Front, 0.0);
+        let mut t = dt;
+        while !w.advance_in(None, &bed, Some(&water), true, dt) {
+            t += dt;
+            assert!(t < 3.0);
+        }
+        assert!((t - WET_TIME).abs() < 0.05, "{t}");
+        // Floating with the head and shoulders out.
+        let body = w.fall.as_ref().unwrap().body;
+        assert!((body.y + 0.2).abs() < 0.1, "{body}");
+        assert_eq!(w.fall.as_ref().unwrap().clips, ["Tread_water"]);
+    }
+
+    #[test]
+    fn thrown_into_the_water() {
+        let (water, bed) = pond();
+        let dt = 1.0 / 60.0;
+        let mut w = Wreck::default();
+        w.start(&quad_at(5.0), Cause::Impact, Way::Front, 0.1);
+        let mut t = dt;
+        while !w.advance_in(None, &bed, Some(&water), false, dt) {
+            t += dt;
+            assert!(t < 5.0);
+        }
+        // Falls about 6.5 m into the water, then treads water.
+        let f = w.fall.as_ref().unwrap();
+        assert!(f.floating);
+        assert_eq!(f.clips, ["Tread_water"]);
+        assert!(t > WET_TIME + 1.0 && t < WET_TIME + 1.5, "{t}");
     }
 }
