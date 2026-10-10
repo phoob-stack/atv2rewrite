@@ -521,6 +521,29 @@ ground a dust chance from `min(speed / 50 mph, wheel rad/s / 100)^2`
 (the quad's flag at +0x1174), bursts dark smoke that thins out over a
 second and spits three sparks a frame (0x8ada0). Computer riders' quads
 throw half as much, and nothing is thrown past 50 m from the camera.
+Wheels in water throw nothing.
+
+Splashes (0xe6520, tuned by the `Splash_*` values at 0x1d35c4) go off
+where a quad or a thrown rider comes down into deep water faster than
+0.08 m a frame, on the water's surface. Strength is `min(1, 5 × drop per
+frame)`. 32 `Splash` sprites (a pool of 64, life 2 s times
+`(strength + 1) / 2`, gravity 6) leave from a ring up to 0.75 × the
+radius out (the quad's reach to its outer wheel edges; 0.5 m is assumed
+for a rider), going 1.2 m/s outwards plus 3 × the body's motion, and up at
+`(3 + rand 4) × strength`. Each is 0.3-0.4 m, grows 1.5-2 m/s, spins up to
+0.3 rad/s and fades out over 2 s from half opacity (`Splash Alpha Fade
+In` sits in zeroed memory at 0x1e4474, so there's no fade in). Four rings follow at
+the centre (`Ripple`, half-size 0.25 × radius, growing 1.5 m/s, at 0,
+0.11, 0.22 and 0.33 s, opacities 0.25, 0.5, 0.375, 0.25), and 16 small
+ones (growing 0.6 m/s, opacity 0.4) appear 0.3-1.3 s later up to
+`8 × strength × radius` away. Ripples (0x1072c0, a pool of 256, updated
+by 0x106f00 and drawn flat by 0x107010) wait out their delay, then grow
+for 2 s; how they fade isn't worked out, so they fade evenly. A
+rider treading water sends out three rings (growing 1.5 m/s, opacity 0.4,
+0.05 s apart; 0xe69e0 kind 1) each time the loop starts again. The
+original also rings a quad's wheels where they cross the surface (kind
+0), but only while the quad is a metre under it, which a sunk quad hardly
+ever is; the rewrite leaves that out.
 
 ## Replays and their cameras
 

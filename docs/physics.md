@@ -61,9 +61,13 @@ the original's rules:
   * Coming down faster than 0.08 m a frame (4.8 m/s) less than 3 m over
     a box's top, the seated rider braces with `Plunge`.
   * With its centre 1 m under the top, the quad is in the water: the rider
-    comes off (crash type 5) and treads water (`Tread_water`, looped), and
-    the quad is dragged by `-10 × velocity` and `-5 × spin` (`0x5ba70`).
+    comes off (crash type 5) and treads water (`Tread_water`: frames 2-46
+    once, then 46-68 over and over, `0x2bbb0` case 6, each loop sending out
+    three rings), and the quad is dragged by `-10 × velocity` and
+    `-5 × spin` (`0x5ba70`).
   * A thrown rider who goes 1 m under a top treads water too.
+  * Going in falling faster than 4.8 m/s splashes (see formats.md,
+    Particles), for the quad and for a thrown rider alike.
   * 1.5 s after the quad or the rider went in, the original starts its
     respot (`0x25f20`), which fades for 0.5 s; here the quad is put back
     at 2 s.
@@ -126,8 +130,8 @@ Loose_Mud 5. Plain Mud has none, only less grip (0.45).
 * Knock-over props (cones, signs, barriers, crates) and their `.hsc` hulls:
   they don't collide yet. Static props collide through their `.ink` meshes.
 * Crash parts of the original that aren't ported yet:
-  * water crashes for computer riders and players 2-4, and the splash and
-    ripples
+  * water crashes for computer riders and players 2-4 (their quads do
+    splash)
   * hits from other riders (causes 3 and 4)
   * the rider's own head contact (cause 2)
   * computer riders crashing (they are respotted as before)
