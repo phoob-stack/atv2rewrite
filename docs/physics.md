@@ -26,6 +26,7 @@ anyone checking the port against a disassembly.
 | `0xbbc80` | `approach` | Rate limited move toward a target |
 | wheel vtable `0x1c60b4` | `wheel_contacts`, `springs` | Strut raycasts and spring/damper forces |
 | `0x5bd10` | `ground_frame`, `ground_forces` | Slides, wheelspin, drive, brakes, cornering, side grip, drag |
+| `0x5d030`, `0xbc800`, `0xb53e0` | `wheel_contacts`, `ground_frame` | Surface grip and drag under each tyre, averaged over the wheels down (`surface.rs`) |
 | `0x5a650` | end of `ground_forces` | Torque plus the force it implies at the application point |
 | ATV vtable `0x1bf708` | `wheelies`, `air_forces` | Wheelie/endo torque, air steer and lean, air gravity scale |
 | ATV update | `preload_update`, `landing_stabiliser` | Preload hop and landing pitch damping |
@@ -73,9 +74,25 @@ These are approximations:
 A landing after more than half a second in the air plays the `landing`
 clip once over the riding pose.
 
+## Surfaces
+
+The original collides with the track's `.kdt` triangles, each naming a
+surface in `Setup/Materials.xml`. The rewrite collides with the `.row`
+render meshes, so on load each render triangle takes the surface of the
+`.kdt` triangle under its centre (they match to a few centimetres). Each
+tyre on the ground takes its surface's `Friction` as grip (a tenth of it on
+faces over 45 degrees from the strut) and its `Damping` as drag; the quad
+averages both over the tyres down. Grip blends every handling pair between
+its grippy and slippery value, and keeps its last value in the air. Drag
+adds to air resistance against ground speed squared. Props have full grip
+and no drag.
+
+Damping is what slows a quad: Water and Deep_Water 30, Dirt_Bank 20,
+Mud_Bank and Sand_Bank 15, Loose_Sand and Snow_Bank 10, Loose_Dirt and
+Loose_Mud 5. Plain Mud has none, only less grip (0.45).
+
 ## Not ported yet
 
-* Surface materials: grip is fixed at 1 and surface drag at 0.
 * Turbo, the bicycle trick, and the bumpy-terrain wheel offset.
 * The original's own body collision spheres. `body_collision` uses five
   hand-placed spheres instead, answered the way the original answers a

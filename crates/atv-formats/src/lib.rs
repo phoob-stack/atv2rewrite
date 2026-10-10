@@ -10,6 +10,7 @@ pub mod bed;
 pub mod bin;
 pub mod bog;
 pub mod ink;
+pub mod kdt;
 pub mod lzss;
 pub mod materials;
 pub mod rom;

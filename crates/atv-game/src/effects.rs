@@ -10,10 +10,9 @@
 //! - sparks (`Spark0`), which the exhaust spits while boosting.
 //!
 //! Each frame (at 60 a second) the emitters roll a chance per wheel and
-//! per exhaust. Wheels follow the surface's line in `Setup/Materials.xml`;
-//! which surface a wheel is on isn't known yet (the collision carries no
-//! surface types), so every wheel uses the environment's main ground, as
-//! the wheel sounds do.
+//! per exhaust. Each wheel follows its own surface's line in
+//! `Setup/Materials.xml` (from the track collision); wheels off the track's
+//! own ground (on props) use the environment's main ground.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -210,7 +209,9 @@ impl Rng {
 /// Everything the effects draw with, and the live particles.
 #[derive(Resource)]
 struct Effects {
+    /// The environment's main ground, and each surface by collision id.
     surface: Surface,
+    by_id: Vec<Option<Surface>>,
     /// Sprite UV rectangles (min, max) and their names.
     sprites: Vec<(String, Vec2, Vec2)>,
     pools: HashMap<Pool, VecDeque<Particle>>,
@@ -256,6 +257,7 @@ fn load(
 ) {
     let env = sel.track.trim_end_matches(|c: char| c.is_ascii_digit());
     let surfaces = game.0.read("/Setup/Materials.xml").map(|b| Surface::parse_all(&String::from_utf8_lossy(&b))).unwrap_or_default();
+    let by_id = atv_sim::surface::NAMES.iter().map(|n| surfaces.iter().find(|s| s.name.eq_ignore_ascii_case(n)).cloned()).collect();
     let Some(surface) = surfaces.into_iter().find(|s| s.name == main_surface(env)) else {
         warn!("no {} surface in Materials.xml: no wheel effects", main_surface(env));
         return;
@@ -287,7 +289,7 @@ fn load(
         commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material), Transform::default(), NoFrustumCulling, DespawnOnExit(AppState::Race)));
         handles.insert(pool, mesh);
     }
-    commands.insert_resource(Effects { surface, sprites, pools: HashMap::new(), meshes: handles, rng: Rng(0x2545_f491), puff: Vec::new() });
+    commands.insert_resource(Effects { surface, by_id, sprites, pools: HashMap::new(), meshes: handles, rng: Rng(0x2545_f491), puff: Vec::new() });
 }
 
 /// One quad's part in the effects this frame.
@@ -346,13 +348,13 @@ fn emit(
 /// What the wheels throw up: chunks and dust off the spray (0x8bf40), and
 /// dust and smoke behind wheels turning fast on dusty ground (0x8b900).
 fn wheel_spray(fx: &mut Effects, v: &Vehicle, body: Entity, centres: &HashMap<(Entity, usize), Vec3>, rate: f32, dt: f32) {
-    let s = fx.surface.clone();
     let (fwd, up, right) = (v.forward(), v.up(), v.right());
     let ahead = v.velocity.dot(fwd);
     let speed = v.velocity.length();
     let dust = fx.sprite("Dust0");
     for (i, (w, wp)) in v.wheels.iter().zip(&v.params.wheels).enumerate() {
         let Some(&centre) = centres.get(&(body, i)) else { continue };
+        let s = w.contact.then(|| fx.by_id.get(usize::from(w.surface)).cloned().flatten()).flatten().unwrap_or_else(|| fx.surface.clone());
         let normal = if w.contact { w.contact_normal } else { up };
         let contact = centre - normal * wp.radius;
         // The tread's speed: rolling with the ground, and spinning past it

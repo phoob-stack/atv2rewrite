@@ -55,6 +55,8 @@ pub struct WheelState {
     pub spin: f32,
     /// Steering angle for rendering (sim frame, about +Y), radians.
     pub steer: f32,
+    /// Surface id under the tyre (see [`crate::surface`]).
+    pub surface: u8,
 }
 
 /// Per-wheel strut state, in the game frame.
@@ -71,6 +73,10 @@ struct Strut {
     /// Contact normal . suspension axis.
     normal_axis: f32,
     contact: bool,
+    surface: u8,
+    /// Grip and drag of the surface under the tyre.
+    friction: f32,
+    damping: f32,
 }
 
 /// The ground plane under the quad, rebuilt each step from the wheels.
@@ -486,10 +492,10 @@ impl Vehicle {
         origin: Vec3,
         dir: Vec3,
         max: f32,
-    ) -> Option<(f32, Vec3, Vec3)> {
+    ) -> Option<(f32, Vec3, Vec3, u8)> {
         world
             .raycast(origin * FLIP, dir * FLIP, max)
-            .map(|h| (h.t, h.point * FLIP, h.normal * FLIP))
+            .map(|h| (h.t, h.point * FLIP, h.normal * FLIP, h.surface))
     }
 
     /// Finds where each tyre touches the ground and how far it sinks in.
@@ -506,7 +512,7 @@ impl Vehicle {
             let attach = self.rot * Vec3::from(wp.game_offset);
             let axis = (self.rot * Vec3::from(wp.axis)).normalize_or(self.rot.y_axis);
             let centre = self.pos + attach + axis * s.pos;
-            let Some((t, _, n)) = Self::cast(
+            let Some((t, _, n, surface)) = Self::cast(
                 world,
                 centre + axis * HEADROOM,
                 -axis,
@@ -541,6 +547,17 @@ impl Vehicle {
             s.normal = n;
             s.normal_axis = na;
             s.contact = s.pos + s.correction >= 0.0;
+            // The surface's grip and drag; faces over 45 degrees from the
+            // strut give a tenth of the grip.
+            let surf = world.surface(surface);
+            s.surface = surface;
+            s.friction = surf.friction
+                * if na < std::f32::consts::FRAC_1_SQRT_2 {
+                    0.1
+                } else {
+                    1.0
+                };
+            s.damping = surf.damping;
         }
     }
 
@@ -561,13 +578,17 @@ impl Vehicle {
 
     fn ground_frame(&mut self) {
         let up = self.rot.y_axis;
+        // In the air the handling keeps the last grip on the ground.
         let mut g = Ground {
-            grip: 1.0,
+            grip: self.ground.grip,
             ..Default::default()
         };
+        let (mut grip, mut drag) = (0.0, 0.0);
         let mut best = -2.0;
         for s in self.struts.iter().filter(|s| s.contact) {
             g.contacts += 1;
+            grip += s.friction;
+            drag += s.damping;
             let d = s.normal.dot(up);
             if d > best {
                 best = d;
@@ -575,6 +596,8 @@ impl Vehicle {
             }
         }
         if g.contacts > 0 {
+            g.grip = grip / g.contacts as f32;
+            g.drag = drag / g.contacts as f32;
             let n = g.normal;
             let mut f = self.rot.z_axis - n * self.rot.z_axis.dot(n);
             if f.length() < 1e-4 {
@@ -1040,7 +1063,7 @@ impl Vehicle {
                 .then(|| Self::cast(world, prev, travel.normalize(), travel.length()))
                 .flatten()
             {
-                Some((t, _, n)) => Some((n, travel.length() - t + radius)),
+                Some((t, _, n, _)) => Some((n, travel.length() - t + radius)),
                 None => world
                     .sphere(centre * FLIP, radius)
                     .map(|h| (h.normal * FLIP, h.t)),
@@ -1185,6 +1208,7 @@ impl Vehicle {
             let ws = &mut self.wheels[i];
             ws.compression = s.pos - wp.min_pos;
             ws.contact = s.contact;
+            ws.surface = s.surface;
             ws.contact_normal = s.normal * FLIP;
             ws.steer = if wp.front {
                 -self.steer * max_steer
