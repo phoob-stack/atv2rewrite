@@ -121,6 +121,23 @@ coverage. Quads are assembled from parts placed at the body's named points
 (`handlebarscentre`, `flsuspcentre`, `rwheelcentre`...); wheels live in
 `Cars/Generic` and the right front wheel is the left one mirrored.
 
+The overlay layers are dirt that builds up during a race:
+- `GEN_quadmud_01` on the quads, `CH_quadmud_01` on the riders, and
+  `UNI_TyreOverlay` on the tyres.
+- `Tracks.xml` swaps in the sand or snow versions per track:
+  `mVehicleDirtTexture` for the dirt, and `mTyreType` (`Road`, `Sand`,
+  `Snow`) for the `road_`, `sand_` or `snow_` wheel models and the tyre
+  palette (`UNI_TyreOverlay_{Mud,Dust,Snow}Palette` colours, under
+  `UNI_TyreOverlay`'s alpha).
+- The `ShinyThingWithDirt` pixel shader mixes the dirt in by its texture
+  alpha × vertex alpha × the lighting alpha. The vertex shader takes that
+  last value from the ambient colour constant (`c5.a`), which is how the
+  game feeds in the dirt level. Dirt also cuts the specular.
+- Rider vertex alpha is all zero and `CH_quadsnow_01` has no alpha. The
+  port gives rider dirt the mud texture's coverage.
+- The port's dirt level grows with distance driven on the ground: full
+  after 1.5 km. That rate is a guess.
+
 ## Riders: BAS skeletons, BAC animations
 
 ```

@@ -20,6 +20,7 @@ mod crash;
 mod freestyle;
 mod frontend;
 mod hd;
+mod mud;
 mod hud;
 mod opponents;
 mod race;
@@ -310,7 +311,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(roster)
         .insert_resource(selection)
         .insert_resource(front_end)
-        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin))
+        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin))
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
@@ -382,6 +383,7 @@ fn setup(
     set_ui_camera(&mut commands, &mut ui_cams, false);
     let scoped = DespawnOnExit(AppState::Race);
     let mut loader = convert::Loader::new(&game.0, &mut meshes, &mut materials, &mut images);
+    loader.dirt = Some(roster.info(&sel.track).ground);
     let scene = match loader.spawn_track(&mut commands, &sel.track) {
         Ok(s) => s,
         Err(e) => {
