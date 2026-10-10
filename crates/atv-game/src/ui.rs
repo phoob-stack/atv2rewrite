@@ -249,6 +249,11 @@ pub struct UiAssets {
     pub trick_pad: Sheet,
     /// Point Distribution's bars (`HBAR8`, `ONEBAR`) and slider (`BLOB1`).
     pub points: Sheet,
+    /// Name Your Rider's keyboard panel (`NAMEPANEL`) and name box
+    /// (`SMALLNAMEPANEL`).
+    pub name_entry: Sheet,
+    /// Profile Select's numbers 1 to 10, eight to a row of 64-texel tiles.
+    pub profile_numbers: UiTex,
     pub big_pad: UiTex,
     pub logo: UiTex,
     pub mugs: UiTex,
@@ -318,6 +323,8 @@ impl UiAssets {
             checkbox: l.sheet("FrontEnd/checkbox")?,
             trick_pad: l.sheet("FrontEnd/TrickPad_XBox")?,
             points: l.sheet("FrontEnd/PointsTpage")?,
+            name_entry: l.sheet("FrontEnd/nameentrypanel")?,
+            profile_numbers: l.tex("FrontEnd/ProfileNumbers")?,
             big_pad: l.tex("FrontEnd/BigPad_Xbox")?,
             logo: l.tex("FrontEnd/ATVLogoBIG")?,
             mugs: l.tex("FrontEnd/RiderMugs")?,

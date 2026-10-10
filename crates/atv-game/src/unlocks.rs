@@ -22,7 +22,10 @@
 //!   0x1cef14, applied at 0x18f20): ALLOFEM (all of the below), ALLRIDERS,
 //!   ALLBIKES, ALLTRACKS, ALLTRICKS (skill points up to the top level),
 //!   ALLCHAMPS (every championship open) and ALLCHALS (every challenge
-//!   open). Here `--cheat NAME` enters one; it stays in the save.
+//!   open). Here too they're entered on Name Your Rider (see
+//!   [`crate::frontend`]) and go to the next profile made or loaded, or
+//!   `--cheat NAME` enters one into the profile loaded; they stay in its
+//!   save.
 
 use bevy::prelude::*;
 
@@ -38,21 +41,22 @@ pub const TRICKS: u32 = 0x10;
 pub const CHAMPS: u32 = 0x20;
 pub const CHALS: u32 = 0x40;
 
-/// The original's cheat names and what each opens (its `NOHUD` isn't
-/// here).
-pub const CHEATS: [(&str, u32); 7] = [
-    ("ALLOFEM", RIDERS | BIKES | TRACKS | TRICKS | CHAMPS | CHALS),
-    ("ALLRIDERS", RIDERS),
-    ("ALLBIKES", BIKES),
-    ("ALLTRACKS", TRACKS),
-    ("ALLTRICKS", TRICKS),
-    ("ALLCHAMPS", CHAMPS),
-    ("ALLCHALS", CHALS),
+/// The original's cheat names, what each opens and the message it shows
+/// (its `NOHUD` isn't here).
+pub const CHEATS: [(&str, u32, &str); 7] = [
+    ("ALLOFEM", RIDERS | BIKES | TRACKS | TRICKS | CHAMPS | CHALS, "UNLOCKED EVERYTHING"),
+    ("ALLRIDERS", RIDERS, "UNLOCKED ALL RIDERS"),
+    ("ALLBIKES", BIKES, "UNLOCKED ALL VEHICLES"),
+    ("ALLTRACKS", TRACKS, "UNLOCKED ALL TRACKS"),
+    ("ALLTRICKS", TRICKS, "MAXXED OUT SKILL LEVEL"),
+    ("ALLCHAMPS", CHAMPS, "UNLOCKED ALL CHAMPIONSHIPS"),
+    ("ALLCHALS", CHALS, "UNLOCKED ALL CHALLENGES"),
 ];
 
 pub const TRACK_LOCKED: &str = "THIS TRACK CAN BE UNLOCKED BY REACHING IT WITHIN ARCADE OR CAREER MODE";
 pub const RIDER_LOCKED: &str = "EARN GOLD MEDALS IN FREESTYLE CHALLENGE TO UNLOCK PRO RIDERS";
 pub const RIDER_TAKEN: &str = "THIS RIDER IS LOCKED BECAUSE ANOTHER PLAYER ALREADY CHOSE THEM";
+pub const RIDER_IN_PROFILE: &str = "THIS RIDER HAS ALREADY BEEN CHOSEN FOR USE IN ANOTHER PROFILE";
 
 pub struct UnlocksPlugin;
 
@@ -62,15 +66,25 @@ impl Plugin for UnlocksPlugin {
     }
 }
 
-/// A cheat's bits, by name (any case).
+/// A cheat by name (any case): its bits and message.
+pub fn cheat(name: &str) -> Option<(u32, &'static str)> {
+    CHEATS.iter().find(|c| c.0.eq_ignore_ascii_case(name.trim())).map(|c| (c.1, c.2))
+}
+
 pub fn cheat_bits(name: &str) -> Option<u32> {
-    CHEATS.iter().find(|(n, _)| n.eq_ignore_ascii_case(name.trim())).map(|c| c.1)
+    cheat(name).map(|c| c.0)
 }
 
 /// Enters a cheat, as naming a profile after it does in the original.
 /// False for a name that isn't one.
 pub fn apply_cheat(career: &mut Career, rules: &Rules, name: &str) -> bool {
     let Some(bits) = cheat_bits(name) else { return false };
+    apply_bits(career, rules, bits);
+    true
+}
+
+/// Gives a profile the cheats in `bits`.
+pub fn apply_bits(career: &mut Career, rules: &Rules, bits: u32) {
     career.cheats |= bits;
     if bits & TRICKS != 0 {
         let top = rules.skill_levels.last().copied().unwrap_or(0);
@@ -79,7 +93,6 @@ pub fn apply_cheat(career: &mut Career, rules: &Rules, name: &str) -> bool {
     if bits & CHAMPS != 0 {
         career.open = [true; 4];
     }
-    true
 }
 
 /// Carries progress from before tracks were saved as reached: the

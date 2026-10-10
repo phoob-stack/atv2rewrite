@@ -1,5 +1,6 @@
 //! The Options menu's settings: music and sound effects volume, the race
-//! camera and vibration. They are remembered between runs in the player's
+//! camera and vibration, and the player profile last loaded (see
+//! [`crate::career::Profile`]). They are remembered between runs in the player's
 //! config folder as a plain `key = value` file, beside the launcher's.
 //!
 //! The cameras are the original's three follow cameras from
@@ -67,11 +68,13 @@ pub struct Settings {
     pub effects: u8,
     pub camera: CameraView,
     pub vibration: bool,
+    /// The profile slot to load at start.
+    pub profile: Option<usize>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { music: VOLUME_STEPS, effects: VOLUME_STEPS, camera: CameraView::default(), vibration: true }
+        Self { music: VOLUME_STEPS, effects: VOLUME_STEPS, camera: CameraView::default(), vibration: true, profile: None }
     }
 }
 
@@ -101,6 +104,7 @@ impl Settings {
                 "effects" => s.effects = v.parse::<u8>().map_or(s.effects, |n| n.min(VOLUME_STEPS)),
                 "camera" => s.camera = CameraView::ALL.into_iter().find(|c| c.key() == v).unwrap_or(s.camera),
                 "vibration" => s.vibration = v == "true",
+                "profile" => s.profile = v.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).filter(|&n| n < crate::career::PROFILES),
                 _ => {}
             }
         }
@@ -108,7 +112,11 @@ impl Settings {
     }
 
     pub fn to_text(&self) -> String {
-        format!("music = {}\neffects = {}\ncamera = {}\nvibration = {}\n", self.music, self.effects, self.camera.key(), self.vibration)
+        let mut s = format!("music = {}\neffects = {}\ncamera = {}\nvibration = {}\n", self.music, self.effects, self.camera.key(), self.vibration);
+        if let Some(n) = self.profile {
+            s += &format!("profile = {}\n", n + 1);
+        }
+        s
     }
 
     pub fn save(&self) {
@@ -178,7 +186,9 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let s = Settings { music: 3, effects: 16, camera: CameraView::VeryClose, vibration: false };
+        let s = Settings { music: 3, effects: 16, camera: CameraView::VeryClose, vibration: false, profile: None };
+        assert_eq!(Settings::parse(&s.to_text()), s);
+        let s = Settings { profile: Some(9), ..s };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("music = 99\njunk\ncamera = sideways"), Settings { music: VOLUME_STEPS, ..default() });
     }
