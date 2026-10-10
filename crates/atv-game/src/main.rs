@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton};
+use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::light::GlobalAmbientLight;
@@ -411,21 +412,37 @@ fn setup(
         checkpoints.len()
     );
 
-    // The world's lighting is baked into vertex colours; only the quad is
-    // lit, by the track's sun and ambient lights.
-    // Light colours use the same 0x80 = 1.0 scale as vertex colours.
+    // The world's lighting is baked into vertex colours; only the quad and
+    // rider are lit, by the track's sun and ambient lights. Light colours use
+    // the same 0x80 = 1.0 scale as vertex colours (the Xbox lit vehicles
+    // with fixed-function lights and MODULATE2X), so a surface facing a
+    // 0x80 sun shows its texture as authored. Bevy lights are physical:
+    // divide out the camera exposure (and pi for the diffuse BRDF) to land
+    // on that scale.
+    let exposure = Exposure::default().exposure();
     let rgb = |c: [f32; 3]| Color::linear_rgb(c[0] / 128.0, c[1] / 128.0, c[2] / 128.0);
-    ambient.brightness = 1200.0;
-    let mut sun = (Vec3::new(0.3, -0.8, -0.5), Color::linear_rgb(0.8, 0.8, 0.8));
+    // Tracks without a sun (Stadium, Swamp, Industrial, Forest) get one
+    // scaled to the baked light around the start, so the quad doesn't
+    // glow against a dark world.
+    let level = baked_level(&scene.world, start.0);
+    let mut sun = (Vec3::new(0.3, -0.8, -0.5), Color::linear_rgb(0.6 * level, 0.6 * level, 0.6 * level));
+    let mut have_ambient = false;
+    ambient.brightness = 1.0 / exposure;
     for l in &scene.world.lights {
         match l.name.to_ascii_lowercase().as_str() {
             "sun" => sun = (trk::to_sim(l.dir), rgb(l.color)),
-            "ambient" => ambient.color = rgb(l.color),
+            "ambient" => {
+                ambient.color = rgb(l.color);
+                have_ambient = true;
+            }
             _ => {}
         }
     }
+    if !have_ambient {
+        ambient.color = Color::linear_rgb(0.45 * level, 0.45 * level, 0.45 * level);
+    }
     commands.spawn((
-        DirectionalLight { color: sun.1, illuminance: 6000.0, ..default() },
+        DirectionalLight { color: sun.1, illuminance: std::f32::consts::PI / exposure, ..default() },
         Transform::default().looking_to(sun.0.normalize_or(Vec3::NEG_Y), Vec3::Y),
         scoped.clone(),
     ));
@@ -488,6 +505,26 @@ fn setup(
     });
     commands.insert_resource(Player(vehicle));
     commands.init_resource::<Controls>();
+}
+
+/// Average baked light (1.0 = texture as authored) of the track surface
+/// within 40 m of `at`, clamped to a sensible range.
+fn baked_level(world: &atv_formats::row::World, at: Vec3) -> f32 {
+    let lum = |c: u32| (((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255)) as f32 / 3.0 / 128.0;
+    let (mut sum, mut n) = (0.0, 0.0);
+    // Visible, opaque surfaces only (no water, foam or shadow decals).
+    for m in world.meshes.iter().filter(|m| m.material >= 0 && m.flags & 0xE000 == 0) {
+        let near = |p: [f32; 3]| trk::to_sim(p).distance_squared(at) < 40.0 * 40.0;
+        for v in m.vertices.iter().filter(|v| near(v.pos)) {
+            sum += lum(v.color);
+            n += 1.0;
+        }
+        for p in m.patches.iter().filter(|p| near(p.control[0])) {
+            sum += p.corner_color.iter().map(|&c| lum(c)).sum::<f32>() / 4.0;
+            n += 1.0;
+        }
+    }
+    if n == 0.0 { 1.0 } else { (sum / n).clamp(0.35, 1.2) }
 }
 
 /// `airborne`: the pad's X and RB are trick buttons in the air, so they

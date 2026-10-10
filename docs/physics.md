@@ -36,7 +36,9 @@ anyone checking the port against a disassembly.
 
 * Surface materials: grip is fixed at 1 and surface drag at 0.
 * Turbo, the bicycle trick, and the bumpy-terrain wheel offset.
-* Body collision spheres; a belly probe keeps the chassis off the ground.
+* The original's own body collision spheres. `body_collision` uses five
+  hand-placed spheres instead, answered the way the original answers a
+  contact: a position fix plus an impulse at the contact point (`0xad9b0`).
 * Only the automatic gearbox (mode 0).
 
 ## Tests
