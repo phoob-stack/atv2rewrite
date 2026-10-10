@@ -462,6 +462,12 @@ left alone.
   Space and Ok, up to 12 characters (0x51390). Arcade and Career have no
   rider select (no `ID_RIDER_SELECT_PAGE` for `Arcade_Rider`): they ride
   the profile's rider. Options lists Profiles between Replays and Credits.
+- The race menu (0x4a5c0, `ID_RACEPAUSEDPAGE`): 0x1e Audio, 0x40 Camera,
+  0x83 Controller, 0x1a8 Return to Race (focused as it opens), 0x1a7
+  Restart Race (0x1a5 Restart Challenge, 0x1a6 Restart in freestyle) and
+  0x187 Quit Race. The first three open `ID_PAUSE_SUBPAGE` pages (0x4a500,
+  0x4a530, 0x4a560); going back returns to the item that opened them
+  (0x4aa40, 0x491b0).
 
 ## Particles (Setup/Materials.xml, Sprites/Particles)
 

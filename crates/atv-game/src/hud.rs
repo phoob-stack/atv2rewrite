@@ -2,7 +2,8 @@
 //! needle, preload meter, speed and gear; lap, time and best-lap readouts;
 //! the lap progress meter; the 3-2-1-GO countdown, checkpoint banner and
 //! wrong-way warning; arcade's checkpoint clock; and the pause and results
-//! menus for every mode. Freestyle's score readouts are in `freestyle`.
+//! menus for every mode, the pause menu with the original's Audio, Camera
+//! and Controller pages. Freestyle's score readouts are in `freestyle`.
 
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
@@ -12,9 +13,10 @@ use crate::career::{self, Award, Career, Run};
 use crate::challenge::{self, Outcome};
 use crate::mp;
 use crate::freestyle::{limit_label, Session, MEDALS};
-use crate::frontend::{FrontEnd, Roster, Screen};
+use crate::frontend::{self, FrontEnd, Roster, Screen};
 use crate::opponents::{Opponents, Standings};
 use crate::race::{fmt_time, RaceProgress};
+use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::unlocks;
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets};
 use crate::{AppState, Mode, Player, Selection};
@@ -84,6 +86,28 @@ struct WrongWay;
 #[derive(Component)]
 pub(crate) struct RaceMenu {
     results: bool,
+    /// The pause menu's Audio, Camera or Controller page, when one is open.
+    pub(crate) page: Option<PausePage>,
+}
+
+/// The pages the original's race menu opens (0x4a5c0): the Options pages,
+/// changed mid-race.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PausePage {
+    Audio,
+    Camera,
+    Controller,
+}
+
+impl PausePage {
+    /// Its item on the pause menu.
+    fn item(self) -> &'static str {
+        match self {
+            PausePage::Audio => "AUDIO",
+            PausePage::Camera => "CAMERA",
+            PausePage::Controller => "CONTROLLER",
+        }
+    }
 }
 
 fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Selection>, roster: Res<Roster>) {
@@ -601,7 +625,7 @@ fn race_menus(
     mut next: ResMut<NextState<AppState>>,
     mut finished_for: Local<f32>,
     field: (Option<Res<Standings>>, Option<Res<Opponents>>),
-    (mut career, rules, mut fe): (ResMut<Career>, Res<career::Rules>, ResMut<FrontEnd>),
+    (mut career, rules, mut fe, mut settings): (ResMut<Career>, Res<career::Rules>, ResMut<FrontEnd>, ResMut<Settings>),
     (defs, course, overlay, mut mp_champ): (Res<challenge::Defs>, Option<Res<challenge::Course>>, Query<Entity, With<mp::Overlay>>, ResMut<mp::MpChamp>),
 ) {
     let overlay = overlay.iter().next();
@@ -621,7 +645,7 @@ fn race_menus(
         // Escape or Start pauses (Backspace is the quick restart).
         if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start)) && !over {
             virt.pause();
-            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None, None), overlay);
+            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None, None), overlay, "RETURN TO RACE");
         } else if *finished_for > 2.5 && menus.is_empty() {
             let award = (selection.mode == Mode::Career).then(|| {
                 let run = career.run.clone()?;
@@ -683,7 +707,7 @@ fn race_menus(
                 career.save();
             }
             let run = if champ_round { mp_champ.run.as_ref() } else { career.run.as_ref() };
-            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref()), overlay);
+            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref()), overlay, "");
         }
         return;
     };
@@ -692,23 +716,62 @@ fn race_menus(
         commands.entity(e).despawn();
         virt.unpause();
     };
+    // The Audio, Camera and Controller pages change the settings as they go
+    // (music and ambience follow at once, the camera as the race resumes) and
+    // go back to the pause menu.
+    if let Some(page) = menu.page {
+        let mut redraw = false;
+        match nav {
+            Nav::Up | Nav::Down => {
+                list.step(nav);
+                if page == PausePage::Camera {
+                    settings.camera = CameraView::ALL[list.selected.min(CameraView::ALL.len() - 1)];
+                }
+            }
+            Nav::Left | Nav::Right if page == PausePage::Audio => {
+                let level = if list.selected == 0 { &mut settings.music } else { &mut settings.effects };
+                *level = if nav == Nav::Left { level.saturating_sub(1) } else { (*level + 1).min(VOLUME_STEPS) };
+                redraw = true;
+            }
+            Nav::Accept | Nav::Left | Nav::Right if page == PausePage::Controller => {
+                settings.vibration = !settings.vibration;
+                redraw = true;
+            }
+            Nav::Accept | Nav::Start | Nav::Back => {
+                settings.save();
+                commands.entity(e).despawn();
+                spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None, None), overlay, page.item());
+            }
+            _ => {}
+        }
+        if redraw {
+            commands.entity(e).despawn();
+            spawn_pause_page(&mut commands, &ui, page, &settings, list.selected, overlay);
+        }
+        return;
+    }
     match nav {
         Nav::Up | Nav::Down => list.step(nav),
         Nav::Start | Nav::Back if !menu.results => close(&mut commands, &mut virt),
         Nav::Accept => match list.current() {
+            item @ ("AUDIO" | "CAMERA" | "CONTROLLER") => {
+                let page = [PausePage::Audio, PausePage::Camera, PausePage::Controller].into_iter().find(|p| p.item() == item).unwrap_or(PausePage::Audio);
+                commands.entity(e).despawn();
+                spawn_pause_page(&mut commands, &ui, page, &settings, 0, overlay);
+            }
             // Arcade's last round won: on to Arcade Complete.
             "CONTINUE" if menu.results && selection.mode == Mode::Arcade => {
                 fe.return_to = Some(Screen::ArcadeComplete);
                 next.set(AppState::FrontEnd);
             }
-            "CONTINUE" => close(&mut commands, &mut virt),
+            "RETURN TO RACE" => close(&mut commands, &mut virt),
             "END SESSION" => {
                 if let Some(s) = session.as_mut() {
                     s.ended = true;
                 }
                 close(&mut commands, &mut virt);
             }
-            "RESTART" | "RACE AGAIN" | "TRY AGAIN" | "PLAY AGAIN" => next.set(AppState::Loading),
+            "RESTART" | "RESTART RACE" | "RESTART CHALLENGE" | "RACE AGAIN" | "TRY AGAIN" | "PLAY AGAIN" => next.set(AppState::Loading),
             // Arcade Status shows the next round's grid first.
             "NEXT ROUND" => {
                 selection.failed = 0;
@@ -725,7 +788,7 @@ fn race_menus(
                 fe.return_to = Some(Screen::Challenges);
                 next.set(AppState::FrontEnd);
             }
-            "QUIT RACE" | "QUIT" | "MAIN MENU" => {
+            "QUIT RACE" | "MAIN MENU" => {
                 fe.return_to = Some(Screen::Main);
                 next.set(AppState::FrontEnd);
             }
@@ -757,6 +820,7 @@ fn spawn_race_menu(
     (standings, opponents): (Option<&Standings>, Option<&Opponents>),
     (award, run, outcome, new_track): (Option<&Award>, Option<&Run>, Option<&Outcome>, Option<&str>),
     overlay: Option<Entity>,
+    focus: &str,
 ) {
     // Split screen: each other player's place and time.
     let others: Vec<(usize, String)> = opponents
@@ -784,10 +848,12 @@ fn spawn_race_menu(
     let battle = freestyle.zip(opponents).map(|(s, o)| mp::battle_scores(s, o)).filter(|b| b.len() > 1);
     let last_round = sel.round + 1 >= roster.arcade.len();
     let (title, items): (String, &[&str]) = match (results, sel.mode) {
-        (false, Mode::Freestyle) if freestyle.is_some_and(|s| s.limit.is_none()) => ("PAUSED".into(), &["CONTINUE", "END SESSION", "RESTART", "QUIT"]),
-        (false, Mode::Freestyle) => ("PAUSED".into(), &["CONTINUE", "RESTART", "QUIT"]),
-        (false, Mode::Challenge) => ("PAUSED".into(), &["CONTINUE", "RESTART", "CHALLENGES", "QUIT"]),
-        (false, _) => ("RACE PAUSED".into(), &["CONTINUE", "RESTART", "QUIT RACE"]),
+        // The original's race menu (0x4a5c0), with Freestyle's end and
+        // the challenge list.
+        (false, Mode::Freestyle) if freestyle.is_some_and(|s| s.limit.is_none()) => ("PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "END SESSION", "RESTART", "QUIT RACE"]),
+        (false, Mode::Freestyle) => ("PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "RESTART", "QUIT RACE"]),
+        (false, Mode::Challenge) => ("PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "RESTART CHALLENGE", "CHALLENGES", "QUIT RACE"]),
+        (false, _) => ("RACE PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "RESTART RACE", "QUIT RACE"]),
         (true, Mode::Challenge) => (format!("CHALLENGE {} COMPLETE", sel.challenge), &["TRY AGAIN", "CHALLENGES", "MAIN MENU"]),
         (true, Mode::Freestyle) if battle.is_some() => ("FREESTYLE BATTLE".into(), &["PLAY AGAIN", "MAIN MENU"]),
         (true, Mode::Freestyle) => ("FREESTYLE RESULTS".into(), &["PLAY AGAIN", "MAIN MENU"]),
@@ -803,7 +869,7 @@ fn spawn_race_menu(
         (true, Mode::SingleRace) if run.is_some() => (format!("ROUND {} COMPLETE", sel.round + 1), &["CHAMPIONSHIP STATUS", "MAIN MENU"]),
         (true, _) => ("RACE RESULTS".into(), &["RACE AGAIN", "MAIN MENU"]),
     };
-    let list = MenuList::new(items, 220.0);
+    let list = MenuList::new(items, 220.0).select(items.iter().position(|i| *i == focus).unwrap_or(0));
     let panel = ui.bio.get("BIOPANEL").rect;
     let rows = match (results, freestyle.is_some()) {
         (false, _) => 0,
@@ -832,7 +898,7 @@ fn spawn_race_menu(
             Node { justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..fullscreen() },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.05, 0.45)),
             DespawnOnExit(AppState::Race),
-            RaceMenu { results },
+            RaceMenu { results, page: None },
         ))
         .insert_if(UiTargetCamera(overlay.unwrap_or(Entity::PLACEHOLDER)), || overlay.is_some())
         .with_children(|c| {
@@ -962,6 +1028,94 @@ fn spawn_race_menu(
         });
     spawn_menu_rows(commands, ui, menu, &list);
     commands.entity(menu).insert(list);
+}
+
+/// The pause menu's Audio, Camera or Controller page, as the Options pages
+/// lay them out: the volume bars, the camera views, or vibration and the
+/// controls.
+fn spawn_pause_page(commands: &mut Commands, ui: &UiAssets, page: PausePage, settings: &Settings, row: usize, overlay: Option<Entity>) {
+    let (items, selected, note): (Vec<&str>, usize, &str) = match page {
+        PausePage::Audio => (vec!["MUSIC VOLUME", "SOUND EFFECTS VOLUME"], row, "LEFT AND RIGHT CHANGE THE VOLUME"),
+        PausePage::Camera => (CameraView::ALL.map(CameraView::label).to_vec(), settings.camera.index(), "C OR BACK CHANGES IT IN THE RACE TOO"),
+        PausePage::Controller => (vec!["VIBRATION"], 0, ""),
+    };
+    let width = if page == PausePage::Audio { 270.0 } else { 220.0 };
+    let list = MenuList::new(&items, width).select(selected);
+    let rows = list.row;
+    let pw = if page == PausePage::Camera { 400.0 } else { 460.0 };
+    let panel = ui.bio.get("BIOPANEL").rect;
+    let grey = Color::srgb(0.75, 0.85, 1.0);
+    let menu = commands.spawn_empty().id();
+    commands
+        .spawn((
+            Node { justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..fullscreen() },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.05, 0.45)),
+            DespawnOnExit(AppState::Race),
+            RaceMenu { results: false, page: Some(page) },
+        ))
+        .insert_if(UiTargetCamera(overlay.unwrap_or(Entity::PLACEHOLDER)), || overlay.is_some())
+        .with_children(|c| {
+            c.spawn(Node { width: px(pw), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, padding: UiRect::all(px(16)), row_gap: px(8), ..default() })
+                .with_children(|box_| {
+                    let (mut n, img) = ui.bio.tex.region(panel, 1.0);
+                    n.position_type = PositionType::Absolute;
+                    n.left = px(0);
+                    n.top = px(0);
+                    n.width = percent(100);
+                    n.height = percent(100);
+                    box_.spawn((n, img));
+                    box_.spawn(BitmapText::new(FontId::Menu, 17.0, page.item()));
+                    box_.spawn(Node { column_gap: px(14), margin: UiRect::top(px(8)), ..default() }).with_children(|r| {
+                        r.spawn(Node::default()).add_child(menu);
+                        // Beside each row: its volume bar, or the checkbox.
+                        r.spawn(Node { flex_direction: FlexDirection::Column, ..default() }).with_children(|col| {
+                            let levels: &[u8] = match page {
+                                PausePage::Audio => &[settings.music, settings.effects],
+                                _ => &[],
+                            };
+                            for &level in levels {
+                                col.spawn(Node { height: px(rows), align_items: AlignItems::Center, ..default() }).with_children(|cell| volume_bar(cell, ui, level));
+                            }
+                            if page == PausePage::Controller {
+                                col.spawn(Node { height: px(rows), align_items: AlignItems::Center, ..default() }).with_children(|cell| {
+                                    cell.spawn(ui.checkbox.node(if settings.vibration { "ON" } else { "OFF" }, 0.5));
+                                });
+                            }
+                        });
+                    });
+                    if page == PausePage::Controller {
+                        box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(5), margin: UiRect::vertical(px(6)), ..default() }).with_children(|t| {
+                            for (i, (action, pad, keys)) in [("", "PAD", "KEYBOARD")].into_iter().chain(frontend::CONTROLS).enumerate() {
+                                t.spawn(Node { column_gap: px(8), ..default() }).with_children(|r| {
+                                    for (text, width, color) in [(action, 140.0, Color::WHITE), (pad, 92.0, grey), (keys, 130.0, grey)] {
+                                        let color = if i == 0 { Color::srgb(1.0, 0.85, 0.3) } else { color };
+                                        r.spawn(Node { width: px(width), ..default() }).with_children(|cell| {
+                                            cell.spawn(BitmapText::new(FontId::Small, 7.0, text).color(color));
+                                        });
+                                    }
+                                });
+                            }
+                        });
+                    }
+                    if !note.is_empty() {
+                        box_.spawn(BitmapText::new(FontId::Small, 8.0, note).color(grey));
+                    }
+                    box_.spawn(BitmapText::new(FontId::Small, 8.0, "PRESS BACK FOR THE PAUSE MENU").color(grey));
+                });
+        });
+    spawn_menu_rows(commands, ui, menu, &list);
+    commands.entity(menu).insert(list);
+}
+
+/// A volume bar lit to `level`, as on the Options Audio page.
+fn volume_bar(parent: &mut ChildSpawnerCommands, ui: &UiAssets, level: u8) {
+    let off = ui.sound_bar.get("BAR_OFF").rect;
+    parent.spawn(Node { width: px(off.width()), height: px(off.height()), ..default() }).with_children(|b| {
+        b.spawn(placed(ui.sound_bar.node("BAR_OFF", 1.0), 0.0, 0.0));
+        b.spawn(Node { position_type: PositionType::Absolute, width: px(frontend::lit_width(level)), height: percent(100), overflow: Overflow::clip(), ..default() }).with_children(|clip| {
+            clip.spawn(placed(ui.sound_bar.node("BAR_ON", 1.0), 0.0, 0.0));
+        });
+    });
 }
 
 fn row(parent: &mut ChildSpawnerCommands, label: &str, value: &str, best: bool) {

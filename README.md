@@ -59,6 +59,10 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
 | Pause | Escape | Start |
 | Tricks (in the air) | 1 / 2 / 3 / 4 + direction | X / Y / LB / RB + left stick or D-pad |
 
+The pause menu is the original's: Audio, Camera and Controller (the Options
+pages, changed mid-race; the music and ambience follow at once), Return to
+Race, Restart and Quit Race.
+
 ## Game modes
 
 - **Single Race**: pick rider, ATV, track and laps, then race five computer
