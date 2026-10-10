@@ -62,6 +62,22 @@ pub struct Instance {
     pub tint: u32,
 }
 
+impl Instance {
+    /// The freestyle challenges (1-based) the prop is placed for: the
+    /// numbers after the flags' first word (`GEN_Start_gate 1 2 3 5 6`).
+    /// Empty for props that are always there.
+    pub fn challenges(&self) -> Vec<usize> {
+        self.flags.split_whitespace().skip(1).filter_map(|t| t.parse().ok()).collect()
+    }
+
+    /// Whether the prop is out in challenge `challenge` (None: not a
+    /// challenge, when only the props with no challenge numbers are).
+    pub fn in_play(&self, challenge: Option<usize>) -> bool {
+        let c = self.challenges();
+        c.is_empty() || challenge.is_some_and(|n| c.contains(&n))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Mesh {
     pub offset: usize,

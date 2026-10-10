@@ -284,8 +284,9 @@ struct Jump {
     top: f32,
 }
 
+/// A ground trick: two wheels off.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Ground {
+pub enum Ground {
     Wheelie,
     Endo,
     Bicycle,
@@ -380,13 +381,18 @@ impl Session {
         self.spots.iter().filter(|s| s.1).count()
     }
 
+    /// The ground trick being held right now.
+    pub fn ground_trick(&self) -> Option<Ground> {
+        self.ground.map(|g| g.0)
+    }
+
     /// The medal the score has earned (0 = bronze).
     pub fn medal(&self) -> Option<usize> {
         let m = self.medals?;
         (0..3).rev().find(|&i| self.score >= m[i])
     }
 
-    fn popup(&mut self, text: impl Into<String>, kind: PopupKind) {
+    pub fn popup(&mut self, text: impl Into<String>, kind: PopupKind) {
         let text = text.into();
         debug!("{:.1}s {kind:?}: {text}", self.time);
         self.popups.push(Popup { text, kind, at: self.time });

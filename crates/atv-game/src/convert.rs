@@ -139,6 +139,8 @@ pub struct Loader<'a> {
     /// The race's ground: picks the tyres and, when set, gives vehicles
     /// and riders a dirt layer that builds up (see [`Mud`]).
     pub dirt: Option<Ground>,
+    /// The freestyle challenge being run, whose props are put out.
+    pub challenge: Option<usize>,
     /// The quad spawned last; its rider's dirt follows it.
     last_quad: Option<Entity>,
 }
@@ -417,6 +419,7 @@ impl<'a> Loader<'a> {
             models: HashMap::new(),
             model_paths,
             dirt: None,
+            challenge: None,
             last_quad: None,
         }
     }
@@ -712,7 +715,9 @@ impl<'a> Loader<'a> {
 
     pub fn spawn_track(&mut self, commands: &mut Commands, track: &str) -> Result<Scene> {
         let path = format!("/Levels/{track}/World/{track}.row");
-        let world = World::parse(&self.game.read(&path).map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?)?;
+        let mut world = World::parse(&self.game.read(&path).map_err(|e| anyhow::anyhow!("reading {path}: {e}"))?)?;
+        // Stadium 2's cones, gates and floor arrows belong to challenges.
+        world.instances.retain(|i| i.in_play(self.challenge));
         let env: String = track.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
         let root = commands.spawn((Transform::default(), Visibility::default(), Name::new(track.to_string()))).id();
 
@@ -784,6 +789,15 @@ impl<'a> Loader<'a> {
         }
 
         Ok(Scene { world, roots, world_meshes, props })
+    }
+
+    /// Spawns a loose model (the challenges' guide arrow) under its own
+    /// root, at the world origin.
+    pub fn spawn_loose(&mut self, commands: &mut Commands, stem: &str, dir: &str) -> Option<Entity> {
+        let model = self.model(stem, dir)?;
+        let root = commands.spawn((Transform::default(), Visibility::default(), Name::new(stem.to_string()))).id();
+        self.spawn_model(commands, &model, root, Transform::default(), Look::Baked);
+        Some(root)
     }
 
     /// Assembles a quad from its parts at the hard-points in its body model.

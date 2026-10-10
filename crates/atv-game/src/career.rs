@@ -230,6 +230,10 @@ pub struct Career {
     /// Best career finish per track (1-based).
     pub best: BTreeMap<String, usize>,
     pub run: Option<Run>,
+    /// Freestyle challenges run (1-based): best time and best medal
+    /// (0 bronze to 2 gold). The challenges' bonuses go to the same skill
+    /// points.
+    pub challenges: BTreeMap<usize, (f32, Option<usize>)>,
 }
 
 impl Career {
@@ -349,6 +353,12 @@ impl Career {
                         c.best.insert(t.to_string(), p);
                     }
                 }
+                "challenge" => {
+                    let mut parts = v.split_whitespace();
+                    if let (Some(Ok(n)), Some(Ok(t)), Some(m)) = (parts.next().map(str::parse), parts.next().map(str::parse), parts.next()) {
+                        c.challenges.insert(n, (t, m.parse().ok().filter(|&m: &usize| m < 3)));
+                    }
+                }
                 "champ" => {
                     if let Some(champ) = Champ::from_key(v) {
                         run = Some(Run { champ, round: 0, rider: String::new(), quad: String::new(), field: Vec::new() });
@@ -388,6 +398,9 @@ impl Career {
         let mut s = format!("skill_points = {}\nqualifying = {}\nprofessional = {}\n", self.skill_points, self.open[1], self.open[2]);
         for (t, p) in &self.best {
             s += &format!("best = {t} {p}\n");
+        }
+        for (n, (t, m)) in &self.challenges {
+            s += &format!("challenge = {n} {t:.2} {}\n", m.map_or("-".to_string(), |m| m.to_string()));
         }
         if let Some(r) = &self.run {
             s += &format!("champ = {}\nround = {}\nrider = {}\nquad = {}\n", r.champ.key(), r.round, r.rider, r.quad);
@@ -524,6 +537,8 @@ mod tests {
         let order: Vec<usize> = (0..FIELD).rev().collect();
         c.score(&rules, "Dunes3", &order, &[10; FIELD]);
         c.open[1] = true;
+        c.challenges.insert(3, (14.25, Some(1)));
+        c.challenges.insert(12, (99.5, None));
         assert_eq!(Career::parse(&c.to_text()), c);
         assert_eq!(Career::parse("junk"), Career::new());
     }

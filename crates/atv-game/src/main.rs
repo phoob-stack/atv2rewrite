@@ -4,7 +4,7 @@
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
 //!             [--rider Male1] [--laps 3] [--frontend [--screen rider]]
 //!             [--mode race|timetrial|arcade|freestyle|career] [--minutes N]
-//!             [--round N] [--opponents N]
+//!             [--round N] [--opponents N] [--challenge N]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
 //!             [--resolution 1280x720] [--fullscreen]
@@ -17,6 +17,7 @@
 
 mod audio;
 mod career;
+mod challenge;
 mod convert;
 mod crash;
 mod freestyle;
@@ -88,6 +89,8 @@ struct Args {
     round: usize,
     /// Computer riders in a single race.
     opponents: usize,
+    /// Freestyle challenge to run (1-based).
+    challenge: usize,
 }
 
 /// The game modes on the main menu.
@@ -103,6 +106,8 @@ enum Mode {
     Freestyle,
     /// A round of a career championship (see [`career`]).
     Career,
+    /// One of the Freestyle Challenges (see [`challenge`]).
+    Challenge,
 }
 
 impl Mode {
@@ -114,6 +119,7 @@ impl Mode {
             Mode::Arcade => "ARCADE",
             Mode::Freestyle => "FREESTYLE",
             Mode::Career => "CAREER",
+            Mode::Challenge => "FREESTYLE",
         }
     }
 }
@@ -143,6 +149,8 @@ struct Selection {
     time_limit: Option<u32>,
     /// The computer riders' models, when the field is set (career).
     field: Vec<String>,
+    /// The Freestyle Challenge (1-based).
+    challenge: usize,
 }
 
 #[derive(Resource, Clone)]
@@ -153,6 +161,8 @@ struct Race {
     collision: TrackCollision,
     checkpoints: Vec<Vec3>,
     next_checkpoint: usize,
+    /// The checkpoints are a challenge course, kept by [`challenge`].
+    course: bool,
     start: (Vec3, Quat),
     /// Last pose where the quad was upright on the ground (for respots).
     safe: (Vec3, Quat),
@@ -207,6 +217,7 @@ fn parse_args() -> anyhow::Result<Args> {
         round: 0,
         // The original's default field (`mNumAIPlayers` in user.xml).
         opponents: 5,
+        challenge: 1,
     };
     let mut frontend = false;
     let mut it = std::env::args().skip(1);
@@ -234,6 +245,8 @@ fn parse_args() -> anyhow::Result<Args> {
                     "controller" => Screen::Controller,
                     "career" => Screen::CareerChamp,
                     "status" => Screen::CareerStatus,
+                    "freestyle" => Screen::FreestyleType,
+                    "challenges" => Screen::Challenges,
                     other => anyhow::bail!("unknown screen {other} (title, main, rider, atv, track)"),
                 });
             }
@@ -244,12 +257,18 @@ fn parse_args() -> anyhow::Result<Args> {
                     "arcade" => Mode::Arcade,
                     "freestyle" => Mode::Freestyle,
                     "career" => Mode::Career,
-                    other => anyhow::bail!("unknown mode {other} (race, timetrial, arcade, freestyle)"),
+                    "challenge" => Mode::Challenge,
+                    other => anyhow::bail!("unknown mode {other} (race, timetrial, arcade, freestyle, career, challenge)"),
                 }
             }
             "--minutes" => a.minutes = Some(val().parse::<u32>()?).filter(|&m| m > 0),
             "--round" => {
                 a.round = val().parse()?;
+                a.direct = true;
+            }
+            "--challenge" => {
+                a.challenge = val().parse::<usize>()?.clamp(1, challenge::COUNT);
+                a.mode = Mode::Challenge;
                 a.direct = true;
             }
             "--opponents" => a.opponents = val().parse::<usize>()?.min(7),
@@ -292,6 +311,7 @@ fn main() -> anyhow::Result<()> {
     hd::init(args.hd.clone(), args.use_hd);
     let roster = Roster::load(&game.0);
     let career_rules = career::Rules::load(&game.0);
+    let challenges = challenge::Defs::load(&game.0);
     let mut selection = Selection {
         track: args.track.clone(),
         quad: args.quad.clone(),
@@ -301,7 +321,12 @@ fn main() -> anyhow::Result<()> {
         round: args.round,
         time_limit: args.minutes,
         field: Vec::new(),
+        challenge: args.challenge,
     };
+    if args.mode == Mode::Challenge {
+        selection.track = challenge::TRACK.into();
+        selection.laps = 1;
+    }
     // Arcade races its rounds' tracks (`--round N` starts on one).
     if args.mode == Mode::Arcade
         && let Some(t) = roster.arcade.get(args.round)
@@ -347,12 +372,13 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(Settings::load())
         .insert_resource(career_rules)
         .insert_resource(career)
-        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin))
+        .insert_resource(challenges)
+        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin))
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
         .add_systems(OnExit(AppState::Race), teardown)
-        .add_systems(FixedUpdate, (drive, career::dnf_cutoff).run_if(in_state(AppState::Race)))
+        .add_systems(FixedUpdate, (drive, career::dnf_cutoff, challenge::follow_course).chain().run_if(in_state(AppState::Race)))
         .add_systems(
             Update,
             (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, cycle_camera, chase_camera, fly_camera, follow_sky, rumble)
@@ -400,6 +426,7 @@ fn teardown(mut commands: Commands, mut cams: Query<(Entity, &mut Camera), With<
     commands.remove_resource::<StuntClips>();
     commands.remove_resource::<Wreck>();
     commands.remove_resource::<CrashClips>();
+    commands.remove_resource::<challenge::Course>();
     set_ui_camera(&mut commands, &mut cams, true);
 }
 
@@ -422,6 +449,8 @@ fn setup(
     let scoped = DespawnOnExit(AppState::Race);
     let mut loader = convert::Loader::new(&game.0, &mut meshes, &mut materials, &mut images);
     loader.dirt = Some(roster.info(&sel.track).ground);
+    let in_challenge = sel.mode == Mode::Challenge;
+    loader.challenge = in_challenge.then_some(sel.challenge);
     let scene = match loader.spawn_track(&mut commands, &sel.track) {
         Ok(s) => s,
         Err(e) => {
@@ -434,8 +463,19 @@ fn setup(
         commands.entity(e).insert(scoped.clone());
     }
     let collision = trk::collision(&scene.world, &game.0, &sel.track);
-    let start = trk::start_pose(&scene.world, &collision, 1);
-    let checkpoints = trk::checkpoints(&scene.world);
+    // A challenge starts at its own `startN` (Stadium 2 has one by each
+    // course), else the grid's first slot.
+    let slot = if in_challenge && trk::start_locator(&scene.world, sel.challenge).is_some_and(|l| l.name.trim().eq_ignore_ascii_case(&format!("start{}", sel.challenge))) {
+        sel.challenge
+    } else {
+        1
+    };
+    let start = trk::start_pose(&scene.world, &collision, slot);
+    let course = in_challenge.then(|| challenge::Course::new(&scene.world, sel.challenge));
+    let checkpoints = match &course {
+        Some(c) => c.gates.iter().map(|g| g.center).collect(),
+        None => trk::checkpoints(&scene.world),
+    };
 
     let generic = game.0.read("/Cars/Generic/Generic.params").map(|b| String::from_utf8_lossy(&b).into_owned());
     let own = game.0.read(&format!("/Cars/{q}/{q}.params", q = sel.quad)).ok();
@@ -553,7 +593,7 @@ fn setup(
     }
     // Whether the grid is on the start/finish line or still has to cross it.
     let on_line = checkpoints.first().is_some_and(|&c| (c - start.0).with_y(0.0).length() < 25.0);
-    let mut progress = RaceProgress::new(sel.laps, on_line);
+    let mut progress = RaceProgress::new(if in_challenge { 1 } else { sel.laps }, on_line);
     if sel.mode == Mode::Arcade {
         let info = roster.info(&sel.track);
         progress = progress.with_arcade(ArcadeClock::new(info.arcade_start, info.worst_lap, checkpoints.len(), &race::arcade_gates(&scene.world)));
@@ -565,8 +605,9 @@ fn setup(
     commands.insert_resource(session);
     commands.insert_resource(Race {
         collision,
-        next_checkpoint: usize::from(on_line && checkpoints.len() > 1),
+        next_checkpoint: if in_challenge { 0 } else { usize::from(on_line && checkpoints.len() > 1) },
         checkpoints,
+        course: in_challenge,
         start,
         safe: start,
         safe_timer: 0.0,
@@ -574,6 +615,12 @@ fn setup(
     });
     commands.insert_resource(Player(vehicle));
     commands.init_resource::<Controls>();
+    if let Some(c) = course {
+        if let Some(arrow) = loader.spawn_loose(&mut commands, "arrow", "Generic") {
+            commands.entity(arrow).insert((challenge::GuideArrow, scoped.clone()));
+        }
+        commands.insert_resource(c);
+    }
 }
 
 /// Average baked light (1.0 = texture as authored) of the track surface
@@ -654,7 +701,7 @@ fn drive(
     let input = if crashed {
         // Thrown off: the quad rolls on by itself.
         Input::default()
-    } else if !progress.started() || (over && (freestyle || progress.out_of_time() || progress.dnf)) {
+    } else if !progress.started() || (over && (freestyle || race.course || progress.out_of_time() || progress.dnf)) {
         // Brake to a stop (braking at a standstill would reverse).
         Input { brake: if over && v.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
     } else if let Some(spot) = session.next_spot(v.position).filter(|_| args.autodrive && freestyle) {
@@ -665,7 +712,9 @@ fn drive(
     } else {
         read_input(&keys, &pads, !v.grounded())
     };
-    if let Some(&cp) = race.checkpoints.get(next).filter(|_| freestyle) {
+    if race.course {
+        // The challenge's gates are kept by `challenge::follow_course`.
+    } else if let Some(&cp) = race.checkpoints.get(next).filter(|_| freestyle) {
         // No laps in freestyle; the checkpoints only lead the autopilot.
         if (cp - v.position).with_y(0.0).length() < 25.0 {
             race.next_checkpoint = (next + 1) % n;

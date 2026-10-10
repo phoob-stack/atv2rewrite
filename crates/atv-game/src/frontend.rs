@@ -15,6 +15,7 @@ use atv_formats::GameSource;
 
 use crate::freestyle::{self, limit_label, MEDALS, TIME_LIMITS};
 use crate::career::{self, Career, Champ, Run};
+use crate::challenge;
 use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
@@ -167,6 +168,9 @@ pub enum Screen {
     CareerChamp,
     CareerStatus,
     CareerComplete,
+    /// Open Freestyle or the challenges.
+    FreestyleType,
+    Challenges,
 }
 
 /// The Options menu's rows, and the page each opens.
@@ -194,6 +198,8 @@ pub struct FrontEnd {
     champ: Champ,
     /// Where to come back to from a race, instead of the usual.
     pub return_to: Option<Screen>,
+    /// The Freestyle Challenge picked (1-based).
+    challenge: usize,
 }
 
 impl FrontEnd {
@@ -256,6 +262,7 @@ fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>, car
     fe.rider = roster.riders.iter().position(|r| r.model.eq_ignore_ascii_case(&sel.rider)).unwrap_or(fe.rider);
     fe.quad = roster.quads.iter().position(|q| q.name.eq_ignore_ascii_case(&sel.quad)).unwrap_or(fe.quad);
     fe.track = roster.tracks.iter().position(|t| t.eq_ignore_ascii_case(&sel.track)).unwrap_or(fe.track);
+    fe.challenge = sel.challenge.clamp(1, challenge::COUNT);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -269,7 +276,7 @@ fn navigate(
     mut next: ResMut<NextState<AppState>>,
     mut exit: MessageWriter<AppExit>,
     mut settings: ResMut<Settings>,
-    (mut career, rules): (ResMut<Career>, Res<career::Rules>),
+    (mut career, rules, defs): (ResMut<Career>, Res<career::Rules>, Res<challenge::Defs>),
 ) {
     let Some(nav) = read_nav(&keys, &pads) else { return };
     if fe.built != Some(fe.screen) {
@@ -289,11 +296,11 @@ fn navigate(
                 }
             }
             Nav::Accept | Nav::Start => match list.as_ref().map(|l| l.current().to_string()).as_deref() {
-                Some(item @ ("ARCADE" | "SINGLE RACE" | "TIME TRIAL" | "FREESTYLE")) => {
+                Some("FREESTYLE") => fe.screen = Screen::FreestyleType,
+                Some(item @ ("ARCADE" | "SINGLE RACE" | "TIME TRIAL")) => {
                     fe.mode = match item {
                         "ARCADE" => Mode::Arcade,
                         "TIME TRIAL" => Mode::TimeTrial,
-                        "FREESTYLE" => Mode::Freestyle,
                         _ => Mode::SingleRace,
                     };
                     sel.mode = fe.mode;
@@ -327,6 +334,8 @@ fn navigate(
                     fe.screen = Screen::Quad;
                 }
                 Nav::Back if fe.mode == Mode::Career => fe.screen = Screen::CareerChamp,
+                Nav::Back if fe.mode == Mode::Freestyle => fe.screen = Screen::FreestyleType,
+                Nav::Back if fe.mode == Mode::Challenge => fe.screen = Screen::Challenges,
                 Nav::Back => fe.screen = Screen::Main,
             }
         }
@@ -351,6 +360,11 @@ fn navigate(
                     career.start(fe.champ, (&name, &sel.rider), &sel.quad, &career_pool(&roster, &rules, fe.champ), seed);
                     career.save();
                     fe.screen = Screen::CareerStatus;
+                } else if fe.mode == Mode::Challenge {
+                    sel.track = challenge::TRACK.into();
+                    sel.laps = 1;
+                    sel.challenge = fe.challenge;
+                    next.set(AppState::Loading);
                 } else if fe.mode == Mode::Arcade {
                     // Arcade starts on its first round.
                     if let Some(t) = roster.arcade.first() {
@@ -494,6 +508,40 @@ fn navigate(
                 fe.screen = Screen::Main;
             }
         }
+        Screen::FreestyleType => match nav {
+            Nav::Up | Nav::Down => {
+                if let Some(l) = list.as_mut() {
+                    l.step(nav);
+                }
+            }
+            Nav::Accept | Nav::Start => {
+                let challenges = list.as_ref().is_some_and(|l| l.selected == 1);
+                fe.mode = if challenges { Mode::Challenge } else { Mode::Freestyle };
+                sel.mode = fe.mode;
+                fe.screen = if challenges { Screen::Challenges } else { Screen::Rider };
+            }
+            Nav::Back => fe.screen = Screen::Main,
+            _ => {}
+        },
+        Screen::Challenges => match nav {
+            Nav::Up | Nav::Down => {
+                if let Some(l) = list.as_mut() {
+                    l.step(nav);
+                    fe.challenge = l.selected + 1;
+                    // The details beside the list follow the cursor.
+                    fe.built = None;
+                }
+            }
+            Nav::Accept | Nav::Start => {
+                let n = fe.challenge;
+                if challenge::is_open(&career, n) && defs.get(n).is_some_and(|d| d.gates > 0) {
+                    sel.challenge = n;
+                    fe.screen = Screen::Rider;
+                }
+            }
+            Nav::Back => fe.screen = Screen::FreestyleType,
+            _ => {}
+        },
     }
 }
 
@@ -529,7 +577,7 @@ fn rebuild(
     mut fe: ResMut<FrontEnd>,
     roster: Res<Roster>,
     settings: Res<Settings>,
-    (career, rules): (Res<Career>, Res<career::Rules>),
+    (career, rules, defs): (Res<Career>, Res<career::Rules>, Res<challenge::Defs>),
     ui: Option<Res<UiAssets>>,
     roots: Query<Entity, With<ScreenRoot>>,
 ) {
@@ -548,6 +596,7 @@ fn rebuild(
         Mode::Arcade => ("Arcade_Rider", "Arcade_ATV", "SingleRace_Track"),
         Mode::Freestyle => ("Freestyle_Open_Rider", "Freestyle_Open_ATV", "Freestyle_Open"),
         Mode::Career => ("Profile_Rider", "Career_ATV", "SingleRace_Track"),
+        Mode::Challenge => ("Freestyle_Open_Rider", "Freestyle_Challenge_ATV", "Freestyle_Challenge"),
     };
     let label = fe.mode.label();
     let (key, watermark) = match fe.screen {
@@ -563,6 +612,8 @@ fn rebuild(
         Screen::CareerChamp => ("Career_Newgame", "CAREER"),
         Screen::CareerStatus => (career.run.as_ref().map_or("Career_Status_Amateur", |r| r.champ.status_screen()), "CAREER"),
         Screen::CareerComplete => ("Career_Complete", "CAREER"),
+        Screen::FreestyleType => ("Freestyle_Picktype", "FREESTYLE"),
+        Screen::Challenges => ("Freestyle_Challenge", "FREESTYLE"),
     };
     let (bg, title) = roster.screen(key);
 
@@ -618,7 +669,7 @@ fn rebuild(
                 Mode::Arcade => 0,
                 Mode::SingleRace => 2,
                 Mode::TimeTrial => 3,
-                Mode::Freestyle => 4,
+                Mode::Freestyle | Mode::Challenge => 4,
                 Mode::Career => 1,
             };
             let mut off = vec![];
@@ -741,6 +792,53 @@ fn rebuild(
             }
             if !locked.is_empty() {
                 kids.push(hint(&mut commands, &ui, "FINISH IN THE TOP 3 OF A CHAMPIONSHIP TO OPEN THE NEXT", 370.0));
+            }
+        }
+        Screen::FreestyleType => {
+            let list = MenuList::new(&["OPEN FREESTYLE", "FREESTYLE CHALLENGE"], 320.0).with_row(36.0).select(usize::from(fe.mode == Mode::Challenge));
+            kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 170.0));
+        }
+        Screen::Challenges => {
+            let open: Vec<bool> = (1..=challenge::COUNT).map(|n| challenge::is_open(&career, n)).collect();
+            let names: Vec<String> = (1..=challenge::COUNT)
+                .map(|n| {
+                    let medal = career.challenges.get(&n).and_then(|c| c.1).map_or(String::new(), |m| format!("  {}", MEDALS[m]));
+                    if open[n - 1] { format!("CHALLENGE {n}{medal}") } else { "LOCKED CHALLENGE".to_string() }
+                })
+                .collect();
+            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            let list = MenuList::new(&refs, 220.0).with_row(26.0).select(fe.challenge - 1);
+            kids.push(menu(&mut commands, &ui, list, 40.0, 70.0));
+            let n = fe.challenge;
+            let x = 290.0;
+            let mut top = 76.0;
+            if let Some(tex) = ui.challenges.get(&n) {
+                let w = 150.0;
+                let h = w * tex.size.y / tex.size.x.max(1.0);
+                kids.push(commands.spawn(placed(tex.node(w, h), x, top)).id());
+                top += h + 8.0;
+            }
+            kids.push(commands.spawn((BitmapText::new(FontId::Menu, 14.0, format!("CHALLENGE {n}")), ui_at(x, top))).id());
+            top += 22.0;
+            let def = defs.get(n).cloned().unwrap_or_default();
+            let mut lines: Vec<(String, Color)> = Vec::new();
+            let plain = Color::srgb(0.85, 0.9, 1.0);
+            if !open[n - 1] {
+                lines.push(("TO UNLOCK THIS CHALLENGE YOU'LL NEED TO EARN MEDALS".into(), plain));
+                lines.push(("IN THE EARLIER ONES.".into(), plain));
+            } else if def.gates == 0 {
+                lines.push(("THIS CHALLENGE'S COURSE IS NOT ON THE DISC".into(), plain));
+            }
+            if open[n - 1] {
+                lines.extend(challenge::wrap(&def.text.to_uppercase(), 48).into_iter().map(|l| (l, plain)));
+                lines.push((String::new(), plain));
+                for (l, won) in challenge::summary(&def, career.challenges.get(&n).copied()) {
+                    lines.push((l, if won { Color::srgb(1.0, 0.85, 0.3) } else { Color::WHITE }));
+                }
+            }
+            for (l, c) in lines {
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, l).color(c), ui_at(x, top))).id());
+                top += 15.0;
             }
         }
         Screen::CareerStatus | Screen::CareerComplete => {
@@ -1088,6 +1186,7 @@ fn show_loading(mut commands: Commands, ui: Option<Res<UiAssets>>, sel: Res<Sele
                 f.spawn((n, img));
                 let t = match sel.mode {
                     Mode::Arcade | Mode::Career => format!("ROUND {}  LOADING {}", sel.round + 1, track_title(&sel.track)),
+                    Mode::Challenge => format!("CHALLENGE {}  LOADING", sel.challenge),
                     _ => format!("LOADING {}", track_title(&sel.track)),
                 };
                 let w = ui.font(FontId::Menu).width(&t, 14.0);
