@@ -29,6 +29,19 @@ impl Texture {
         let Some(dds) = find(bytes, b"DDS ") else {
             return Self::parse_raw(bytes);
         };
+        Self::parse_dds_at(bytes, dds)
+    }
+
+    /// A plain `.dds` file (DXT1, DXT5 or 32-bit BGRA), as written by
+    /// [`Texture::to_dds`].
+    pub fn parse_dds(bytes: &[u8]) -> Result<Self> {
+        if !bytes.starts_with(b"DDS ") {
+            return Err(Error::Magic { what: "DDS texture", expected: "DDS " });
+        }
+        Self::parse_dds_at(bytes, 0)
+    }
+
+    fn parse_dds_at(bytes: &[u8], dds: usize) -> Result<Self> {
         let mut r = Reader::at(bytes, dds + 4, "DDS header");
         let _size = r.u32()?;
         let _flags = r.u32()?;
@@ -134,6 +147,39 @@ impl Texture {
         out
     }
 
+    /// The texture as a `.dds` file. `reserved` fills the header's eleven
+    /// reserved words, which readers ignore.
+    pub fn to_dds(&self, reserved: [u32; 11]) -> Vec<u8> {
+        let mut h = [0u32; 32];
+        h[0] = u32::from_le_bytes(*b"DDS ");
+        h[1] = 124;
+        // CAPS | HEIGHT | WIDTH | PIXELFORMAT | MIPMAPCOUNT, + LINEARSIZE or PITCH
+        let compressed = self.format != TexFormat::Bgra8;
+        h[2] = 0x1 | 0x2 | 0x4 | 0x1000 | 0x20000 | if compressed { 0x80000 } else { 0x8 };
+        h[3] = self.height;
+        h[4] = self.width;
+        h[5] = if compressed { self.level_size(0) as u32 } else { self.width * 4 };
+        h[7] = self.mip_count;
+        h[8..19].copy_from_slice(&reserved);
+        h[19] = 32;
+        match self.format {
+            TexFormat::Dxt1 | TexFormat::Dxt5 => {
+                h[20] = 0x4;
+                h[21] = u32::from_le_bytes(if self.format == TexFormat::Dxt1 { *b"DXT1" } else { *b"DXT5" });
+            }
+            TexFormat::Bgra8 => {
+                h[20] = 0x40 | 0x1;
+                h[22] = 32;
+                h[23..27].copy_from_slice(&[0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0xff00_0000]);
+            }
+        }
+        // TEXTURE, + COMPLEX | MIPMAP with mips
+        h[27] = 0x1000 | if self.mip_count > 1 { 0x8 | 0x40_0000 } else { 0 };
+        let mut out: Vec<u8> = h.iter().flat_map(|w| w.to_le_bytes()).collect();
+        out.extend_from_slice(&self.data);
+        out
+    }
+
     pub fn level_size(&self, level: u32) -> usize {
         let w = (self.width >> level).max(1) as usize;
         let h = (self.height >> level).max(1) as usize;
@@ -169,4 +215,26 @@ fn unswizzle(src: &[u8], w: u32, h: u32) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dds_round_trip() {
+        for format in [TexFormat::Dxt1, TexFormat::Dxt5, TexFormat::Bgra8] {
+            let mut tex = Texture { width: 16, height: 8, mip_count: 3, format, data: Vec::new() };
+            let size: usize = (0..3).map(|l| tex.level_size(l)).sum();
+            tex.data = (0..size).map(|i| i as u8).collect();
+            let mut reserved = [0; 11];
+            reserved[0] = 7;
+            let dds = tex.to_dds(reserved);
+            assert_eq!(dds.len(), 128 + size);
+            assert_eq!(dds[32], 7);
+            let back = Texture::parse_dds(&dds).unwrap();
+            assert_eq!((back.width, back.height, back.mip_count, back.format), (16, 8, 3, format));
+            assert_eq!(back.data, tex.data);
+        }
+    }
 }

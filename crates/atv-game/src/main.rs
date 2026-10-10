@@ -18,6 +18,7 @@ mod audio;
 mod convert;
 mod freestyle;
 mod frontend;
+mod hd;
 mod hud;
 mod opponents;
 mod race;
@@ -70,6 +71,9 @@ struct Args {
     direct: bool,
     /// Front-end screen to open on.
     screen: Option<Screen>,
+    /// HD texture pack folder (default: the one the launcher builds).
+    hd: Option<PathBuf>,
+    use_hd: bool,
     mode: Mode,
     /// Open Freestyle's limit in minutes (None = unlimited).
     minutes: Option<u32>,
@@ -182,6 +186,8 @@ fn parse_args() -> anyhow::Result<Args> {
         laps: 3,
         direct: false,
         screen: None,
+        hd: None,
+        use_hd: true,
         mode: Mode::SingleRace,
         minutes: Some(3),
         round: 0,
@@ -231,6 +237,8 @@ fn parse_args() -> anyhow::Result<Args> {
             "--screenshot" => a.screenshot = Some(PathBuf::from(val())),
             "--after" => a.screenshot_after = val().parse()?,
             "--autodrive" => a.autodrive = true,
+            "--hd" => a.hd = Some(PathBuf::from(val())),
+            "--no-hd" => a.use_hd = false,
             "--fullscreen" => a.fullscreen = true,
             "--resolution" => {
                 let v = val();
@@ -260,6 +268,7 @@ fn parse_args() -> anyhow::Result<Args> {
 fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
     let game = Game(Arc::new(GameSource::open(&args.game)?));
+    hd::init(args.hd.clone(), args.use_hd);
     let roster = Roster::load(&game.0);
     let mut selection = Selection {
         track: args.track.clone(),

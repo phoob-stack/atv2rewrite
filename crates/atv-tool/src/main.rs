@@ -34,6 +34,33 @@ enum Cmd {
         #[arg(long, default_value_t = 12.0)]
         seconds: f32,
     },
+    /// Build an HD texture pack: upscale the game's textures with an AI
+    /// upscaler (Real-ESRGAN ncnn-vulkan) into a local folder the game
+    /// prefers when present. Nothing leaves your machine.
+    Hd {
+        /// Pack folder (default: your local data folder, where the game looks).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// realesrgan-ncnn-vulkan executable (default: next to this tool, or on the PATH).
+        #[arg(long, env = "ATV2_UPSCALER")]
+        upscaler: Option<PathBuf>,
+        /// Upscale menus, HUD and fonts.
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        ui: bool,
+        /// Also upscale track, quad and rider textures.
+        #[arg(long)]
+        world: bool,
+        #[arg(long, default_value_t = 2)]
+        ui_scale: u32,
+        #[arg(long, default_value_t = 2)]
+        world_scale: u32,
+        /// Upscaler model name (from its models folder).
+        #[arg(long, default_value = "realesrgan-x4plus")]
+        model: String,
+        /// Only textures whose path contains one of these words.
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+    },
     /// Race computer riders round a track without graphics and print their
     /// lap times.
     Race {
@@ -69,6 +96,26 @@ fn main() -> Result<()> {
         }
         Cmd::Check => check(&game)?,
         Cmd::Sim { track, quad, seconds } => sim(&game, &track, &quad, seconds)?,
+        Cmd::Hd { out, upscaler, ui, world, ui_scale, world_scale, model, only } => {
+            let out = out.or_else(atv_hd::default_dir).context("no local data folder; pass --out")?;
+            let upscaler = match upscaler {
+                Some(exe) => atv_hd::Upscaler { exe },
+                None => atv_hd::Upscaler::find().with_context(|| {
+                    format!("{} not found; download it from {} and pass --upscaler", atv_hd::UPSCALER_NAME, atv_hd::UPSCALER_URL)
+                })?,
+            };
+            let opts = atv_hd::Options { ui, world, ui_scale, world_scale, ui_model: model.clone(), world_model: model, only, ..Default::default() };
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let s = atv_hd::build(&game, &out, &upscaler, &opts, &cancel, |p| {
+                if !p.current.is_empty() {
+                    eprintln!("[{}/{}] {}", p.done, p.total, p.current);
+                }
+            })?;
+            for (path, err) in &s.failed {
+                eprintln!("failed: {path}: {err}");
+            }
+            println!("{} textures upscaled, {} already there, {} failed: {}", s.written, s.kept, s.failed.len(), out.display());
+        }
         Cmd::Race { track, riders, laps } => race(&game, &track, riders, laps)?,
     }
     Ok(())
