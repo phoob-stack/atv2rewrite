@@ -120,7 +120,11 @@ Race, Restart and Quit Race.
   laps on Choose Your Tracks (and the points split too, once Custom is
   open in the career), computer riders make the field up to four, and
   each round scores the race and the trick ranking as a career round
-  does.
+  does. As in the original it is the profile's championship: starting one
+  replaces a career championship in progress, it is saved after each
+  round, and Career's Continue carries it on for player 1, with the other
+  players' riders racing as computer riders (Multiplayer Championship
+  always starts a new one).
 
 Tricks are the 28 from `Setup/Tricks.xml`: hold a trick button (or two for
 the level 5-7 tricks: 1+2, 2+3, 3+4) and a direction while airborne. Keep

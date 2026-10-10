@@ -902,7 +902,7 @@ fn navigate(
                     // until Custom is open, as the original does.
                     if fe.mp_champ && fe.players > 1 && !career.is_open(Champ::Custom) {
                         let plan = Plan { split: None, ..fe.custom.plan() };
-                        start_mp_champ(&mut mp_champ, plan, &roster, &rules, &sel, fe.players);
+                        start_mp_champ(&mut mp_champ, &mut career, plan, &roster, &rules, &sel, fe.players);
                         fe.screen = Screen::MpChampStatus;
                     } else {
                         fe.screen = Screen::CustomPoints;
@@ -925,7 +925,7 @@ fn navigate(
                 fe.built = None;
             }
             Nav::Accept | Nav::Start if fe.mp_champ && fe.players > 1 => {
-                start_mp_champ(&mut mp_champ, fe.custom.plan(), &roster, &rules, &sel, fe.players);
+                start_mp_champ(&mut mp_champ, &mut career, fe.custom.plan(), &roster, &rules, &sel, fe.players);
                 fe.screen = Screen::MpChampStatus;
             }
             Nav::Accept | Nav::Start => {
@@ -1210,12 +1210,14 @@ fn start_career(career: &mut Career, plan: Plan, roster: &Roster, rules: &career
     career.save();
 }
 
-/// Starts the split-screen championship for the players' picks.
-fn start_mp_champ(mp_champ: &mut MpChamp, plan: Plan, roster: &Roster, rules: &career::Rules, sel: &Selection, players: usize) {
+/// Starts the split-screen championship for the players' picks, as the
+/// profile's championship, and saves it.
+fn start_mp_champ(mp_champ: &mut MpChamp, career: &mut Career, plan: Plan, roster: &Roster, rules: &career::Rules, sel: &Selection, players: usize) {
     let name = |model: &str| roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(model)).map_or(model.to_uppercase(), |r| r.name.clone());
     let picks: Vec<(String, String)> = std::iter::once(&sel.rider).chain(sel.others.iter().map(|o| &o.0)).take(players).map(|m| (name(m), m.clone())).collect();
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos());
     mp_champ.start(plan, &picks, &sel.quad, &career_pool(roster, rules, Champ::Custom), seed);
+    mp_champ.keep(career);
 }
 
 /// The tracks Choose Your Tracks lists: the championships' fifteen that

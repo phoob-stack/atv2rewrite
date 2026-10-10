@@ -667,6 +667,7 @@ fn race_menus(
                 let order = finishing_order(&run, p.dnf, field);
                 let tricks = trick_scores(&run, session.as_deref(), field.1);
                 mp_champ.score(&rules, &order, &tricks);
+                mp_champ.keep(&mut career);
             }
             // A finished challenge run: its medal and bonus.
             let outcome = (selection.mode == Mode::Challenge)

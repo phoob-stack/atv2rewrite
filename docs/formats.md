@@ -284,6 +284,16 @@ left alone.
 - `Arcade.xml`: `RoundN TrackName=` in order (16 rounds, Dunes 1 twice).
   The original races fifteen: `ArcadeSM` (0x95e70) brings up
   `Arcade_Complete` after the fifteenth win (0x96070).
+- The profile's championship (`CareerData`, saved at 0x11cb0):
+  `mChampionshipType` (Amateur, Qualifying, Professional, Custom),
+  `mRound`, `mTrackCount`, `Track%i`/`TrackLaps%i` (17 slots), then
+  `ChampInfo%i` per rider (0x119f0: `VehicleType`, `RiderType`,
+  `ChampionshipPoints`, `Rank`, `LastRacePos`). The profile has only this
+  one: Multiplayer Championship (`CustomChampSM`, 0x97850) resets it and
+  makes it Custom, and the Custom status page never saves by itself; the
+  profile holds it until its next save. Career's Continue (enabled by
+  0x121a0 for any type with a track left) restores the first rider's
+  rider and ATV (0x12470) and races the rest as computer riders.
 - Arcade's field (0x1dd200, saved in the profile as `mRound`, `Player%d`
   and `mDropOuts%d` at 0x11470): a new game seats the player at the back
   (0x11530). After a win the grid is the finishing order and the last three

@@ -18,13 +18,22 @@
 //! make it up to four, and each round scores both the race and the trick
 //! ranking as a career round does.
 //!
+//! As in the original, the championship is the profile's own: the
+//! original's multiplayer Championship takes over the profile's one
+//! championship (its `CareerData`, which 0x97850 resets and sets to Custom,
+//! and 0x11cb0 saves), so starting one replaces a career championship in
+//! progress. It's saved after each round. Multiplayer Championship always
+//! starts afresh; the saved one carries on from Career's Continue, where
+//! the profile only knows the field's riders, so player 1 races on and the
+//! other players' riders race as computer riders.
+//!
 //! [`opponents::Racer::human`]: crate::opponents::Racer::human
 
 use bevy::camera::Viewport;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::career::{self, Entrant, Plan, Run};
+use crate::career::{self, Career, Entrant, Plan, Run};
 use crate::freestyle::Session;
 use crate::frontend::Roster;
 use crate::hud::ordinal;
@@ -92,8 +101,9 @@ pub fn place(scores: &[(usize, u32)], n: usize) -> usize {
     1 + scores.iter().filter(|s| s.1 > mine).count()
 }
 
-/// A split-screen championship in progress (not saved). The field is the
-/// players in order (marked `player`), then the computer riders.
+/// A split-screen championship in progress. The field is the players in
+/// order (marked `player`), then the computer riders. The profile keeps a
+/// copy (see [`MpChamp::keep`]).
 #[derive(Resource, Default)]
 pub struct MpChamp {
     pub run: Option<Run>,
@@ -137,6 +147,27 @@ impl MpChamp {
             }
         }
         run.round += 1;
+    }
+
+    /// The championship as the profile saves it: player 1 is the player,
+    /// the other players' riders computer riders, by their riders' names.
+    pub fn saved(&self) -> Option<Run> {
+        let mut run = self.run.clone()?;
+        for (i, e) in run.field.iter_mut().enumerate().filter(|(_, e)| e.player) {
+            if let Some(name) = e.name.strip_prefix(&format!("P{} ", i + 1)) {
+                e.name = name.to_string();
+            }
+            e.player = i == 0;
+        }
+        Some(run)
+    }
+
+    /// Makes it the profile's championship and saves the profile.
+    pub fn keep(&self, career: &mut Career) {
+        if let Some(run) = self.saved() {
+            career.run = Some(run);
+            career.save();
+        }
     }
 }
 
@@ -289,6 +320,27 @@ mod tests {
         let run = c.run.as_ref().unwrap();
         assert_eq!(run.round, 1);
         assert_eq!((run.field[0].points, run.field[1].points, run.field[2].points), (20 + 25, 25 + 20, 16 + 16));
+    }
+
+    #[test]
+    fn championship_saves_as_the_profiles() {
+        let rules = career::Rules::default();
+        let mut c = MpChamp::default();
+        let players = [("ANN".to_string(), "Female1".to_string()), ("BOB".to_string(), "Male1".to_string())];
+        let pool: Vec<(String, String)> = (2..8).map(|i| (format!("R{i}"), format!("Male{i}"))).collect();
+        let plan = Plan { champ: career::Champ::Custom, schedule: vec![("Dunes1".into(), 2), ("Swamp1".into(), 4)], split: None };
+        c.start(plan, &players, "Bandit", &pool, 7);
+        c.score(&rules, &[1, 0, 2, 3], &[0; FIELD]);
+        let run = c.saved().unwrap();
+        // Player 1 carries on; player 2's rider races as a computer rider.
+        assert_eq!((run.field[0].name.as_str(), run.field[0].player), ("ANN", true));
+        assert_eq!((run.field[1].name.as_str(), run.field[1].player), ("BOB", false));
+        assert_eq!(run.opponents()[0], "Male1");
+        assert_eq!((run.rider.as_str(), run.quad.as_str(), run.round), ("Female1", "Bandit", 1));
+        // And it comes back from the profile as it went in.
+        let mut career = Career::new();
+        career.run = Some(run.clone());
+        assert_eq!(Career::parse(&career.to_text()).run, Some(run));
     }
 
     #[test]
