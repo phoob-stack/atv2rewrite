@@ -7,6 +7,10 @@
 //! (as the pause menu does) and puts every one of those back where it was,
 //! so tricks, crashes and kicks come back exactly as they looked.
 //!
+//! Once a lone player is home, the same director takes the race camera
+//! behind the results, as the original's does (0x82cd0), moving from rider
+//! to rider ([`Broadcast`]).
+//!
 //! The original recorded the player's pad instead and ran the race again
 //! (0x87190, 0xf6a10). That needs a simulation that repeats itself to the
 //! bit, which this one doesn't promise, and it couldn't rewind; keeping the
@@ -21,12 +25,13 @@ use bevy::camera::visibility::VisibilitySystems;
 
 use crate::convert::{self, SkyDome, WheelVisual};
 use crate::crash::Wreck;
+use crate::freestyle::Session;
 use crate::frontend::Roster;
-use crate::race::fmt_time;
+use crate::race::{fmt_time, RaceProgress};
 use crate::knock::Knockable;
 use crate::opponents::Opponents;
 use crate::rider::Rider;
-use crate::ui::{fullscreen, read_nav, set_text, BitmapText, FontId, Nav, UiAssets};
+use crate::ui::{fullscreen, read_nav, set_text, BitmapText, FontId, Nav, TextLayout, UiAssets};
 use crate::settings::Settings;
 use crate::{AppState, ChaseCam, Game, Player, QuadBody, Race, Selection};
 
@@ -158,13 +163,18 @@ impl Plugin for ReplayPlugin {
         app.add_systems(OnEnter(AppState::Race), |mut commands: Commands| {
             commands.insert_resource(Recording::default());
             commands.remove_resource::<Playback>();
+            commands.remove_resource::<Broadcast>();
         })
         .add_systems(Update, controls.run_if(resource_exists::<Playback>).run_if(in_state(AppState::Race)))
         .add_systems(
             PostUpdate,
-            (record.run_if(not(resource_exists::<Playback>)), (play, captions).chain().run_if(resource_exists::<Playback>))
+            (
+                (record, broadcast).run_if(not(resource_exists::<Playback>)),
+                (play, captions).chain().run_if(resource_exists::<Playback>),
+            )
                 .before(TransformSystems::Propagate)
                 .before(VisibilitySystems::VisibilityPropagate)
+                .before(TextLayout)
                 .run_if(in_state(AppState::Race)),
         );
     }
@@ -204,24 +214,7 @@ fn record(
     }
     let prev = rec.ticks.saturating_sub(1);
     let tick = rec.ticks + due - 1;
-    let flags = |v: &atv_sim::Vehicle, crashed: bool| {
-        let mut f = 0;
-        if v.grounded() {
-            f |= director::GROUNDED;
-        }
-        if v.all_wheels_down() {
-            f |= director::ALL_DOWN;
-        }
-        if crashed {
-            f |= director::CRASHED;
-        }
-        f
-    };
-    let now: Vec<u8> = player
-        .iter()
-        .map(|p| flags(&p.0, wreck.as_ref().is_some_and(|w| w.fall.is_some())))
-        .chain(opponents.iter().flat_map(|o| o.racers.iter().map(|r| flags(&r.vehicle, r.wreck.fall.is_some()))))
-        .collect();
+    let now = live_flags(player.as_deref(), wreck.as_deref(), opponents.as_deref());
     let racers = now.len().max(rec.flags.len());
     rec.flags.resize_with(racers, Vec::new);
     for (changes, f) in rec.flags.iter_mut().zip(now) {
@@ -242,6 +235,107 @@ fn record(
         }
     }
     rec.ticks = tick + 1;
+}
+
+/// A racer's [`director::GROUNDED`], [`director::ALL_DOWN`] and
+/// [`director::CRASHED`].
+fn racer_flags(v: &atv_sim::Vehicle, crashed: bool) -> u8 {
+    let mut f = 0;
+    if v.grounded() {
+        f |= director::GROUNDED;
+    }
+    if v.all_wheels_down() {
+        f |= director::ALL_DOWN;
+    }
+    if crashed {
+        f |= director::CRASHED;
+    }
+    f
+}
+
+/// Every racer's flags now, player 1 first.
+fn live_flags(player: Option<&Player>, wreck: Option<&Wreck>, opponents: Option<&Opponents>) -> Vec<u8> {
+    player
+        .iter()
+        .map(|p| racer_flags(&p.0, wreck.is_some_and(|w| w.fall.is_some())))
+        .chain(opponents.iter().flat_map(|o| o.racers.iter().map(|r| racer_flags(&r.vehicle, r.wreck.fall.is_some()))))
+        .collect()
+}
+
+/// The director filming the race once a lone player is home, and who it
+/// is watching (player 1 first, then the computer riders).
+#[derive(Resource)]
+pub struct Broadcast {
+    director: director::Director,
+    target: usize,
+}
+
+/// Once a one-player race or session is over, the director takes the
+/// camera (0x82cd0, in the style and mode `CameraDirector.xml` gives: all
+/// its cameras, moving between riders).
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn broadcast(
+    mut commands: Commands,
+    (time, real): (Res<Time<Virtual>>, Res<Time<Real>>),
+    (game, sel, settings): (Res<Game>, Res<Selection>, Res<Settings>),
+    (progress, session, race): (Option<Res<RaceProgress>>, Option<Res<Session>>, Option<Res<Race>>),
+    (player, wreck, opponents): (Option<Res<Player>>, Option<Res<Wreck>>, Option<Res<Opponents>>),
+    live: Option<ResMut<Broadcast>>,
+    mut cams: Query<(Entity, &mut Projection), With<ChaseCam>>,
+    mut transforms: Query<&mut Transform>,
+    sky: Query<Entity, With<SkyDome>>,
+    mut riders: Query<&mut Visibility, With<Rider>>,
+) {
+    let (Some(p), Some(player)) = (progress, player.as_deref()) else { return };
+    let mut live = match live {
+        Some(live) => live,
+        None => {
+            let over = match session.as_deref() {
+                Some(s) if s.freestyle => s.over(p.clock),
+                _ => p.over(),
+            };
+            if over && sel.players <= 1 {
+                let mut director = director::Director::default();
+                director.load(&game.0, &sel.track, settings.camera);
+                commands.insert_resource(Broadcast { director, target: 0 });
+            }
+            return;
+        }
+    };
+    let racers: Vec<(Vec3, Quat)> =
+        std::iter::once(&player.0).chain(opponents.iter().flat_map(|o| o.racers.iter().map(|r| &r.vehicle))).map(|v| (v.position, v.rotation)).collect();
+    let flags = live_flags(Some(player), wreck.as_deref(), opponents.as_deref());
+    let quad = |i: usize, _: f32| racers.get(i).copied();
+    let flag = |i: usize, _: f32| flags.get(i).copied().unwrap_or(0);
+    let dt = time.delta_secs();
+    let mut scene = director::Scene {
+        quad: &quad,
+        flags: &flag,
+        racers: racers.len(),
+        target: live.target.min(racers.len() - 1),
+        time: time.elapsed_secs(),
+        collision: race.as_deref().map(|r| &r.collision),
+        stick: Vec2::ZERO,
+        real_dt: real.delta_secs(),
+    };
+    scene.target = live.director.pick_rider(&scene, 1, dt);
+    live.target = scene.target;
+    let shot = live.director.shot(&scene, dt);
+    let Some((cam, mut proj)) = cams.iter_mut().next() else { return };
+    if let Ok(mut t) = transforms.get_mut(cam) {
+        t.translation = shot.eye;
+        t.rotation = shot.rotation;
+    }
+    if let Projection::Perspective(p) = proj.as_mut() {
+        p.fov = shot.fov;
+    }
+    if let Some(mut t) = sky.iter().next().and_then(|e| transforms.get_mut(e).ok()) {
+        t.translation = shot.eye - Vec3::Y * convert::SKY_RADIUS * 0.08;
+    }
+    // Every rider shows, whatever the race camera hid.
+    for mut v in &mut riders {
+        v.set_if_neq(Visibility::Inherited);
+    }
 }
 
 /// How fast rewinding and fast forward go.

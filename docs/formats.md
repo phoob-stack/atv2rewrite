@@ -530,6 +530,13 @@ practice always the primary's 8 s, since that pointer is never updated),
 with the rider on all four wheels and not thrown off. Cuts alternate
 between the primary and a secondary found by stepping 1 to 3 places along
 the list (0x6ede0). A replay always follows the player's rider.
+Once a lone human rider has finished, the race screen (0x82cd0) runs the
+same director on the live race behind the results, and there it may move
+to another rider once the current one has been watched 4 s (0x72d00):
+first a computer rider from a scored table at 0x1deb58 (0x729f0, the
+lowest value among the entries in play; not decoded), otherwise one at
+random, and only if two checks at 0x27620 pass (taken here as neither
+rider being thrown off). Moving resets the shot.
 `mInactiveSwapThreshold` and `mPlayerSwapThreshold` are loaded but unused.
 
 The camera types (table 0x1d0990, set up by 0x72ab0) are: 0 Trackside, 1

@@ -25,9 +25,15 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, (fit_ui_scale, refresh_menus, layout_bitmap_text).chain().before(bevy::ui::UiSystems::Prepare));
+        app.add_systems(PostUpdate, (fit_ui_scale, refresh_menus, layout_bitmap_text.in_set(TextLayout)).chain().before(bevy::ui::UiSystems::Prepare));
     }
 }
+
+/// Lays out changed [`BitmapText`]. A `PostUpdate` system that changes
+/// text or despawns screens goes before it, so a screen's glyphs are never
+/// rebuilt under a parent despawned the same frame.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TextLayout;
 
 fn fit_ui_scale(windows: Query<&Window, With<PrimaryWindow>>, mut scale: ResMut<UiScale>) {
     if let Ok(w) = windows.single() {
