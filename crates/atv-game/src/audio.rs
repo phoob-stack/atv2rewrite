@@ -279,6 +279,7 @@ pub fn engine_mix(r: f32, t: f32, pitch_zero: f32, pitch_span: f32) -> [(f32, f3
     [(on, pitch_zero + pitch_span * r), (off, 0.85 + 1.8 * r)]
 }
 
+#[allow(clippy::type_complexity)]
 fn engine_and_wheels(
     player: Option<Res<Player>>,
     mix: Option<Res<QuadMix>>,
