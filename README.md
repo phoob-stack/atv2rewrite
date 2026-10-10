@@ -57,6 +57,7 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
 | Lean back / forward | I / K | Left stick up/down |
 | Jump (preload) | Space | RB or B |
 | Speed boost | Shift | Y (on the ground) |
+| Kick | E | LB (on the ground) |
 | Respot | R | |
 | Restart | Backspace | |
 | Pause | Escape | Start |
@@ -89,8 +90,8 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   split top and bottom, three or four take a quarter each), with computer
   riders making the field up to four. Each player picks a rider (one
   another player has is greyed out) and an ATV in turn. Player 1 drives
-  with WASD (lean R/F, preload Space, boost left Shift) or the first pad, player 2 with the
-  arrow keys (lean Numpad 8/5, preload right Shift, boost Numpad 0) or the second pad, and
+  with WASD (lean R/F, preload Space, boost left Shift, kick E) or the first pad, player 2 with the
+  arrow keys (lean Numpad 8/5, preload right Shift, boost Numpad 0, kick Numpad 6) or the second pad, and
   players 3 and 4 with the third and fourth pads. Once the first player is
   home the others get a minute to finish. Freestyle Battle puts the same
   players on a track against a time limit with no computer riders; the
@@ -122,6 +123,14 @@ speed (2500 points fill it). Hold the boost button to spend it: full
 throttle and 2.5 times the drive, for up to ten seconds of a full meter. A
 crash loses a fifth of it. Computer riders fill theirs with their tricks
 and spend it when it's full.
+
+**Kicks**, as in the original: the kick button kicks out at whoever rides
+alongside (towards the nearest rider's side). A kick that connects steals
+up to a fifth of their boost and takes some of their strength: all of it
+if they're weaker than you (each rider's `mStrength`), three quarters if
+equal, half if stronger. The kick that takes the last of it knocks them
+off and steals all their boost. Strength comes back in two seconds.
+Computer riders with an aggression of 3 or more kick anyone alongside.
 
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on
