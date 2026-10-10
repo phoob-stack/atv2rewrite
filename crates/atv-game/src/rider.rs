@@ -287,8 +287,15 @@ impl Rider {
 
 pub fn pose_riders(time: Res<Time>, mut riders: Query<&mut Rider>, mut joints: Query<&mut Transform>) {
     for mut rider in &mut riders {
-        let pose = rider.next_pose(time.delta_secs());
-        for (e, t) in rider.joints.iter().zip(pose) {
+        rider.apply(time.delta_secs(), &mut joints);
+    }
+}
+
+impl Rider {
+    /// Moves the joints to the current pose.
+    pub fn apply(&mut self, dt: f32, joints: &mut Query<&mut Transform>) {
+        let pose = self.next_pose(dt);
+        for (e, t) in self.joints.iter().zip(pose) {
             if let Ok(mut jt) = joints.get_mut(*e) {
                 *jt = t;
             }
