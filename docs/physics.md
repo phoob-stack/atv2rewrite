@@ -32,6 +32,47 @@ anyone checking the port against a disassembly.
 | Dyne vtable `0x1c5788` | `integrate`, `post_step` | Integration, gearbox, engine revs |
 | `0xb5bf0`, `0x59aa0` | `params.rs` | `.params` parser and curve sampling |
 
+## Crashes
+
+The game decides when the player crashes (`atv-game/src/crash.rs`), using
+the original's rules:
+
+* **Impact** (`0x1a5f0`). A chassis sphere hits something. The hit counts
+  as `speed into the surface × (0.5 − 0.5·up·n) × ((forward·n + 1)/2 + 1)`.
+  If that is over 5 (10 with three or more wheels down), the quad crashes.
+  So a hard landing on the back or side crashes, and so does a fast hit
+  into a wall.
+* **Rollover**. Tipped past `up.y < 0.25` with its body touching, the quad
+  crashes within a few steps (+1.2 a step against a limit of 6). With one
+  wheel or none down and the body clear, it crashes after
+  `(0.5 − 0.5·up.y)` per second adds up to 6.
+* **Crash start** (`0x28ce0`). The way the quad went over (nose, back, or
+  a side) and the cause pick the clip:
+  * Rollover: `fall_front_endo`, `fall_wheelie` / `fall_high_wheelie`, or
+    `fall_onto_back`.
+  * Impact: `head_over_heels` (speed² ≤ 800) or `crash_front_1`,
+    `fall_wheelie` / `fall_high_wheelie`, or `fall_side_A`.
+  * A right-side fall plays the clip mirrored.
+* **Getting up** (`0x2bbb0`). After going head over heels the rider rolls
+  about on the back (`movement_on_back_*`). After a face-first crash the
+  rider pushes up (`push_up*`, `reach_out`). Then the quad is put back at
+  the last safe spot.
+* Crash clip ids are the table at `0x1d1b00`: a `u32` id, then a 56-byte
+  path. They run from 22 (`head_over_heels`) to 46 (`run_over_back`).
+
+The rider's pelvis rides a point mass. It leaves the seat with the quad's
+velocity plus a small hop, falls under gravity, and slides to a stop on the
+track collision. The clip's bone rotations are layered on top of it.
+
+These are approximations:
+
+* The clips play at 30 frames a second.
+* The original's frame ranges and per-clip speeds aren't copied.
+* The original's rider body is a full physics object, not a point mass.
+
+A landing after more than half a second in the air plays the `landing`
+clip once over the riding pose.
+
 ## Not ported yet
 
 * Surface materials: grip is fixed at 1 and surface drag at 0.
@@ -42,6 +83,11 @@ anyone checking the port against a disassembly.
 * Only the automatic gearbox (mode 0).
 * Knock-over props (cones, signs, barriers, crates) and their `.hsc` hulls:
   they don't collide yet. Static props collide through their `.ink` meshes.
+* Crash parts of the original that aren't ported yet:
+  * crashes into water (`Plunge`, `Tread_water`)
+  * hits from other riders (causes 3 and 4)
+  * the rider's own head contact (cause 2)
+  * computer riders crashing (they are respotted as before)
 
 ## Tests
 
