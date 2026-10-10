@@ -134,6 +134,8 @@ pub struct Vehicle {
     force: Vec3,
     torque: Vec3,
     pos_fix: Vec3,
+    /// Where each body sphere was last step, for catching tunnelling.
+    body_prev: [Vec3; 5],
 
     struts: Vec<Strut>,
     ground: Ground,
@@ -228,6 +230,7 @@ impl Vehicle {
             force: Vec3::ZERO,
             torque: Vec3::ZERO,
             pos_fix: Vec3::ZERO,
+            body_prev: [Vec3::NAN; 5],
             struts: vec![Strut::default(); n],
             ground: Ground {
                 grip: 1.0,
@@ -287,6 +290,7 @@ impl Vehicle {
         self.prev_vel = Vec3::ZERO;
         self.local_acc = Vec3::ZERO;
         self.pos_fix = Vec3::ZERO;
+        self.body_prev = [Vec3::NAN; 5];
         for (i, s) in self.struts.iter_mut().enumerate() {
             *s = Strut {
                 pos: self.params.wheels[i].max_pos.min(0.0),
@@ -471,7 +475,10 @@ impl Vehicle {
 
     /// Finds where each tyre touches the ground and how far it sinks in.
     fn wheel_contacts(&mut self, world: &TrackCollision) {
-        const HEADROOM: f32 = 1.0;
+        // Cast from a little above the wheel centre: enough to catch a
+        // wheel that has sunk in, not so much that it finds the underside
+        // of an overhang above the wheel and treats it as ground.
+        const HEADROOM: f32 = 0.3;
         for (i, wp) in self.params.wheels.iter().enumerate() {
             let s = &mut self.struts[i];
             s.force = 0.0;
@@ -499,12 +506,15 @@ impl Vehicle {
             }
             if depth > 0.0 {
                 // The part of the push the strut can't take moves the body.
-                let off_axis = if na >= std::f32::consts::FRAC_1_SQRT_2 {
-                    1.0 - na
+                // On steep faces the original leaves that to the body's
+                // collision spheres; without them, push away horizontally
+                // so the quad can't drive through walls or climb them.
+                let push = if na >= std::f32::consts::FRAC_1_SQRT_2 {
+                    n * (1.0 - na)
                 } else {
-                    1.0
+                    n.with_y(0.0)
                 };
-                Self::add_fix(&mut self.pos_fix, n * (off_axis * depth));
+                Self::add_fix(&mut self.pos_fix, push * depth);
                 s.correction = na * depth;
             }
             let v_point = self.vel + self.ang_vel.cross(attach);
@@ -977,20 +987,70 @@ impl Vehicle {
         self.force = Vec3::ZERO;
         self.torque = Vec3::ZERO;
 
-        // Keep the chassis out of the ground if it lands on its belly.
-        const BELLY: f32 = 0.25;
-        if let Some((_, hit, _)) =
-            Self::cast(world, self.pos + Vec3::Y * 4.0, Vec3::NEG_Y, 4.0 + BELLY)
-        {
-            let floor = hit.y + BELLY;
-            if self.pos.y < floor {
-                self.pos.y = floor;
-                if self.momentum.y < 0.0 {
-                    self.momentum.y *= -0.1;
-                }
-                self.momentum *= 1.0 - (3.0 * h).min(1.0);
-                self.vel = self.momentum / p.mass;
+        self.body_collision(world);
+    }
+
+    /// Spheres around the chassis keep it out of the ground and walls. The
+    /// original collides body spheres with the world and answers each
+    /// contact with a position fix plus an impulse at the contact point;
+    /// this does the same for a hand-placed set covering the Bandit-sized
+    /// chassis (positions from the model's hard points, relative to the
+    /// centre of mass, game frame).
+    fn body_collision(&mut self, world: &TrackCollision) {
+        const SPHERES: [([f32; 3], f32); 5] = [
+            ([0.0, 0.05, 0.0], 0.22),  // belly
+            ([0.0, 0.3, 0.75], 0.25),  // front rack
+            ([0.0, 0.7, 0.3], 0.25),   // handlebars
+            ([0.0, 0.5, -0.35], 0.3),  // seat
+            ([0.0, 0.4, -0.85], 0.25), // rear rack
+        ];
+        const BOUNCE: f32 = 0.1;
+        const FRICTION: f32 = 0.6;
+        let mass = self.params.mass;
+        for (k, &(local, radius)) in SPHERES.iter().enumerate() {
+            let r = self.rot * Vec3::from(local);
+            let centre = self.pos + r;
+            let prev = self.body_prev[k];
+            self.body_prev[k] = centre;
+            // Surfaces are thin shells, so a centre that crossed one (moving
+            // fast, or shoved by another contact) would be pushed out the
+            // wrong side: catch that with a ray from where it was.
+            let travel = centre - prev;
+            let hit = match (prev.is_finite() && travel.length() > 1e-4)
+                .then(|| Self::cast(world, prev, travel.normalize(), travel.length()))
+                .flatten()
+            {
+                Some((t, _, n)) => Some((n, travel.length() - t + radius)),
+                None => world
+                    .sphere(centre * FLIP, radius)
+                    .map(|h| (h.normal * FLIP, h.t)),
+            };
+            let Some((n, depth)) = hit else { continue };
+            let push = n * depth;
+            self.pos += push;
+            self.body_prev[k] += push;
+            // Impulse that stops the point moving into the surface, with
+            // a little bounce and Coulomb friction along it.
+            let inv_i = self.inv_inertia_world();
+            let v_point = self.vel + self.ang_vel.cross(r);
+            let vn = v_point.dot(n);
+            if vn >= 0.0 {
+                continue;
             }
+            let k_n = 1.0 / mass + n.dot((inv_i * r.cross(n)).cross(r));
+            let jn = -(1.0 + BOUNCE) * vn / k_n;
+            let vt = v_point - n * vn;
+            let mut j = n * jn;
+            if vt.length() > 1e-4 {
+                let t = vt.normalize();
+                let k_t = 1.0 / mass + t.dot((inv_i * r.cross(t)).cross(r));
+                let jt = (vt.length() / k_t).min(FRICTION * jn);
+                j -= t * jt;
+            }
+            self.momentum += j;
+            self.ang_momentum += r.cross(j);
+            self.vel = self.momentum / mass;
+            self.ang_vel = inv_i * self.ang_momentum;
         }
     }
 

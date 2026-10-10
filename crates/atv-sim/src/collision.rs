@@ -32,7 +32,10 @@ impl TrackCollision {
             min = Vec2::ZERO;
             max = Vec2::ONE;
         }
-        let dims = (((max.x - min.x) / cell) as usize + 1, ((max.y - min.y) / cell) as usize + 1);
+        let dims = (
+            ((max.x - min.x) / cell) as usize + 1,
+            ((max.y - min.y) / cell) as usize + 1,
+        );
         let mut cells = vec![Vec::new(); dims.0 * dims.1];
         for (i, t) in tris.iter().enumerate() {
             let lo = t[0].xz().min(t[1].xz()).min(t[2].xz());
@@ -45,12 +48,21 @@ impl TrackCollision {
                 }
             }
         }
-        Self { tris, min, cell, dims, cells }
+        Self {
+            tris,
+            min,
+            cell,
+            dims,
+            cells,
+        }
     }
 
     fn cell_of(min: Vec2, cell: f32, dims: (usize, usize), p: Vec2) -> (usize, usize) {
         let c = ((p - min) / cell).max(Vec2::ZERO);
-        ((c.x as usize).min(dims.0 - 1), (c.y as usize).min(dims.1 - 1))
+        (
+            (c.x as usize).min(dims.0 - 1),
+            (c.y as usize).min(dims.1 - 1),
+        )
     }
 
     pub fn triangle_count(&self) -> usize {
@@ -78,13 +90,81 @@ impl TrackCollision {
                         if n.dot(dir) > 0.0 {
                             n = -n;
                         }
-                        best = Some(Hit { t, point: origin + dir * t, normal: n });
+                        best = Some(Hit {
+                            t,
+                            point: origin + dir * t,
+                            normal: n,
+                        });
                     }
                 }
             }
         }
         best
     }
+
+    /// Deepest overlap of a sphere with the track: the closest surface point
+    /// within `radius` of `centre`, with the normal pointing from that point
+    /// towards the centre and the penetration depth.
+    pub fn sphere(&self, centre: Vec3, radius: f32) -> Option<Hit> {
+        let r = Vec2::splat(radius);
+        let (x0, z0) = Self::cell_of(self.min, self.cell, self.dims, centre.xz() - r);
+        let (x1, z1) = Self::cell_of(self.min, self.cell, self.dims, centre.xz() + r);
+        let mut best: Option<(f32, Vec3)> = None;
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                for &i in &self.cells[z * self.dims.0 + x] {
+                    let [a, b, c] = self.tris[i as usize];
+                    let p = closest_on_tri(centre, a, b, c);
+                    let d2 = (centre - p).length_squared();
+                    if d2 < radius * radius && best.is_none_or(|(b2, _)| d2 < b2) {
+                        best = Some((d2, p));
+                    }
+                }
+            }
+        }
+        let (d2, p) = best?;
+        let d = d2.sqrt();
+        let normal = if d > 1e-6 { (centre - p) / d } else { Vec3::Y };
+        Some(Hit {
+            t: radius - d,
+            point: p,
+            normal,
+        })
+    }
+}
+
+/// Closest point on triangle `abc` to `p` (Ericson, Real-Time Collision
+/// Detection 5.1.5).
+fn closest_on_tri(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    a + ab * (vb * denom) + ac * (vc * denom)
 }
 
 /// Moller-Trumbore, double-sided.
@@ -122,9 +202,17 @@ mod tests {
         let c = Vec3::new(10.0, 0.0, 10.0);
         let d = Vec3::new(-10.0, 0.0, 10.0);
         let col = TrackCollision::new(vec![[a, b, c], [a, c, d]], 4.0);
-        let hit = col.raycast(Vec3::new(1.0, 5.0, 2.0), Vec3::NEG_Y, 10.0).unwrap();
+        let hit = col
+            .raycast(Vec3::new(1.0, 5.0, 2.0), Vec3::NEG_Y, 10.0)
+            .unwrap();
         assert!((hit.t - 5.0).abs() < 1e-5);
         assert!(hit.normal.y > 0.99);
-        assert!(col.raycast(Vec3::new(1.0, 5.0, 2.0), Vec3::NEG_Y, 4.0).is_none());
+        assert!(
+            col.raycast(Vec3::new(1.0, 5.0, 2.0), Vec3::NEG_Y, 4.0)
+                .is_none()
+        );
+        let s = col.sphere(Vec3::new(1.0, 0.2, 2.0), 0.5).unwrap();
+        assert!((s.t - 0.3).abs() < 1e-5 && s.normal.y > 0.99);
+        assert!(col.sphere(Vec3::new(1.0, 0.6, 2.0), 0.5).is_none());
     }
 }
