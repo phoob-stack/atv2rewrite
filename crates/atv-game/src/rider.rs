@@ -6,7 +6,10 @@
 //! control (`leen_forward`, `leen_back`) and crouches while the suspension
 //! is pre-loaded for a hop (`landing`, whose middle is the deepest crouch).
 //! Forward/back lean and crouch are layered on the turn pose as offsets from
-//! each clip's first frame.
+//! each clip's first frame. Tricks blend a stunt clip
+//! (`Animations/Stunts/Bac`) over all of it.
+
+use std::sync::Arc;
 
 use anyhow::Result;
 use bevy::prelude::*;
@@ -26,14 +29,18 @@ struct BonePose {
 }
 
 /// A clip resampled into Bevy space: `frames[frame][bone]`.
-struct Clip {
+pub struct Clip {
     frames: Vec<Vec<BonePose>>,
 }
 
 impl Clip {
     fn load(game: &GameSource, name: &str) -> Result<Self> {
-        let anim = Animation::parse(&game.read(&format!("{CLIP_DIR}{name}.bac"))?)?;
-        anyhow::ensure!(anim.frame_count > 0, "{name}: no frames");
+        Self::load_from(game, &format!("{CLIP_DIR}{name}.bac"))
+    }
+
+    pub fn load_from(game: &GameSource, path: &str) -> Result<Self> {
+        let anim = Animation::parse(&game.read(path)?)?;
+        anyhow::ensure!(anim.frame_count > 0, "{path}: no frames");
         let frames = (0..anim.frame_count)
             .map(|f| {
                 (0..anim.bone_count)
@@ -99,6 +106,10 @@ pub struct Rider {
     steer: f32,
     lean: f32,
     preload: f32,
+    /// A stunt being performed (clip, 0..1 through it) and how far the
+    /// pose has blended into it; the last stunt is kept to blend out of.
+    stunt: Option<(Arc<Clip>, f32)>,
+    stunt_weight: f32,
 }
 
 /// How far into each clip the controls go. The clips end in extreme poses
@@ -126,6 +137,8 @@ impl Rider {
             steer: 0.0,
             lean: 0.0,
             preload: 0.0,
+            stunt: None,
+            stunt_weight: 0.0,
         };
         for c in [&rider.turn_right, &rider.forward, &rider.back, &rider.crouch] {
             anyhow::ensure!(c.frames[0].len() == bones, "riding clip has {} bones, skeleton {bones}", c.frames[0].len());
@@ -141,6 +154,26 @@ impl Rider {
         self.preload += (preload.clamp(0.0, 1.0) - self.preload) * k;
     }
 
+    /// Plays a stunt at `t` (0..1) over the riding pose, or blends back to
+    /// riding with `None`.
+    pub fn set_stunt(&mut self, stunt: Option<(Arc<Clip>, f32)>, dt: f32) {
+        let on = stunt.is_some();
+        if let Some(s) = stunt {
+            if self.stunt.as_ref().is_some_and(|(c, _)| !Arc::ptr_eq(c, &s.0)) {
+                self.stunt_weight = self.stunt_weight.min(0.3);
+            }
+            self.stunt = Some(s);
+        }
+        // Quick in, a little slower out.
+        let rate = if on { 12.0 } else { 7.0 };
+        let target = if on { 1.0 } else { 0.0 };
+        self.stunt_weight += (target - self.stunt_weight) * (1.0 - (-rate * dt).exp());
+        if !on && self.stunt_weight < 0.01 {
+            self.stunt = None;
+            self.stunt_weight = 0.0;
+        }
+    }
+
     /// Local transform of every joint for the current controls.
     fn pose(&self) -> Vec<Transform> {
         let turn = if self.steer >= 0.0 { &self.turn_right } else { &self.turn_left };
@@ -152,6 +185,7 @@ impl Rider {
         ];
         let layers: Vec<(&Vec<BonePose>, Vec<BonePose>)> =
             layers.iter().map(|(c, t)| (&c.frames[0], c.sample(*t))).collect();
+        let stunt = self.stunt.as_ref().filter(|(c, _)| c.frames[0].len() == base.len()).map(|(c, t)| c.sample(*t));
         base.iter()
             .enumerate()
             .map(|(b, p)| {
@@ -161,6 +195,13 @@ impl Rider {
                     rotation = rotation * (rest[b].rotation.inverse() * pose[b].rotation);
                     if b == 0 {
                         position += pose[b].position - rest[b].position;
+                    }
+                }
+                if let Some(s) = &stunt {
+                    let w = self.stunt_weight;
+                    rotation = rotation.slerp(s[b].rotation, w);
+                    if b == 0 {
+                        position = position.lerp(s[b].position, w);
                     }
                 }
                 Transform { translation: position, rotation: rotation.normalize(), scale: Vec3::ONE }
