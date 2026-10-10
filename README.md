@@ -46,6 +46,7 @@ cargo run --release -p atv-tool -- check
 cargo run --release -p atv-game                     # front end
 cargo run --release -p atv-game -- --track Dunes1 --quad Bandit --rider Male1 --laps 3   # straight into a race
 cargo run --release -p atv-tool -- sim --track Dunes1 --quad Bandit --seconds 120
+cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # AI-only race, prints lap times
 ```
 
 | Action | Keyboard | Gamepad |
@@ -62,8 +63,12 @@ cargo run --release -p atv-tool -- sim --track Dunes1 --quad Bandit --seconds 12
 
 ## Game modes
 
-- **Single Race** and **Time Trial**: pick rider, ATV, track and laps, then
-  race the clock (there are no AI riders yet, so Career stays locked).
+- **Single Race**: pick rider, ATV, track and laps, then race five computer
+  riders (`--opponents N` for 0-7). They drive the original game's AI along
+  each track's racing line. The lap meter shows everyone's place, and the
+  results show where you finished.
+- **Time Trial**: the same without opponents, against the clock. Career
+  stays locked for now.
 - **Arcade**: the 16 rounds of the disc's `Setup/Arcade.xml` back to back.
   The clock starts at the track's arcade time (40 s) and the arcade
   checkpoints and the line add more; run out and it's over. Finish a round
@@ -88,6 +93,7 @@ Other options: `--frontend` (show the menus even with `--track`, which
 then preselects), `--screen title|main|rider|atv|track` (open on that
 front-end screen), `--mode race|timetrial|arcade|freestyle` with
 `--minutes N` (freestyle limit, 0 = unlimited) or `--round N` (arcade round),
+`--opponents N` (computer riders in a single race, default 5),
 `--autodrive` (autopilot chases checkpoints and throws tricks), `--camera
 x,y,z,tx,ty,tz` (free-fly camera in game coordinates: WASD, Q/E, Shift, right
 mouse to look), `--screenshot out.png --after 8` (saves a frame and exits),

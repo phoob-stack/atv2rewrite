@@ -59,8 +59,8 @@ Levels 856, shaders 75, other 116).
 | `.shm` | 141 | `ROM 1.26` | Shadow/simplified mesh twin of each `.rom`, same layout. | **Decoded.** |
 | `.row` | 17 | `ROW 2.25` | Track world: materials, locators (start grid, checkpoints, respots, water boxes), lights, prop instances, sprites, meshes and the road surface as Bezier patches. | **Mostly decoded.** Spatial tree between mesh blocks still unknown. |
 | `.kdt` | 17 | none | Per-track spatial data, likely collision tree. | To do. |
-| `.hsc` | 35 | none | Per-prop collision hulls (plane lists). | To do. |
-| `.aid` | 17 | `AID 1.02` | AI racing line / waypoints. | To do. |
+| `.hsc` | 35 | none | Knock-over prop hulls (cones, signs, barriers, planks): `u32` hull count; per hull a `u32` plane count and planes (normal, d; inside where n·p + d <= 0); then a `u32` sphere count and spheres (centre, radius), read at `0x24c10`. The signs are 6-plane boxes, one per part. | Layout known; not used yet (needs props that move). |
+| `.aid` | 17 | `AID 1.02` | AI racing line: a graph of waypoints with the drivable corridor, speed limits, respot and jump flags. | **Decoded, all 17.** See below. |
 | `.nin` | 17 | none (`0xCDAB0DF0` markers) | Per-track node/trigger data. | To do. |
 | `.viz` | 17 | none | Visibility / camera zones. | To do. |
 | `.cam` | 17 | `CAM v1.00` | Tiny camera header. | To do. |
@@ -73,7 +73,7 @@ Levels 856, shaders 75, other 116).
 | `.pts` | 11 | `POINT 1.00` | Named vehicle hard-points (wheel centres etc.). | Simple, to do. |
 | `.params` | 12 | text | Vehicle physics tuning (torque, gearing, preload, air resistance). | Readable text. |
 | `.bed` | 35 | binary | Sprite sheets for `.bog` texture pages: HUD, front end, particles, bitmap fonts. | **Decoded, all 35.** See below. |
-| `.ink` | 45 | `0x00CEFDAB` | Extra model data (vertex positions), likely low-detail or env-map geometry. | To do. |
+| `.ink` | 45 | `0x00CEFDAB` | Static prop collision mesh: `u32` triangle count, then triangles of three `f32[3]` corners in model space. A placed prop whose model has one (rocks, trees, buildings, vehicles, tyre stacks, the stadium gates) collides as it. | **Decoded, all 45**; used for prop collision. |
 | `.xwb` | 9 | `WBND` | XACT wave banks (sound effects, rider voices). Known format; samples are likely Xbox ADPCM. | To do. |
 | `.asm` / pixel shaders | 75 | text | Xbox vertex/pixel shader source. A reference for rewriting effects in WGSL. | Readable text. |
 | `Setup/*.xml` | 13 | XML | Game rules: tracks, career, arcade, freestyle, tricks, riders, vehicles, cameras, materials, sound, front-end screens. | Read by `setup.rs` (flat entries). |
@@ -198,7 +198,7 @@ What the UI uses:
 | Page | Contents |
 |---|---|
 | `Sprites/HUDTPAGE` | Rev gauge: `DIAL` (pivot = hub), `NEEDLE` (pivot = its hub end), `PRELOAD` arc drawn into the `DIAL_PRELOAD` slot, `BOOST` pie into `DIAL_BOOST`, `WEIRD_DOT` hub cap. Dial face reads 1-8 (x1000 rpm) from -134 deg to +21 deg, and KPH. `HUDTPAGE_b` is a larger, unused gauge with no sheet. |
-| `Sprites/321go`, `Sprites/positions` | Countdown digits and GO; position balls P1-P8. |
+| `Sprites/321go`, `Sprites/positions` | Countdown digits and GO; position balls. The sheet names P1-P8 but only P1-P4 have art; the P5-P8 cells are empty. |
 | `Sprites/Position_meter` | Lap progress line, chequered flag, markers and the CHECKPOINT banner. No sheet; regions measured from the page (see `ui.rs`). |
 | `Fonts/*` | Bitmap fonts: `MgrammeCombined` (outlined capitals, menus), `MgrammeSmall`, `kim36` (chrome mixed case), and outline/inner variants. `Fonts/blimey.ttf` on the disc is a TrueType font. |
 | `FrontEnd/NewDesign` | Menu selection bar, attribute bars, selection square, arrows, medals, panels. |
@@ -208,6 +208,34 @@ What the UI uses:
 
 `Strings/Strings_ENG.txt` is one string per line with no keys (the keys are
 in the executable), so the UI uses the same English labels directly.
+
+## AID 1.02 racing lines
+
+`Levels/<Track>/World/<Track>.aid`, read by the retail loader at `0xf24b0`
+(base class) and `0x640e0` (the AI's fields). Header: `"AID 1.02"` padded to
+12 bytes, `u32` node count, `u32` record size (152); records start at 0x14.
+
+| Offset | Type | Field |
+|---|---|---|
+| 0x00 | char[32] | name (empty; the tail is stale editor memory) |
+| 0x20 | f32[3] | position (game frame) |
+| 0x2C | f32[3] | forward (direction of travel) |
+| 0x38 | f32[3] | up |
+| 0x44 | f32 | left corridor edge along the node's right vector (negative) |
+| 0x48 | f32 | right corridor edge (positive) |
+| 0x4C | f32 | unused, a stale copy of the left edge |
+| 0x50 | i32[4] | previous nodes (-1 = none) |
+| 0x60 | i32[4] | next nodes; two at a split around a shortcut |
+| 0x70 | f32 | speed limit, m/s (0 = none) |
+| 0x74 | u32 | flags: bit 0 = a respot may use this node (clear on jumps and in water) |
+| 0x78 | u8 | jump boost, 0-100: how hard the AI hops off this node |
+
+Dunes 1's main loop (following first links) is 2425 m, the `mLength`
+`Setup/Tracks.xml` gives it. Some alternative
+routes pass up to 150 m wide of a checkpoint locator (Swamp 1 misses
+checkpoint 4), so the rewrite lets a computer rider's lap skip one
+checkpoint. The driver that follows the lines is in `atv-sim/src/ai.rs`,
+with the original's addresses.
 
 ## Game-mode rules (Setup/*.xml)
 
@@ -238,6 +266,5 @@ in the executable), so the UI uses the same English labels directly.
 
 ## Still unknown
 
-`.kdt` (likely collision tree), `.hsc` (prop collision hulls), `.aid` (AI
-lines), `.nin`, `.viz`, `.cuban` (compressed animation), `.xwb` (sound),
+`.kdt` (likely collision tree), `.nin`, `.viz`, `.cuban` (compressed animation), `.xwb` (sound),
 the ROW spatial tree and effect records, and the material record fields.

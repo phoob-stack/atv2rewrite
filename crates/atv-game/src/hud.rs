@@ -9,6 +9,7 @@ use bevy::prelude::*;
 
 use crate::freestyle::{limit_label, Session, MEDALS};
 use crate::frontend::Roster;
+use crate::opponents::{Opponents, Standings};
 use crate::race::{fmt_time, RaceProgress};
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets};
 use crate::{AppState, Mode, Player, Selection};
@@ -55,7 +56,13 @@ struct BonusText;
 struct MeterPin {
     top: f32,
     length: f32,
+    /// A computer rider's marker (index into the racers), or the player's.
+    opponent: Option<usize>,
+    scale: f32,
 }
+/// The number on a lap meter marker for places the sheet has no art for.
+#[derive(Component)]
+struct PinLabel;
 #[derive(Component)]
 struct Countdown;
 #[derive(Component)]
@@ -205,8 +212,19 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
                     c.spawn(placed(m.node("line", ms), 15.0 - line.width() * ms / 2.0, 0.0));
                     let f = m.get("flag").rect.size() * ms * 1.2;
                     c.spawn(placed(m.node("flag", ms * 1.2), 15.0 - f.x / 2.0, -f.y - 2.0));
-                    let p = ui.positions.get("P1").rect.size() * 0.24;
-                    c.spawn((placed(ui.positions.node("P1", 0.24), 15.0 - p.x / 2.0, length - p.y / 2.0), MeterPin { top: -p.y / 2.0, length }));
+                    // Each rider's marker shows their place; the computer
+                    // riders' are smaller and under the player's.
+                    for (opponent, scale) in (0..7).map(|i| (Some(i), 0.16)).chain([(None, 0.24)]) {
+                        let p = ui.positions.get("P1").rect.size() * scale;
+                        let (n, img) = ui.positions.node("P1", scale);
+                        let pin = MeterPin { top: -p.y / 2.0, length, opponent, scale };
+                        let vis = if opponent.is_some() { Visibility::Hidden } else { Visibility::Inherited };
+                        let mut n = placed((n, img), 15.0 - p.x / 2.0, length - p.y / 2.0);
+                        n.0.border_radius = BorderRadius::MAX;
+                        n.0.justify_content = JustifyContent::Center;
+                        n.0.align_items = AlignItems::Center;
+                        c.spawn((n, pin, vis, BackgroundColor(Color::NONE))).with_child((BitmapText::new(FontId::Chrome, 64.0 * scale * 0.6, ""), PinLabel));
+                    }
                 });
 
             spawn_messages(root, &ui);
@@ -311,12 +329,90 @@ fn update_readouts(
     }
 }
 
-fn update_meter(progress: Option<Res<RaceProgress>>, mut pins: Query<(&MeterPin, &mut Node)>) {
-    let Some(p) = progress else { return };
-    let f = if p.finished.is_some() { 1.0 } else { p.lap_fraction.clamp(0.0, 1.0) };
-    for (pin, mut n) in &mut pins {
+#[allow(clippy::type_complexity)]
+fn update_meter(
+    progress: Option<Res<RaceProgress>>,
+    standings: Option<Res<Standings>>,
+    ui: Option<Res<UiAssets>>,
+    mut pins: Query<(
+        &MeterPin,
+        &Children,
+        &mut Node,
+        &mut ImageNode,
+        &mut BackgroundColor,
+        &mut Visibility,
+    )>,
+    mut labels: Query<&mut BitmapText, With<PinLabel>>,
+) {
+    let (Some(p), Some(ui)) = (progress, ui) else {
+        return;
+    };
+    let mine = if p.finished.is_some() {
+        1.0
+    } else {
+        p.lap_fraction.clamp(0.0, 1.0)
+    };
+    for (pin, children, mut n, mut img, mut bg, mut vis) in &mut pins {
+        let (place, f) = match (pin.opponent, standings.as_deref()) {
+            (None, s) => (s.filter(|s| s.racers > 1).map_or(1, |s| s.player), mine),
+            (Some(i), Some(s)) => match s.opponents.get(i) {
+                Some(&(place, f)) => (place, f.clamp(0.0, 1.0)),
+                None => {
+                    vis.set_if_neq(Visibility::Hidden);
+                    continue;
+                }
+            },
+            (Some(_), None) => {
+                vis.set_if_neq(Visibility::Hidden);
+                continue;
+            }
+        };
+        vis.set_if_neq(Visibility::Inherited);
+        // The sheet only has badges for 1st to 4th (its P5-P8 cells are
+        // empty); lower places get the number on a dark disc.
+        let badge = place <= 4;
+        let rect = ui.positions.get(&format!("P{}", place.clamp(1, 4))).rect;
+        if img.rect != Some(rect) {
+            img.rect = Some(rect);
+            n.width = px(rect.width() * pin.scale);
+            n.height = px(rect.height() * pin.scale);
+        }
+        let alpha = if pin.opponent.is_some() { 0.75 } else { 1.0 };
+        let (tint, disc) = if badge {
+            (Color::srgba(1.0, 1.0, 1.0, alpha), Color::NONE)
+        } else {
+            (Color::NONE, Color::srgba(0.1, 0.1, 0.15, alpha))
+        };
+        if img.color != tint {
+            img.color = tint;
+            bg.0 = disc;
+        }
+        for c in children.iter() {
+            if let Ok(mut t) = labels.get_mut(c) {
+                set_text(
+                    &mut t,
+                    &if badge {
+                        String::new()
+                    } else {
+                        place.to_string()
+                    },
+                );
+            }
+        }
         n.top = px(pin.top + pin.length * (1.0 - f));
     }
+}
+
+/// `1ST`, `2ND`, ...
+fn ordinal(n: usize) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "TH",
+        (1, _) => "ST",
+        (2, _) => "ND",
+        (3, _) => "RD",
+        _ => "TH",
+    };
+    format!("{n}{suffix}")
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -426,8 +522,10 @@ fn race_menus(
     mut lists: Query<&mut MenuList>,
     mut next: ResMut<NextState<AppState>>,
     mut finished_for: Local<f32>,
+    field: (Option<Res<Standings>>, Option<Res<Opponents>>),
 ) {
     let (Some(ui), Some(p)) = (ui, progress) else { return };
+    let field = (field.0.as_deref(), field.1.as_deref());
     let nav = read_nav(&keys, &pads);
     // Results come up a moment after the line (or the clock running out).
     let over = match session.as_deref() {
@@ -440,9 +538,9 @@ fn race_menus(
         // Escape or Start pauses (Backspace is the quick restart).
         if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start)) && !over {
             virt.pause();
-            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster);
+            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field);
         } else if *finished_for > 2.5 && menus.is_empty() {
-            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster);
+            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field);
         }
         return;
     };
@@ -477,7 +575,23 @@ fn race_menus(
     }
 }
 
-fn spawn_race_menu(commands: &mut Commands, ui: &UiAssets, results: bool, p: &RaceProgress, session: Option<&Session>, sel: &Selection, roster: &Roster) {
+#[allow(clippy::too_many_arguments)]
+fn spawn_race_menu(
+    commands: &mut Commands,
+    ui: &UiAssets,
+    results: bool,
+    p: &RaceProgress,
+    session: Option<&Session>,
+    sel: &Selection,
+    roster: &Roster,
+    (standings, opponents): (Option<&Standings>, Option<&Opponents>),
+) {
+    // Place and the winner when there were computer riders.
+    let place = standings.filter(|s| s.racers > 1 && p.finished.is_some());
+    let winner = place.filter(|s| s.player > 1).and_then(|s| {
+        let i = s.opponents.iter().position(|o| o.0 == 1)?;
+        opponents?.racers.get(i).map(|r| r.name.clone())
+    });
     let freestyle = session.filter(|s| s.freestyle);
     let last_round = sel.round + 1 >= roster.arcade.len();
     let (title, items): (String, &[&str]) = match (results, sel.mode) {
@@ -495,7 +609,7 @@ fn spawn_race_menu(commands: &mut Commands, ui: &UiAssets, results: bool, p: &Ra
     let rows = match (results, freestyle.is_some()) {
         (false, _) => 0,
         (true, true) => 7,
-        (true, false) => p.lap_times.len() + 1 + usize::from(p.arcade.is_some() && p.finished.is_some()),
+        (true, false) => p.lap_times.len() + 1 + usize::from(p.arcade.is_some() && p.finished.is_some()) + usize::from(place.is_some()) + usize::from(winner.is_some()),
     };
     let ph = 120.0 + 18.0 * rows as f32 + 34.0 * items.len() as f32;
     let pw = 340.0;
@@ -543,6 +657,12 @@ fn spawn_race_menu(commands: &mut Commands, ui: &UiAssets, results: bool, p: &Ra
                         });
                     } else if results {
                         box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), margin: UiRect::vertical(px(6)), ..default() }).with_children(|rows| {
+                            if let Some(s) = place {
+                                row(rows, "POSITION", &format!("{} OF {}", ordinal(s.player), s.racers), s.player == 1);
+                            }
+                            if let Some(w) = &winner {
+                                row(rows, "WINNER", w, false);
+                            }
                             let best = p.best_lap();
                             for (i, t) in p.lap_times.iter().enumerate() {
                                 let gold = best == Some(*t);

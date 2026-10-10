@@ -4,7 +4,7 @@
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
 //!             [--rider Male1] [--laps 3] [--frontend [--screen rider]]
 //!             [--mode race|timetrial|arcade|freestyle] [--minutes N]
-//!             [--round N]
+//!             [--round N] [--opponents N]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
 //!             [--resolution 1280x720] [--fullscreen]
@@ -19,6 +19,7 @@ mod freestyle;
 mod frontend;
 mod hd;
 mod hud;
+mod opponents;
 mod race;
 mod rider;
 mod ui;
@@ -44,6 +45,7 @@ use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 use convert::{SkyDome, WheelVisual};
 use freestyle::{Session, StuntClips};
 use frontend::{FrontEnd, Roster, Screen};
+use opponents::OpponentRider;
 use race::{ArcadeClock, RaceProgress};
 use rider::Rider;
 use ui::UiAssets;
@@ -76,6 +78,8 @@ struct Args {
     minutes: Option<u32>,
     /// Arcade round to start on (0-based).
     round: usize,
+    /// Computer riders in a single race.
+    opponents: usize,
 }
 
 /// The game modes on the main menu.
@@ -186,6 +190,8 @@ fn parse_args() -> anyhow::Result<Args> {
         mode: Mode::SingleRace,
         minutes: Some(3),
         round: 0,
+        // The original's default field (`mNumAIPlayers` in user.xml).
+        opponents: 5,
     };
     let mut frontend = false;
     let mut it = std::env::args().skip(1);
@@ -224,6 +230,7 @@ fn parse_args() -> anyhow::Result<Args> {
                 a.round = val().parse()?;
                 a.direct = true;
             }
+            "--opponents" => a.opponents = val().parse::<usize>()?.min(7),
             "--quad" => a.quad = val(),
             "--rider" => a.rider = val(),
             "--screenshot" => a.screenshot = Some(PathBuf::from(val())),
@@ -300,7 +307,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(roster)
         .insert_resource(selection)
         .insert_resource(front_end)
-        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin))
+        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin))
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
@@ -381,7 +388,7 @@ fn setup(
     for &e in &scene.roots {
         commands.entity(e).insert(scoped.clone());
     }
-    let collision = trk::collision_from_world(&scene.world);
+    let collision = trk::collision(&scene.world, &game.0, &sel.track);
     let start = trk::start_pose(&scene.world, &collision, 1);
     let checkpoints = trk::checkpoints(&scene.world);
 
@@ -411,6 +418,9 @@ fn setup(
             }
         }
         Err(e) => error!("failed to load quad {}: {e:#}", sel.quad),
+    }
+    if sel.mode == Mode::SingleRace {
+        opponents::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, &roster, &sel, &scene.world, &collision, args.opponents);
     }
     info!(
         "loaded {}: {} world meshes, {} props, {} collision tris, {} checkpoints",
@@ -662,37 +672,43 @@ fn drive(
 
 fn sync_quad(
     player: Option<Res<Player>>,
-    mut body: Query<&mut Transform, (With<QuadBody>, Without<WheelVisual>)>,
+    mut body: Query<(Entity, &mut Transform), (With<QuadBody>, Without<WheelVisual>)>,
     mut wheels: Query<(&WheelVisual, &mut Transform), Without<QuadBody>>,
 ) {
     let Some(player) = player else { return };
     let v = &player.0;
-    if let Ok(mut t) = body.single_mut() {
-        t.translation = v.position;
-        t.rotation = v.rotation;
-    }
+    let Ok((quad, mut t)) = body.single_mut() else { return };
+    t.translation = v.position;
+    t.rotation = v.rotation;
     for (w, mut t) in &mut wheels {
-        let n = w.wheels.len() as f32;
-        let (mut height, mut spin, mut steer) = (0.0, 0.0, 0.0);
-        for &i in &w.wheels {
-            let (Some(ws), Some(wp)) = (v.wheels.get(i), v.params.wheels.get(i)) else { continue };
-            // Wheel centre = attachment + travel along the strut.
-            height += wp.offset[1] + wp.min_pos + ws.compression;
-            spin += ws.spin;
-            steer += ws.steer;
+        if w.owner == quad {
+            place_wheel(w, &mut t, v);
         }
-        let (height, spin, steer) = (height / n, spin / n, steer / n);
-        t.translation = w.base.with_y(height + convert::COM_HEIGHT);
-        let spin = if w.mirror { spin } else { -spin };
-        t.rotation = Quat::from_rotation_y(steer) * Quat::from_rotation_x(spin);
     }
+}
+
+/// Moves a wheel model to where the simulation has its wheel(s).
+fn place_wheel(w: &WheelVisual, t: &mut Transform, v: &Vehicle) {
+    let n = w.wheels.len() as f32;
+    let (mut height, mut spin, mut steer) = (0.0, 0.0, 0.0);
+    for &i in &w.wheels {
+        let (Some(ws), Some(wp)) = (v.wheels.get(i), v.params.wheels.get(i)) else { continue };
+        // Wheel centre = attachment + travel along the strut.
+        height += wp.offset[1] + wp.min_pos + ws.compression;
+        spin += ws.spin;
+        steer += ws.steer;
+    }
+    let (height, spin, steer) = (height / n, spin / n, steer / n);
+    t.translation = w.base.with_y(height + convert::COM_HEIGHT);
+    let spin = if w.mirror { spin } else { -spin };
+    t.rotation = Quat::from_rotation_y(steer) * Quat::from_rotation_x(spin);
 }
 
 fn animate_rider(
     time: Res<Time>,
     player: Option<Res<Player>>,
     controls: Option<Res<Controls>>,
-    mut riders: Query<&mut Rider>,
+    mut riders: Query<&mut Rider, Without<OpponentRider>>,
 ) {
     let (Some(player), Some(controls)) = (player, controls) else { return };
     let v = &player.0;
@@ -702,7 +718,7 @@ fn animate_rider(
 }
 
 /// The rider performs the trick in progress.
-fn stunts(time: Res<Time>, session: Option<Res<Session>>, clips: Option<Res<StuntClips>>, mut riders: Query<&mut Rider>) {
+fn stunts(time: Res<Time>, session: Option<Res<Session>>, clips: Option<Res<StuntClips>>, mut riders: Query<&mut Rider, Without<OpponentRider>>) {
     let (Some(s), Some(clips)) = (session, clips) else { return };
     let stunt = s.active.as_ref().and_then(|a| {
         let clip = clips.0.get(a.def)?.clone()?;
