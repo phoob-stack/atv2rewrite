@@ -581,6 +581,27 @@ is named by 0x7b8e0 but nothing reads it. `.viz` holds visibility zones
 for drawing (`u32 1, u32 0, u32 count`, then 64-byte `{id, centre, 3x3,
 half-extents}` and per-zone lists, read by 0xca430), not cameras.
 
+## The attract demo
+
+`user.xml` on the disc sets `mAttractModeTime="30"` (the default too;
+read at 0x18640 into the settings at 0x1dbb50) and `mDemoMaxTime="300"`
+(0x1dbb7c). Press Start's page (0x98390) starts the demo state machine
+(`DemoSM`, 0x98140, once via 0x540e0) when it has been up that long and
+nothing has been pressed for as long. Its setup (0x97f90) picks a random
+track whose `Tracks.xml` entry has `mAvailableForDemo="1"` (every track but
+the Stadiums; `mAvailable` is not checked), or with `mDemoTrackRotate` steps
+through them three at a time. It seats `min(mMaxPlayers, 8)` riders, all
+computer-driven, with AI skill between 0.5 and 1 (0x9c2a0), and sets
+`mHasCamera` on the first rider and, a third of the time, the second as
+well, and then half of those times the third and fourth too: one, two or
+four views. The race screen turns the TV director on (0x829c0) and opens
+`ID_DEMOPAGE` (0x80ba0, built by 0x3c980): the big logo
+(`Frontend_ATVLogoBIG`), "Press Start" (string 0x17c), the track's names
+as "%s - %s" and, in some builds, "Demo (%d)" counting the demos. The demo
+ends on a button press (0x80c30 takes buttons 0 and 2 of its input
+events), when any rider finishes, or after `mDemoMaxTime` (0x80d20), and
+the front end comes back.
+
 ## Still unknown
 
 the `.kdt` spatial tree, `.nin`, `.viz`, `.cuban` (compressed animation), the names of

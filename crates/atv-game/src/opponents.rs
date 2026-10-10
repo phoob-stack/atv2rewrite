@@ -30,7 +30,7 @@ use crate::{AppState, Player, Race};
 
 /// Quads the AI leaves alone: the port's Charger can't get off the line on
 /// sand yet (its 1.2 mass spins the wheels), so it would never finish.
-const NOT_FOR_AI: &[&str] = &["Charger"];
+pub(crate) const NOT_FOR_AI: &[&str] = &["Charger"];
 /// Same reach as the player's checkpoints.
 const CHECKPOINT_RADIUS: f32 = 25.0;
 
@@ -73,6 +73,19 @@ impl Opponents {
     /// Split-screen player `n`'s (2 to 4) quad.
     pub fn human(&self, n: usize) -> Option<&Racer> {
         self.racers.iter().find(|r| r.human == Some(n))
+    }
+
+    /// Drives player 1's quad as the computer riders drive theirs (the
+    /// attract demo).
+    pub fn drive_player(&mut self, v: &Vehicle, dt: f32) -> Input {
+        let traffic: Vec<Traffic> = self.racers.iter().map(|r| Traffic { position: r.vehicle.position, velocity: r.vehicle.velocity }).collect();
+        self.player_track.drive(&self.line, v, &traffic, dt)
+    }
+
+    /// Where to put player 1's quad back on the line, when the computer
+    /// driving it has given up getting round.
+    pub fn respot_player(&mut self) -> Option<(Vec3, Quat)> {
+        self.player_track.wants_respot().then(|| self.player_track.respot(&self.line))
     }
 }
 

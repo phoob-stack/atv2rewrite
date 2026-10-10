@@ -199,6 +199,12 @@ Orbit camera. The original could save one replay; that isn't ported.
 Once a lone rider is home, the same director films the rest of the race
 behind the results, moving between the computer riders every few seconds.
 
+**Attract demo**, as in the original: left on Press Start for 30 seconds
+with nothing pressed, the game races eight computer riders on a random
+track (any the setup files offer for the demo, locked or not), filmed by
+the same TV director, under the logo and a flashing PRESS START. Any key
+or button, the first rider home or five minutes brings back Press Start.
+
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on
 track select.
