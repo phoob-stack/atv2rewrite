@@ -20,7 +20,7 @@ use crate::career::{self, Career, Champ, Run};
 use crate::challenge;
 use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
-use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
+use crate::ui::{fullscreen, placed, read_nav_from, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::mp::MpChamp;
 use crate::{AppState, Mode, Selection};
 
@@ -304,7 +304,9 @@ fn navigate(
     mut settings: ResMut<Settings>,
     (mut career, rules, defs, mut mp_champ): (ResMut<Career>, Res<career::Rules>, Res<challenge::Defs>, ResMut<MpChamp>),
 ) {
-    let Some(nav) = read_nav(&keys, &pads) else { return };
+    // In split screen each player picks their rider and ATV with their own pad.
+    let picking = fe.players > 1 && matches!(fe.screen, Screen::Rider | Screen::Quad);
+    let Some(nav) = read_nav_from(&keys, &pads, picking.then_some(fe.picking)) else { return };
     if fe.built != Some(fe.screen) {
         return;
     }
