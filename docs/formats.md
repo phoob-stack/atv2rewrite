@@ -269,6 +269,19 @@ left alone.
 ## Game-mode rules (Setup/*.xml)
 
 - `Arcade.xml`: `RoundN TrackName=` in order (16 rounds, Dunes 1 twice).
+  The original races fifteen: `ArcadeSM` (0x95e70) brings up
+  `Arcade_Complete` after the fifteenth win (0x96070).
+- Arcade's field (0x1dd200, saved in the profile as `mRound`, `Player%d`
+  and `mDropOuts%d` at 0x11470): a new game seats the player at the back
+  (0x11530). After a win the grid is the finishing order and the last three
+  are out (0x115b0); three riders replace them at the back, picked by
+  0x9c090 from the computer riders ranked by skill rating: the one at the
+  next round's difficulty (round / 14, times 1.4 below 0.6, 0x11130), then
+  one below, one above and so on, skipping riders in the field and those
+  who went out in the last two rounds. `Arcade_Status` (page 0xb, 0x38ee0)
+  lists 0xc8 "Grid Positions" as `%d. %s` (the player and new riders in
+  their own colours) and 0x19c "Ranking" (the certificate a rider's skill
+  rating reaches, 0x88470), then `%s: %s` 0x16f "Out" rows.
   `Tracks.xml` gives each track's `mArcadeStartTime` (40 s everywhere) and
   `mAIBestLapTime`/`mAIWorstLapTime`. Tracks mark their time-extension gates
   with extra `Checkpoint N arcade` locators (Forest 3 spells it `acade`) at

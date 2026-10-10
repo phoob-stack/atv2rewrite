@@ -16,6 +16,7 @@
 //! with `--round` races the saved championship's next round).
 
 mod aitricks;
+mod arcade;
 mod attack;
 mod audio;
 mod boost;
@@ -162,14 +163,25 @@ struct Selection {
     failed: usize,
     /// Open Freestyle's time limit in minutes (None = unlimited).
     time_limit: Option<u32>,
-    /// The computer riders' models, when the field is set (career).
+    /// The computer riders' models, when the field is set (career and
+    /// Arcade), front of the grid first.
     field: Vec<String>,
+    /// Arcade: the player's slot on the grid (1 at the front).
+    grid: usize,
     /// The Freestyle Challenge (1-based).
     challenge: usize,
     /// Humans in a split-screen race (1 alone), and the rider and quad of
     /// each after the first.
     players: usize,
     others: Vec<(String, String)>,
+}
+
+impl Selection {
+    /// Player 1's slot on the grid: Arcade's from the last round, else
+    /// the front.
+    fn player_slot(&self) -> usize {
+        if self.mode == Mode::Arcade { self.grid.max(1) } else { 1 }
+    }
 }
 
 #[derive(Resource, Clone)]
@@ -274,6 +286,7 @@ fn parse_args() -> anyhow::Result<Args> {
                     "players" => Screen::MpPlayers,
                     "tricks" | "trickbook" => Screen::TrickBook,
                     "profiles" => Screen::ProfileSelect,
+                    "arcade" => Screen::ArcadeStatus,
                     other => anyhow::bail!("unknown screen {other} (title, main, rider, atv, track)"),
                 });
             }
@@ -355,6 +368,7 @@ fn main() -> anyhow::Result<()> {
         failed: 0,
         time_limit: args.minutes,
         field: Vec::new(),
+        grid: 1,
         challenge: args.challenge,
         players: args.players,
         others: Vec::new(),
@@ -399,6 +413,19 @@ fn main() -> anyhow::Result<()> {
         selection.rider = run.rider.clone();
         selection.quad = run.quad.clone();
         selection.field = run.opponents();
+    }
+    // Arcade races the saved field (a new one at first).
+    if args.mode == Mode::Arcade {
+        let rider = match &career.profile {
+            Some(p) if !args.direct => p.rider.clone(),
+            _ => selection.rider.clone(),
+        };
+        let field = career.arcade_field.get_or_insert_with(|| arcade::ArcadeField::new(&roster, &rider, selection.round));
+        if args.direct {
+            field.without(&roster, &rider, selection.round);
+            selection.field = field.grid_order();
+            selection.grid = field.player_slot();
+        }
     }
     let first = if args.direct { AppState::Loading } else { AppState::FrontEnd };
     let front_end = FrontEnd::at(args.screen.unwrap_or_default());
@@ -529,7 +556,7 @@ fn setup(
     let slot = if in_challenge && trk::start_locator(&scene.world, sel.challenge).is_some_and(|l| l.name.trim().eq_ignore_ascii_case(&format!("start{}", sel.challenge))) {
         sel.challenge
     } else {
-        1
+        sel.player_slot()
     };
     let start = trk::start_pose(&scene.world, &collision, slot);
     let course = in_challenge.then(|| challenge::Course::new(&scene.world, sel.challenge));

@@ -28,6 +28,7 @@ use bevy::prelude::*;
 use atv_formats::setup::{self, Entry};
 use atv_formats::GameSource;
 
+use crate::arcade::{self, ArcadeField};
 use crate::freestyle::{self, limit_label, TrickDef, MEDALS, TIME_LIMITS};
 use crate::career::{self, Career, Champ, CustomSetup, Plan, Profile, Run, PROFILES};
 use crate::challenge;
@@ -76,7 +77,8 @@ pub struct Roster {
     pub tracks: Vec<String>,
     /// Tracks open from the start (`mAvailable="1"` in `Tracks.xml`).
     pub open_tracks: Vec<String>,
-    /// Arcade's rounds, in order (the ones on this disc).
+    /// Arcade's rounds, in order (the ones on this disc, up to the
+    /// original's fifteen).
     pub arcade: Vec<String>,
     /// Open Freestyle's Bronze/Silver/Gold scores per [`TIME_LIMITS`] entry.
     pub freestyle_medals: Vec<Option<[u32; 3]>>,
@@ -186,6 +188,7 @@ impl Roster {
             .into_iter()
             .filter_map(|e| e.get("TrackName").map(str::to_owned))
             .filter(|t| tracks.iter().any(|k| k.eq_ignore_ascii_case(t)))
+            .take(arcade::ROUNDS)
             .collect();
         let freestyle_medals = TIME_LIMITS.iter().map(|&l| freestyle::medal_targets(game, l)).collect();
         let tricks = freestyle::load_tricks(game).0;
@@ -234,6 +237,10 @@ pub enum Screen {
     TrickBook,
     /// Arcade with a saved round: carry on from it or start again.
     ArcadeNew,
+    /// Arcade's grid and who went out before each round, and the field at
+    /// the end.
+    ArcadeStatus,
+    ArcadeComplete,
     /// The Custom championship's tracks and laps, then its points split.
     CustomTracks,
     CustomPoints,
@@ -369,6 +376,9 @@ fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>, car
             _ => Screen::Main,
         };
     }
+    if fe.screen == Screen::ArcadeStatus {
+        fe.arcade_round = career.arcade;
+    }
     fe.built = None;
     fe.mode = sel.mode;
     fe.limit = TIME_LIMITS.iter().position(|&l| l == sel.time_limit).unwrap_or(1);
@@ -495,6 +505,7 @@ fn navigate(
                     fe.players = 1;
                     sel.players = 1;
                     sel.others.clear();
+                    sel.field.clear();
                     mp_champ.run = None;
                     match item {
                         Some("FREESTYLE") => fe.screen = Screen::FreestyleType,
@@ -507,10 +518,10 @@ fn navigate(
                             sel.mode = fe.mode;
                             fe.arcade_round = 0;
                             let saved = career.arcade > 0 && career.arcade < roster.arcade.len();
-                            if fe.mode == Mode::Arcade && saved {
-                                fe.screen = Screen::ArcadeNew;
-                            } else {
-                                to_rider(&mut fe, &mut sel, &career);
+                            match fe.mode {
+                                Mode::Arcade if saved => fe.screen = Screen::ArcadeNew,
+                                Mode::Arcade => new_arcade(&mut fe, &mut career, &roster, &sel),
+                                _ => to_rider(&mut fe, &mut sel, &career),
                             }
                         }
                         Some("CAREER") => {
@@ -554,7 +565,7 @@ fn navigate(
                 }
                 Nav::Back if fe.players > 1 => fe.screen = Screen::MpPlayers,
                 Nav::Back if fe.mode == Mode::Career => fe.screen = Screen::CareerChamp,
-                Nav::Back if fe.mode == Mode::Arcade && career.arcade > 0 && career.arcade < roster.arcade.len() => fe.screen = Screen::ArcadeNew,
+                Nav::Back if fe.mode == Mode::Arcade => fe.screen = Screen::ArcadeStatus,
                 Nav::Back if fe.mode == Mode::Freestyle => fe.screen = Screen::FreestyleType,
                 Nav::Back if fe.mode == Mode::Challenge => fe.screen = Screen::Challenges,
                 Nav::Back => fe.screen = Screen::Main,
@@ -604,8 +615,14 @@ fn navigate(
                     sel.challenge = fe.challenge;
                     next.set(AppState::Loading);
                 } else if fe.mode == Mode::Arcade {
-                    // Arcade starts on its first round, or the saved one.
+                    // Arcade starts on its first round, or the saved one,
+                    // with its field (a rider the player now rides swapped
+                    // for another).
                     if let Some(t) = roster.arcade.get(fe.arcade_round) {
+                        let field = career.arcade_field.get_or_insert_with(|| ArcadeField::new(&roster, &sel.rider, fe.arcade_round));
+                        field.without(&roster, &sel.rider, fe.arcade_round);
+                        sel.field = field.grid_order();
+                        sel.grid = field.player_slot();
                         sel.round = fe.arcade_round;
                         sel.failed = 0;
                         sel.track = t.clone();
@@ -617,11 +634,9 @@ fn navigate(
                 }
             }
             Nav::Back if rides_profile(&fe, &career) => {
-                let saved = career.arcade > 0 && career.arcade < roster.arcade.len();
                 fe.screen = match fe.mode {
                     Mode::Career => Screen::CareerChamp,
-                    _ if saved => Screen::ArcadeNew,
-                    _ => Screen::Main,
+                    _ => Screen::ArcadeStatus,
                 };
             }
             Nav::Back => fe.screen = Screen::Rider,
@@ -741,12 +756,31 @@ fn navigate(
             }
             Nav::Accept | Nav::Start => {
                 // The saved round first, then a new game.
-                fe.arcade_round = if list.as_ref().is_some_and(|l| l.selected == 0) { career.arcade } else { 0 };
-                to_rider(&mut fe, &mut sel, &career);
+                if list.as_ref().is_some_and(|l| l.selected == 0) {
+                    fe.arcade_round = career.arcade;
+                    if career.arcade_field.is_none() {
+                        career.arcade_field = Some(ArcadeField::new(&roster, &arcade_rider(&career, &sel), career.arcade));
+                    }
+                    fe.screen = Screen::ArcadeStatus;
+                } else {
+                    new_arcade(&mut fe, &mut career, &roster, &sel);
+                }
             }
             Nav::Back => fe.screen = Screen::Main,
             _ => {}
         },
+        Screen::ArcadeStatus => match nav {
+            Nav::Accept | Nav::Start => to_rider(&mut fe, &mut sel, &career),
+            Nav::Back => fe.screen = Screen::Main,
+            _ => {}
+        },
+        Screen::ArcadeComplete => {
+            if matches!(nav, Nav::Accept | Nav::Start | Nav::Back) {
+                career.arcade_field = None;
+                career.save();
+                fe.screen = Screen::Main;
+            }
+        }
         Screen::CareerStatus => match nav {
             Nav::Accept | Nav::Start => {
                 let Some(run) = &career.run else { return };
@@ -1095,6 +1129,19 @@ fn to_rider(fe: &mut FrontEnd, sel: &mut Selection, career: &Career) {
     }
 }
 
+/// The rider Arcade's field is drawn around: the profile's, or the last
+/// picked.
+fn arcade_rider(career: &Career, sel: &Selection) -> String {
+    career.profile.as_ref().map_or(sel.rider.clone(), |p| p.rider.clone())
+}
+
+/// A new Arcade game: round 1 and a new field, shown on Arcade Status.
+fn new_arcade(fe: &mut FrontEnd, career: &mut Career, roster: &Roster, sel: &Selection) {
+    fe.arcade_round = 0;
+    career.arcade_field = Some(ArcadeField::new(roster, &arcade_rider(career, sel), 0));
+    fe.screen = Screen::ArcadeStatus;
+}
+
 /// A key typed on Name Your Rider: true when it typed or deleted.
 fn type_key(fe: &mut FrontEnd, k: &KeyboardInput) -> bool {
     if k.key_code == KeyCode::Backspace {
@@ -1276,6 +1323,8 @@ fn rebuild(
         Screen::MpPlayers => ("Multiplayer_Num_Players", label),
         Screen::MpChampStatus => (mp_champ.run.as_ref().map_or("Career_Status_Amateur", |r| r.champ.status_screen()), "CHAMPIONSHIP"),
         Screen::ArcadeNew => ("Arcade_Newgame", "ARCADE"),
+        Screen::ArcadeStatus => ("Arcade_Status", "ARCADE"),
+        Screen::ArcadeComplete => ("Arcade_Complete", "ARCADE"),
         Screen::TrickBook => ("Trickbook", ""),
         Screen::CustomTracks => ("Career_Custom_Tracks", if split { "CHAMPIONSHIP" } else { "CAREER" }),
         Screen::CustomPoints => ("Career_Custom_Points_Distrib", if split { "CHAMPIONSHIP" } else { "CAREER" }),
@@ -1754,6 +1803,28 @@ fn rebuild(
             kids.push(hint(&mut commands, &ui, &format!("{}% RACE   -   {split}% TRICKS", 100 - split), 380.0));
             kids.push(hint(&mut commands, &ui, "LEFT AND RIGHT SHARE THE POINTS OUT  -  BONUS POINTS GO BY TRICK SCORE", 398.0));
         }
+        Screen::ArcadeStatus | Screen::ArcadeComplete => {
+            if let Some(field) = &career.arcade_field {
+                let complete = fe.screen == Screen::ArcadeComplete;
+                let track = roster.arcade.get(fe.arcade_round);
+                let head = match track {
+                    _ if complete => "CONGRATULATIONS".to_string(),
+                    Some(t) => format!("ROUND {} OF {}  -  {}", fe.arcade_round + 1, roster.arcade.len(), track_title(t)),
+                    None => String::new(),
+                };
+                kids.push(commands.spawn((BitmapText::new(FontId::Menu, 14.0, head), ui_at(40.0, 80.0))).id());
+                let player = match &career.profile {
+                    Some(p) => p.name.clone(),
+                    None => roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider)).map_or("YOU".to_string(), |r| r.name.clone()),
+                };
+                kids.push(arcade_table(&mut commands, field, &roster, (&player, rules.certificate(career.skill_points)), &rules, !complete, (40.0, 116.0)));
+                if complete {
+                    kids.push(hint(&mut commands, &ui, &format!("YOU WON ALL {} ROUNDS", roster.arcade.len()), 380.0));
+                } else if let Some(tex) = track.and_then(|t| ui.tracks.get(&t.to_ascii_lowercase())) {
+                    kids.push(commands.spawn(placed(tex.node(220.0, 220.0), 380.0, 116.0)).id());
+                }
+            }
+        }
         Screen::CareerStatus | Screen::CareerComplete => {
             if let Some(run) = &career.run {
                 let complete = fe.screen == Screen::CareerComplete || run.over();
@@ -1797,7 +1868,8 @@ fn rebuild(
         Screen::TrickBook => &[("controlbuttoncircle", "BACK")],
         Screen::MpChampStatus if mp_champ.run.as_ref().is_some_and(|r| r.over()) => &[("controlbuttoncross", "OK")],
         Screen::MpChampStatus => &[("controlbuttoncross", "RACE"), ("controlbuttoncircle", "BACK")],
-        Screen::CareerComplete => &[("controlbuttoncross", "OK")],
+        Screen::CareerComplete | Screen::ArcadeComplete => &[("controlbuttoncross", "OK")],
+        Screen::ArcadeStatus => &[("controlbuttoncross", "RACE"), ("controlbuttoncircle", "BACK")],
         Screen::CustomTracks if fe.custom.cursor < fe.custom.rows.len() && !fe.custom.editing => {
             let on = fe.custom.rows[fe.custom.cursor].round.is_some();
             if fe.custom.count() > 0 {
@@ -1886,6 +1958,50 @@ fn standings_table(commands: &mut Commands, run: &Run, left: f32, top: f32) -> E
         .id()
 }
 
+/// Arcade Status's table, as the original's: the grid front to back
+/// ("1. NAME", new riders marked out) and each rider's ranking, then who
+/// went out after the last round (Arcade Complete: the final order alone).
+/// `player`: the player's name and ranking.
+fn arcade_table(commands: &mut Commands, field: &ArcadeField, roster: &Roster, player: (&str, &str), rules: &career::Rules, with_out: bool, (left, top): (f32, f32)) -> Entity {
+    let dim = Color::srgb(0.75, 0.82, 0.95);
+    let gold = Color::srgb(1.0, 0.85, 0.3);
+    let new = Color::srgb(0.55, 1.0, 0.55);
+    let gone = Color::srgb(1.0, 0.5, 0.45);
+    let rider = |model: &str| roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(model));
+    let named = |model: &str| rider(model).map_or(model.to_ascii_uppercase(), |r| r.name.clone());
+    let ranked = |model: &str| rider(model).map_or("", |r| arcade::ranking(rules, r));
+    let head = if with_out { "GRID POSITIONS" } else { "FINAL ORDER" };
+    let mut rows: Vec<([String; 2], Color)> = vec![([head.into(), "RANKING".into()], dim)];
+    let mut grid: Vec<(usize, Option<&arcade::Entrant>)> = field.riders.iter().map(|e| (e.grid, Some(e))).collect();
+    grid.push((field.grid, None));
+    grid.sort_by_key(|g| g.0);
+    for (i, (_, e)) in grid.into_iter().enumerate() {
+        rows.push(match e {
+            None => ([format!("{}. {}", i + 1, player.0), player.1.to_string()], gold),
+            Some(e) => ([format!("{}. {}", i + 1, named(&e.model)), ranked(&e.model).to_string()], if e.rounds == 0 { new } else { Color::WHITE }),
+        });
+    }
+    if with_out {
+        for m in field.just_out() {
+            rows.push(([format!("OUT: {}", named(m)), ranked(m).to_string()], gone));
+        }
+    }
+    commands
+        .spawn(Node { position_type: PositionType::Absolute, left: px(left), top: px(top), flex_direction: FlexDirection::Column, row_gap: px(10), ..default() })
+        .with_children(|t| {
+            for (cells, color) in rows {
+                t.spawn(Node { column_gap: px(10), ..default() }).with_children(|r| {
+                    for (text, width) in cells.into_iter().zip([210.0, 110.0]) {
+                        r.spawn(Node { width: px(width), ..default() }).with_children(|c| {
+                            c.spawn(BitmapText::new(FontId::Small, 9.0, text).color(color));
+                        });
+                    }
+                });
+            }
+        })
+        .id()
+}
+
 /// "ROUND 2 OF 5  -  FOREST 1" for a championship's next round.
 fn round_head(run: &Run) -> String {
     let (track, laps) = run.next_round().map_or((String::new(), 0), |(t, l)| (track_title(t), l));
@@ -1950,7 +2066,7 @@ fn popup(commands: &mut Commands, ui: &UiAssets, head: &str, text: &str) -> Enti
 /// Available Profiles' figures for a profile, as the original lists them.
 fn profile_stats(c: &Career, roster: &Roster, rules: &career::Rules) -> [(&'static str, String); 6] {
     let champ = Champ::ALL.into_iter().rev().find(|&ch| c.is_open(ch)).unwrap_or_default();
-    // Arcade's tracks reached (its last round goes back to the first).
+    // Arcade's tracks reached.
     let tracks: std::collections::BTreeSet<String> = roster.arcade.iter().map(|t| t.to_ascii_lowercase()).collect();
     let arcade = tracks.iter().filter(|t| c.reached.iter().any(|r| r.eq_ignore_ascii_case(t))).count();
     let medals = c.challenges.values().filter(|ch| ch.1.is_some()).count();
