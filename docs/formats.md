@@ -618,9 +618,23 @@ the ROW spatial tree and effect records, and the material record fields.
   `/ 14`) `+ 0.7` capped at 1, halved for some hit directions; pitch
   `1 + rand(0.5)`. The rewrite uses the chassis' closing speed over 2 m/s
   for the impact.
-- Other quads' engines and wheels: how (and how loud) the original plays computer
-  riders' engines and wheel noise isn't decoded; the rewrite gives them the player's mix
-  scaled by `(8 / (d + 8))²`, d being the metres from player 1.
+- Sound sets (`0x94ef0`, vtable `0x1c34d4`): each quad that makes sound
+  gets a set of parts, each with its own update: engine (`0x93c60`),
+  knocks (`0x94480`), rider voice (`0x94690`) and wheel noise (`0x93f10`,
+  one voice per wheel, positioned at it). `0x92ff0` gives every player a
+  full set, with all four wheel voices for one or two players and wheel 0
+  only for three or four; computer riders get engine-only sets, as many
+  as `4 - players`, and `0x92c80` hands them each frame to the riders
+  nearest view 1's listener.
+- Listeners: one per view (`0x93310` copies each view camera's position
+  and axes). A 3D voice is placed against the listener nearest to it
+  (`0x76180` -> `0x75e50`, then `0x73f70` makes the position and velocity
+  relative to it), so each split-screen player hears their own quad as
+  player 1 does.
+- How loud other quads are: DirectSound's 3D distance model isn't decoded;
+  the rewrite gives them the player's mix scaled by `(8 / (d + 8))²`, d
+  being the metres from the nearest player's quad, and gives computer
+  riders wheel noise and crash sounds too.
 - Water: the track's water meshes (materials named `*water*`: `FO_water`,
   `DU_water`, `Water_24bit`...) aren't solid; the quad drives on the bed
   below. The rewrite keeps their level triangles as a separate surface to

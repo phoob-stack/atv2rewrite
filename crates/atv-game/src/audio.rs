@@ -6,7 +6,16 @@
 //! looping Vehicles-bank samples, "on" (2) and "off" (1), whose volume
 //! and pitch track the revs and throttle. Every other quad on the track
 //! runs the same two loops from its own revs, quieter the further it is
-//! from player 1.
+//! from the nearest player.
+//!
+//! Split screen: the original gives every player the same set of sounds
+//! (0x92ff0 makes one per player: engine, knocks, voice and wheel noise)
+//! and places each 3D sound against the listener of the nearest view
+//! (0x76180 picks it with 0x75e50), so every player hears their own quad
+//! as loud as player 1 hears theirs, and other quads by how close they
+//! are to any player. With three or four players each quad's wheel noise
+//! comes from its first wheel only, where one or two get a voice per
+//! wheel.
 //!
 //! One-shots, as the original plays them: the SpotFX bank in the menus
 //! (0 cursor, 1 select or back) at `mFrontEndSpotFXVol`; a Riders-bank
@@ -34,7 +43,8 @@ impl Plugin for AudioPlugin {
         app.init_asset::<Sound>()
             .add_audio_source::<Sound>()
             .add_systems(PreUpdate, load_banks.run_if(resource_exists::<Game>).run_if(not(resource_exists::<Banks>)))
-            .add_systems(OnEnter(AppState::Race), start_race_audio)
+            // After the race is set up, so the other quads are there to hear.
+            .add_systems(OnEnter(AppState::Race), start_race_audio.after(crate::setup))
             .add_systems(Update, (engine_and_wheels, crash_sounds, bed_volumes).run_if(in_state(AppState::Race)))
             .add_systems(Update, menu_sounds.run_if(in_state(AppState::FrontEnd)))
             .add_systems(Update, pause_menu_sounds.run_if(in_state(AppState::Race)));
@@ -210,10 +220,33 @@ struct OtherEngine {
     on: bool,
 }
 
-/// How loud another quad is at `d` metres from player 1 (the original's
-/// falloff isn't decoded; this halves by about 3.3 m and is faint past 30).
+/// How loud another quad is at `d` metres from the nearest player (the
+/// original's falloff isn't decoded; this halves by about 3.3 m and is
+/// faint past 30).
 fn falloff(d: f32) -> f32 {
     (8.0 / (d.max(0.0) + 8.0)).powi(2)
+}
+
+/// Where the race is heard from: each player's quad, player 1 first (the
+/// original listens from each view's camera; the rewrite's mix has always
+/// been relative to the player's quad).
+fn listeners(player: &Player, opponents: Option<&crate::opponents::Opponents>) -> Vec<Vec3> {
+    let others = opponents.into_iter().flat_map(|o| o.racers.iter().filter(|r| r.human.is_some()).map(|r| r.vehicle.position));
+    std::iter::once(player.0.position).chain(others).collect()
+}
+
+/// How loud a sound at `at` is: by its distance to the nearest player, as
+/// the original places it against the nearest view's listener (0x75e50).
+fn nearness(listeners: &[Vec3], at: Vec3) -> f32 {
+    listeners.iter().map(|l| falloff(l.distance(at))).fold(0.0, f32::max)
+}
+
+/// How many of a quad's wheels (from wheel 0) make its wheel noise: with
+/// three or four players the original gives each player's quad a voice for
+/// wheel 0 only (0x94ef0's mode 1), and with one or two a voice per wheel.
+/// Computer riders' wheels are all heard here (the original has none).
+fn heard_wheels(players: usize, human: bool) -> usize {
+    if players > 2 && human { 1 } else { usize::MAX }
 }
 
 /// Wheel noise: player 1's quad, or another racer's (index) by distance.
@@ -386,6 +419,7 @@ fn engine_and_wheels(
         }
     }
     let (Some(player), Some(mix)) = (player, mix) else { return };
+    let ears = listeners(&player, opponents.as_deref());
     let v = &player.0;
     let r = (v.revs / v.params.max_revs.max(1.0)).clamp(0.0, 1.0);
     let [on, off] = engine_mix(r, v.throttle, mix.pitch_zero, mix.pitch_span);
@@ -396,10 +430,10 @@ fn engine_and_wheels(
                 (vol * mix.engine, pitch)
             }
             (_, Some(w), _) => {
-                let q = match w.racer {
-                    None => v,
+                let (q, human) = match w.racer {
+                    None => (v, true),
                     Some(i) => match opponents.as_ref().and_then(|opp| opp.racers.get(i)) {
-                        Some(r) => &r.vehicle,
+                        Some(r) => (&r.vehicle, r.human.is_some()),
                         None => continue,
                     },
                 };
@@ -407,7 +441,7 @@ fn engine_and_wheels(
                 // pitch on their surfaces.
                 let (mut contact, mut ground_pitch) = (0.0, 0.0);
                 if let Some((mix, main)) = &w.ground {
-                    for wheel in q.wheels.iter().filter(|w| w.contact) {
+                    for wheel in q.wheels.iter().take(heard_wheels(ears.len(), human)).filter(|w| w.contact) {
                         let id = if wheel.surface == atv_sim::surface::UNKNOWN { *main } else { wheel.surface };
                         let (vol, pitch) = mix.get(usize::from(id)).copied().unwrap_or((0.0, 1.0));
                         contact += vol;
@@ -417,7 +451,7 @@ fn engine_and_wheels(
                 let ground_pitch = if contact > 0.0 { ground_pitch / contact } else { 1.0 };
                 let contact = contact / q.wheels.len().max(1) as f32;
                 let pace = (q.velocity.length() / 20.0).clamp(0.0, 1.0);
-                let near = falloff(q.position.distance(v.position));
+                let near = nearness(&ears, q.position);
                 let depth = crate::water::depth(water.as_deref(), q.position);
                 let (vol, pitch) = match w.water {
                     // Splashing: churns even when slow, lower when deep.
@@ -433,7 +467,7 @@ fn engine_and_wheels(
                 let r = (q.revs / q.params.max_revs.max(1.0)).clamp(0.0, 1.0);
                 let [on, off] = engine_mix(r, q.throttle, mix.pitch_zero, mix.pitch_span);
                 let (vol, pitch) = if o.on { on } else { off };
-                (vol * mix.engine * falloff(q.position.distance(v.position)), pitch)
+                (vol * mix.engine * nearness(&ears, q.position), pitch)
             }
             _ => continue,
         };
@@ -551,7 +585,7 @@ impl CrashVoices {
     }
 
     /// The grunt and knock, if any, from quad `slot`'s crash state. `near`
-    /// scales them by how far it is from player 1.
+    /// scales them by how far it is from the nearest player.
     fn play(&mut self, slot: usize, wreck: &mut crate::crash::Wreck, female: bool, near: f32, out: &mut impl FnMut(&Arc<Pcm>, f32, f32), banks: &Banks) {
         let [mut grunt, mut knock_t] = self.timers[slot];
         // A bailed rider hitting the ground: impulse over 2.5 while moving,
@@ -594,8 +628,8 @@ impl CrashVoices {
     }
 }
 
-/// Grunts from thrown riders and knocks from quads' bodies: player 1's,
-/// and everyone else's by how far off they are.
+/// Grunts from thrown riders and knocks from quads' bodies: each player's
+/// own at full volume, and everyone else's by how far off they are.
 #[allow(clippy::too_many_arguments)]
 fn crash_sounds(
     mut commands: Commands,
@@ -621,9 +655,10 @@ fn crash_sounds(
     let mut out = |pcm: &Arc<Pcm>, volume: f32, pitch: f32| one_shot(&mut commands, &mut sounds, pcm, volume * effects, pitch);
     let female = |model: &str| model.to_ascii_lowercase().starts_with("female");
     state.play(0, &mut wreck, female(&sel.rider), 1.0, &mut out, &banks);
+    let ears = listeners(&player, opponents.as_deref());
     if let Some(opp) = opponents.as_mut() {
         for (i, r) in opp.racers.iter_mut().enumerate() {
-            let near = falloff(r.vehicle.position.distance(player.0.position));
+            let near = nearness(&ears, r.vehicle.position);
             state.play(i + 1, &mut r.wreck, female(&r.model), near, &mut out, &banks);
         }
     }
@@ -654,6 +689,16 @@ mod tests {
     fn other_engines_fade_with_distance() {
         assert_eq!(falloff(0.0), 1.0);
         assert!(falloff(8.0) == 0.25 && falloff(40.0) < 0.03);
+    }
+
+    #[test]
+    fn nearest_player_hears_it() {
+        let ears = [Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0)];
+        // Player 2's own quad is as loud as player 1's.
+        assert_eq!(nearness(&ears, ears[1]), 1.0);
+        assert_eq!(nearness(&ears, Vec3::new(92.0, 0.0, 0.0)), falloff(8.0));
+        assert_eq!(heard_wheels(2, true), usize::MAX);
+        assert_eq!((heard_wheels(3, true), heard_wheels(4, false)), (1, usize::MAX));
     }
 
     #[test]
