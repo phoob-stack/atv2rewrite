@@ -117,6 +117,23 @@ impl Texture {
         Ok(Texture { width, height, mip_count: count, format: TexFormat::Bgra8, data })
     }
 
+    /// The top mip level decoded to straight RGBA8.
+    pub fn to_rgba8(&self) -> Vec<u8> {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut out = vec![0u8; w * h * 4];
+        let top = &self.data[..self.level_size(0).min(self.data.len())];
+        match self.format {
+            TexFormat::Dxt1 => texpresso::Format::Bc1.decompress(top, w, h, &mut out),
+            TexFormat::Dxt5 => texpresso::Format::Bc3.decompress(top, w, h, &mut out),
+            TexFormat::Bgra8 => {
+                for (o, i) in out.chunks_exact_mut(4).zip(top.chunks_exact(4)) {
+                    o.copy_from_slice(&[i[2], i[1], i[0], i[3]]);
+                }
+            }
+        }
+        out
+    }
+
     pub fn level_size(&self, level: u32) -> usize {
         let w = (self.width >> level).max(1) as usize;
         let h = (self.height >> level).max(1) as usize;
