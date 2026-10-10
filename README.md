@@ -12,12 +12,8 @@ or a folder the disc was extracted to.
 | `atv-formats` | Engine-free readers: Xbox disc filesystem, "Bark" archive + LZSS, BOG textures (DXT1/DXT5, swizzled ARGB, 8-bit palettized), BED sprite sheets and bitmap fonts, ROM 1.26 models (meshes + Bezier patches), ROW 2.25 track worlds, `Setup/*.xml` rule files. |
 | `atv-sim` | Engine-free vehicle physics ported from the original game (see `docs/physics.md`): reads the game's `.params` tuning files, spring-strut wheels, body-level ground forces, auto gearbox, wheelies, preload jumps, air control, and track collision built from the track's meshes and patches. |
 | `atv-tool` | Command line: `list`, `extract <dir>`, `check` (parses every texture, model and track), `sim` (headless autopilot lap test). |
-<<<<<<< HEAD
-| `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, loading screen) into a race with the original HUD (rev gauge, laps, times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
+| `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, loading screen) into a race with the original HUD (rev gauge, laps, times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); Single Race, Time Trial, Career, Arcade, Open Freestyle and split-screen multiplayer modes; computer riders; tricks with the original stunt animations; a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
 | `atv-hd` | HD texture packs: upscales the game's own textures with an AI upscaler (Real-ESRGAN) on the player's machine into a local cache the game prefers when present. |
-=======
-| `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, loading screen) into a race with the original HUD (rev gauge, laps, times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); Single Race, Time Trial, Arcade and Open Freestyle modes; tricks with the original stunt animations; a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
->>>>>>> origin/main
 | `atv-launcher` | The launcher (binary `atv2-launcher`): pick your disc image or extracted folder once, choose track, quad, resolution and fullscreen, press Play. |
 
 ## Running
@@ -105,10 +101,12 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   home the others get a minute to finish. Freestyle Battle puts the same
   players on a track against a time limit with no computer riders; the
   most points wins. In split screen player 1's trick buttons are 1-4 and
-  player 2's are Numpad 1-4. The multiplayer Championship races the five
-  tracks of the Amateur, Qualifying or Professional championship with the
-  same players, computer riders from it making four, scored with the
-  career's position points.
+  player 2's are Numpad 1-4. The multiplayer Championship is the original's
+  custom championship for the same players: they choose its tracks and
+  laps on Choose Your Tracks (and the points split too, once Custom is
+  open in the career), computer riders make the field up to four, and
+  each round scores the race and the trick ranking as a career round
+  does.
 
 Tricks are the 28 from `Setup/Tricks.xml`: hold a trick button (or two for
 the level 5-7 tricks: 1+2, 2+3, 3+4) and a direction while airborne. Keep

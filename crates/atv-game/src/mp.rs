@@ -12,10 +12,11 @@
 //! computer riders: each player has their own trick session, and the most
 //! points when the time runs out wins.
 //!
-//! The Championship races one of the career championships' five tracks
-//! with the same players, computer riders from that championship making
-//! the field up to four, and scores each round with the career's position
-//! points.
+//! The Championship is the original's custom championship for the same
+//! players: they choose its tracks and laps (and, once Custom is open in
+//! the career, the points split), computer riders from the Custom field
+//! make it up to four, and each round scores both the race and the trick
+//! ranking as a career round does.
 //!
 //! [`opponents::Racer::human`]: crate::opponents::Racer::human
 
@@ -120,12 +121,19 @@ impl MpChamp {
         self.run = Some(Run::new(plan, rider, quad.to_string(), field));
     }
 
-    /// Scores a finished round: `order` is field indices, winner first.
-    pub fn score(&mut self, rules: &career::Rules, order: &[usize]) {
+    /// Scores a finished round: `order` is field indices, winner first;
+    /// `tricks` each entrant's trick score, by field index (most tricks
+    /// first, finishing order breaking ties, as a career round).
+    pub fn score(&mut self, rules: &career::Rules, order: &[usize], tricks: &[u32]) {
         let Some(run) = self.run.as_mut().filter(|r| !r.over()) else { return };
-        for (place, &i) in order.iter().enumerate() {
-            if let Some(e) = run.field.get_mut(i) {
-                e.points += rules.position_points.get(place).copied().unwrap_or(0);
+        let (race, trick) = run.points(rules);
+        let mut by_tricks = order.to_vec();
+        by_tricks.sort_by_key(|&i| std::cmp::Reverse(tricks.get(i).copied().unwrap_or(0)));
+        for (table, ranking) in [(race, order), (trick, by_tricks.as_slice())] {
+            for (place, &i) in ranking.iter().enumerate() {
+                if let Some(e) = run.field.get_mut(i) {
+                    e.points += table.get(place).copied().unwrap_or(0);
+                }
             }
         }
         run.round += 1;
@@ -274,10 +282,13 @@ mod tests {
         assert_eq!(run.field.len(), FIELD);
         assert_eq!(run.field[1].name, "P2 BOB");
         assert!(run.field[1].player && !run.field[2].player);
-        c.score(&rules, &[1, 0, 2, 3]);
+        // P2 wins the race, P1 throws the most tricks.
+        let mut tricks = [0; FIELD];
+        tricks[0] = 900;
+        c.score(&rules, &[1, 0, 2, 3], &tricks);
         let run = c.run.as_ref().unwrap();
         assert_eq!(run.round, 1);
-        assert!(run.field[1].points > run.field[0].points);
+        assert_eq!((run.field[0].points, run.field[1].points, run.field[2].points), (20 + 25, 25 + 20, 16 + 16));
     }
 
     #[test]

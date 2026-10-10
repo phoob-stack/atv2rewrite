@@ -465,6 +465,20 @@ fn finishing_order(run: &Run, dnf: bool, (standings, opponents): (Option<&Standi
     placed.into_iter().map(|(_, i)| i).collect()
 }
 
+/// Everyone's trick score in a championship round, by field index: player
+/// 1's, and the other players' and computer riders' from their own tricks.
+fn trick_scores(run: &Run, session: Option<&Session>, opponents: Option<&Opponents>) -> Vec<u32> {
+    run.field
+        .iter()
+        .enumerate()
+        .map(|(i, e)| match opponents {
+            _ if e.player && i == 0 => session.map_or(0, |s| s.score),
+            Some(o) => o.racers.iter().find(|r| r.model.eq_ignore_ascii_case(&e.model)).and_then(|r| r.session.as_ref()).map_or(0, |s| s.score),
+            None => 0,
+        })
+        .collect()
+}
+
 pub fn ordinal(n: usize) -> String {
     let suffix = match (n % 10, n % 100) {
         (_, 11..=13) => "TH",
@@ -611,17 +625,7 @@ fn race_menus(
             let award = (selection.mode == Mode::Career).then(|| {
                 let run = career.run.clone()?;
                 let order = finishing_order(&run, p.dnf, field);
-                // Everyone's trick score: the player's, and the computer
-                // riders' from their own tricks.
-                let tricks: Vec<u32> = run
-                    .field
-                    .iter()
-                    .map(|e| match (e.player, field.1) {
-                        (true, _) => session.as_deref().map_or(0, |s| s.score),
-                        (false, Some(o)) => o.racers.iter().find(|r| r.model.eq_ignore_ascii_case(&e.model)).and_then(|r| r.session.as_ref()).map_or(0, |s| s.score),
-                        (false, None) => 0,
-                    })
-                    .collect();
+                let tricks = trick_scores(&run, session.as_deref(), field.1);
                 let award = career.score(&rules, &selection.track, &order, &tricks);
                 career.save();
                 award
@@ -631,7 +635,8 @@ fn race_menus(
             let champ_round = selection.players > 1 && selection.mode == Mode::SingleRace && mp_champ.run.is_some();
             if champ_round && let Some(run) = mp_champ.run.clone() {
                 let order = finishing_order(&run, p.dnf, field);
-                mp_champ.score(&rules, &order);
+                let tricks = trick_scores(&run, session.as_deref(), field.1);
+                mp_champ.score(&rules, &order, &tricks);
             }
             // A finished challenge run: its medal and bonus.
             let outcome = (selection.mode == Mode::Challenge)
