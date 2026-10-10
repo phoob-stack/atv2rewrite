@@ -25,12 +25,13 @@ mod hud;
 mod opponents;
 mod race;
 mod rider;
+mod settings;
 mod ui;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton};
+use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton, GamepadRumbleIntensity, GamepadRumbleRequest};
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
@@ -52,6 +53,7 @@ use frontend::{FrontEnd, Roster, Screen};
 use opponents::OpponentRider;
 use race::{ArcadeClock, RaceProgress};
 use rider::Rider;
+use settings::{CameraView, FollowCam, Settings};
 use ui::UiAssets;
 
 #[derive(Resource, Clone)]
@@ -163,8 +165,10 @@ struct QuadBody;
 
 #[derive(Component)]
 struct ChaseCam {
-    /// Smoothed position before pulling in for terrain.
-    ideal: Vec3,
+    /// Smoothed offset from the quad, before pulling in for terrain.
+    offset: Vec3,
+    /// Smoothed facing.
+    facing: Quat,
 }
 
 #[derive(Component)]
@@ -217,6 +221,10 @@ fn parse_args() -> anyhow::Result<Args> {
                     "rider" => Screen::Rider,
                     "atv" | "quad" => Screen::Quad,
                     "track" => Screen::Track,
+                    "options" => Screen::Options,
+                    "audio" => Screen::Audio,
+                    "camera" => Screen::Camera,
+                    "controller" => Screen::Controller,
                     other => anyhow::bail!("unknown screen {other} (title, main, rider, atv, track)"),
                 });
             }
@@ -311,6 +319,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(roster)
         .insert_resource(selection)
         .insert_resource(front_end)
+        .insert_resource(Settings::load())
         .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin))
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
@@ -319,7 +328,9 @@ fn main() -> anyhow::Result<()> {
         .add_systems(FixedUpdate, drive.run_if(in_state(AppState::Race)))
         .add_systems(
             Update,
-            (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, chase_camera, fly_camera, follow_sky).chain().run_if(in_state(AppState::Race)),
+            (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, cycle_camera, chase_camera, fly_camera, follow_sky, rumble)
+                .chain()
+                .run_if(in_state(AppState::Race)),
         )
         .add_systems(Update, auto_screenshot)
         .run();
@@ -507,7 +518,7 @@ fn setup(
             commands.spawn((view, t, FlyCam { yaw, pitch }, IsDefaultUiCamera, scoped.clone()));
         }
         None => {
-            commands.spawn((view, cam, ChaseCam { ideal: eye }, IsDefaultUiCamera, scoped.clone()));
+            commands.spawn((view, cam, ChaseCam { offset: eye - start.0, facing: cam.rotation }, IsDefaultUiCamera, scoped.clone()));
         }
     }
     // Whether the grid is on the start/finish line or still has to cross it.
@@ -771,27 +782,47 @@ fn stunts(time: Res<Time>, session: Option<Res<Session>>, clips: Option<Res<Stun
     }
 }
 
+/// The cameras look this far above the quad's centre of mass, about the
+/// rider's chest, so the quad sits low in the picture.
+const LOOK_RAISE: f32 = 1.0;
+
+/// The player's follow camera, as picked in Options: it sits at the
+/// camera's offset behind the quad's heading and looks ahead of it. The
+/// offset swings round and the view turns at the camera's stiffnesses
+/// (softer in the air), so the camera lags turns but not speed.
+#[allow(clippy::too_many_arguments)]
 fn chase_camera(
     time: Res<Time>,
+    game: Res<Game>,
+    settings: Res<Settings>,
     player: Option<Res<Player>>,
     race: Option<Res<Race>>,
     mut cam: Query<(&mut Transform, &mut ChaseCam)>,
+    mut riders: Query<(&Rider, &mut Visibility), Without<OpponentRider>>,
+    mut rig: Local<Option<(CameraView, FollowCam)>>,
 ) {
     let (Some(player), Some(race), Ok((mut t, mut cam))) = (player, race, cam.single_mut()) else { return };
+    if rig.map(|r| r.0) != Some(settings.camera) {
+        *rig = Some((settings.camera, FollowCam::load(&game.0, settings.camera)));
+    }
+    let Some((_, follow)) = *rig else { return };
     let v = &player.0;
     let fwd = v.forward().with_y(0.0).normalize_or(Vec3::NEG_Z);
-    let desired = v.position - fwd * 5.5 + Vec3::Y * 2.2;
-    let k = 1.0 - (-6.0 * time.delta_secs()).exp();
-    cam.ideal = cam.ideal.lerp(desired, k);
+    let right = fwd.cross(Vec3::Y);
+    let at = |o: Vec3| v.position + right * o.x + Vec3::Y * o.y + fwd * o.z;
+    let air = usize::from(!v.grounded());
+    let ease = |stiffness: f32| 1.0 - (-stiffness * time.delta_secs()).exp();
+    cam.offset = cam.offset.lerp(at(follow.offset) - v.position, ease(follow.pos_stiffness[air]));
     // Never let the camera sink below the quad's level.
-    cam.ideal.y = cam.ideal.y.max(v.position.y + 0.8);
+    cam.offset.y = cam.offset.y.max(0.5);
+    let ideal = v.position + cam.offset;
 
     // Pull in when terrain or a wall is between the rider and the camera,
     // and keep clear of the ground under it.
     let pivot = v.position + Vec3::Y * 1.2;
-    let to_cam = cam.ideal - pivot;
+    let to_cam = ideal - pivot;
     let dist = to_cam.length();
-    let mut eye = cam.ideal;
+    let mut eye = ideal;
     if dist > 0.01 {
         let dir = to_cam / dist;
         if let Some(hit) = race.collision.raycast(pivot, dir, dist + 0.4) {
@@ -802,8 +833,63 @@ fn chase_camera(
         eye.y = eye.y.max(ground.point.y + 0.5);
     }
     t.translation = eye;
-    let look = v.position + fwd * 3.0 + Vec3::Y * 0.6;
-    t.look_at(look, Vec3::Y);
+    let look = at(follow.look + Vec3::Y * LOOK_RAISE);
+    if (look - eye).length_squared() > 1e-4 {
+        let want = Transform::from_translation(eye).looking_at(look, Vec3::Y).rotation;
+        cam.facing = cam.facing.slerp(want, ease(follow.rot_stiffness[air])).normalize();
+    }
+    t.rotation = cam.facing;
+    // Very close puts the camera at the rider's head: ride without them.
+    for (r, mut vis) in &mut riders {
+        let hide = settings.camera == CameraView::VeryClose && !r.crashed();
+        vis.set_if_neq(if hide { Visibility::Hidden } else { Visibility::Inherited });
+    }
+}
+
+/// C or the pad's Back button steps through the follow cameras; the pick
+/// is kept, as if made in Options.
+fn cycle_camera(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, virt: Res<Time<Virtual>>, mut settings: ResMut<Settings>) {
+    if virt.is_paused() {
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyC) || pads.iter().any(|p| p.just_pressed(GamepadButton::Select)) {
+        settings.camera = settings.camera.next();
+        settings.save();
+    }
+}
+
+/// Vibration (when it's on in Options): a hard knock when the rider is
+/// thrown off and a thump on landing from a big jump.
+fn rumble(
+    settings: Res<Settings>,
+    player: Option<Res<Player>>,
+    wreck: Option<Res<Wreck>>,
+    pads: Query<Entity, With<Gamepad>>,
+    mut requests: MessageWriter<GamepadRumbleRequest>,
+    mut last: Local<(bool, f32)>,
+) {
+    let (Some(player), Some(wreck)) = (player, wreck) else { return };
+    let crashed = wreck.fall.is_some();
+    let air = player.0.air_time;
+    let (was_crashed, was_air) = *last;
+    *last = (crashed, air);
+    if !settings.vibration {
+        return;
+    }
+    let (strength, secs) = if crashed && !was_crashed {
+        (1.0, 0.45)
+    } else if !crashed && was_air > 0.5 && air == 0.0 {
+        ((was_air / 2.0).clamp(0.25, 0.8), 0.2)
+    } else {
+        return;
+    };
+    for gamepad in &pads {
+        requests.write(GamepadRumbleRequest::Add {
+            gamepad,
+            duration: std::time::Duration::from_secs_f32(secs),
+            intensity: GamepadRumbleIntensity { strong_motor: strength, weak_motor: strength * 0.6 },
+        });
+    }
 }
 
 fn follow_sky(cam: Query<&Transform, With<Camera3d>>, mut sky: Query<&mut Transform, (With<SkyDome>, Without<Camera3d>)>) {

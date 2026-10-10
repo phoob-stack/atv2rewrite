@@ -2,7 +2,8 @@
 //! race, using the original backgrounds, fonts and panels. Which background
 //! and title each screen uses comes from the disc's `Setup/Frontend.xml`.
 //! Arcade skips track select (it races `Setup/Arcade.xml`'s rounds);
-//! Open Freestyle picks a time limit on it instead of laps.
+//! Open Freestyle picks a time limit on it instead of laps. Options holds
+//! the Audio, Camera and Controller pages (see [`crate::settings`]).
 
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
@@ -12,6 +13,7 @@ use atv_formats::GameSource;
 
 use crate::freestyle::{self, limit_label, MEDALS, TIME_LIMITS};
 use crate::hud::track_title;
+use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::{AppState, Mode, Selection};
 
@@ -23,7 +25,7 @@ impl Plugin for FrontEndPlugin {
             .add_systems(OnEnter(AppState::FrontEnd), enter)
             .add_systems(
                 Update,
-                (navigate, rebuild, update_rider_panel, update_quad_panel, update_track_panel, blink, showroom, turntable)
+                (navigate, rebuild, update_rider_panel, update_quad_panel, update_track_panel, update_options, blink, showroom, turntable)
                     .chain()
                     .run_if(in_state(AppState::FrontEnd)),
             )
@@ -155,7 +157,20 @@ pub enum Screen {
     Rider,
     Quad,
     Track,
+    Options,
+    Audio,
+    Camera,
+    Controller,
 }
+
+/// The Options menu's rows, and the page each opens.
+const OPTIONS: [(&str, Option<Screen>); 5] = [
+    ("AUDIO", Some(Screen::Audio)),
+    ("CAMERA", Some(Screen::Camera)),
+    ("CONTROLLER", Some(Screen::Controller)),
+    ("REPLAYS", None),
+    ("CREDITS", None),
+];
 
 #[derive(Resource, Default)]
 pub struct FrontEnd {
@@ -167,6 +182,8 @@ pub struct FrontEnd {
     pub rider: usize,
     pub quad: usize,
     pub track: usize,
+    /// The Options menu's cursor.
+    option: usize,
 }
 
 impl FrontEnd {
@@ -195,6 +212,11 @@ enum Field {
 struct StatBar(usize);
 #[derive(Component)]
 struct TrackPreview;
+/// The lit part of a volume bar: 0 music, 1 sound effects.
+#[derive(Component)]
+struct VolumeBar(usize);
+#[derive(Component)]
+struct VibrationBox;
 
 const MUG: f32 = 50.0;
 const MUG_GAP: f32 = 64.0;
@@ -224,6 +246,7 @@ fn navigate(
     mut lists: Query<&mut MenuList>,
     mut next: ResMut<NextState<AppState>>,
     mut exit: MessageWriter<AppExit>,
+    mut settings: ResMut<Settings>,
 ) {
     let Some(nav) = read_nav(&keys, &pads) else { return };
     if fe.built != Some(fe.screen) {
@@ -253,6 +276,7 @@ fn navigate(
                     sel.mode = fe.mode;
                     fe.screen = Screen::Rider;
                 }
+                Some("OPTIONS") => fe.screen = Screen::Options,
                 Some("QUIT GAME") => {
                     exit.write(AppExit::Success);
                 }
@@ -325,10 +349,70 @@ fn navigate(
             }
             Nav::Back => fe.screen = Screen::Quad,
         },
+        Screen::Options => match nav {
+            Nav::Up | Nav::Down => {
+                if let Some(l) = list.as_mut() {
+                    l.step(nav);
+                    fe.option = l.selected;
+                }
+            }
+            Nav::Accept | Nav::Start => {
+                if let Some((_, Some(page))) = OPTIONS.get(fe.option) {
+                    fe.screen = *page;
+                }
+            }
+            Nav::Back => fe.screen = Screen::Main,
+            _ => {}
+        },
+        Screen::Audio => {
+            let row = list.as_ref().map_or(0, |l| l.selected);
+            let level = if row == 0 { &mut settings.music } else { &mut settings.effects };
+            match nav {
+                Nav::Up | Nav::Down => {
+                    if let Some(l) = list.as_mut() {
+                        l.step(nav);
+                    }
+                }
+                Nav::Left => *level = level.saturating_sub(1),
+                Nav::Right => *level = (*level + 1).min(VOLUME_STEPS),
+                Nav::Accept | Nav::Start | Nav::Back => {
+                    settings.save();
+                    fe.screen = Screen::Options;
+                }
+            }
+        }
+        Screen::Camera => match nav {
+            Nav::Up | Nav::Down => {
+                if let Some(l) = list.as_mut() {
+                    l.step(nav);
+                    settings.camera = CameraView::ALL[l.selected.min(CameraView::ALL.len() - 1)];
+                }
+            }
+            Nav::Accept | Nav::Start | Nav::Back => {
+                settings.save();
+                fe.screen = Screen::Options;
+            }
+            _ => {}
+        },
+        Screen::Controller => match nav {
+            Nav::Accept | Nav::Left | Nav::Right => settings.vibration = !settings.vibration,
+            Nav::Start | Nav::Back => {
+                settings.save();
+                fe.screen = Screen::Options;
+            }
+            _ => {}
+        },
     }
 }
 
-fn rebuild(mut commands: Commands, mut fe: ResMut<FrontEnd>, roster: Res<Roster>, ui: Option<Res<UiAssets>>, roots: Query<Entity, With<ScreenRoot>>) {
+fn rebuild(
+    mut commands: Commands,
+    mut fe: ResMut<FrontEnd>,
+    roster: Res<Roster>,
+    settings: Res<Settings>,
+    ui: Option<Res<UiAssets>>,
+    roots: Query<Entity, With<ScreenRoot>>,
+) {
     let Some(ui) = ui else { return };
     if fe.built == Some(fe.screen) {
         return;
@@ -351,6 +435,10 @@ fn rebuild(mut commands: Commands, mut fe: ResMut<FrontEnd>, roster: Res<Roster>
         Screen::Rider => (rider_key, label),
         Screen::Quad => (atv_key, label),
         Screen::Track => (track_key, label),
+        Screen::Options => ("Options", "OPTIONS"),
+        Screen::Audio => ("Options_Sound", "OPTIONS"),
+        Screen::Camera => ("Options_Camera", "OPTIONS"),
+        Screen::Controller => ("Options_Controller", "OPTIONS"),
     };
     let (bg, title) = roster.screen(key);
 
@@ -408,8 +496,8 @@ fn rebuild(mut commands: Commands, mut fe: ResMut<FrontEnd>, roster: Res<Roster>
                 Mode::TimeTrial => 3,
                 Mode::Freestyle => 4,
             };
-            // Career needs AI riders to race, and there are no options yet.
-            let mut off = vec!["CAREER", "OPTIONS"];
+            // Career isn't built yet.
+            let mut off = vec!["CAREER"];
             if roster.arcade.is_empty() {
                 off.push("ARCADE");
             }
@@ -477,12 +565,42 @@ fn rebuild(mut commands: Commands, mut fe: ResMut<FrontEnd>, roster: Res<Roster>
                 kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(1.0, 0.85, 0.3)), ui_at(300.0, 398.0), Field::Targets)).id());
             }
         }
+        Screen::Options => {
+            let names = OPTIONS.map(|(n, _)| n);
+            let off: Vec<&str> = OPTIONS.iter().filter(|(_, page)| page.is_none()).map(|(n, _)| *n).collect();
+            let list = MenuList::new(&names, 280.0).with_row(36.0).select(fe.option).disable(&off);
+            kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 280.0) / 2.0, 130.0));
+        }
+        Screen::Audio => {
+            let row = 64.0;
+            let list = MenuList::new(&["MUSIC VOLUME", "SOUND EFFECTS VOLUME"], 300.0).with_row(row);
+            kids.push(menu(&mut commands, &ui, list, 40.0, 150.0));
+            for i in 0..2 {
+                kids.push(volume_bar(&mut commands, &ui, i, 370.0, 150.0 + i as f32 * row + 2.0));
+            }
+            kids.push(hint(&mut commands, &ui, "LEFT AND RIGHT CHANGE THE VOLUME", 330.0));
+        }
+        Screen::Camera => {
+            let names = CameraView::ALL.map(CameraView::label);
+            let list = MenuList::new(&names, 320.0).with_row(36.0).select(settings.camera.index());
+            kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 150.0));
+            kids.push(hint(&mut commands, &ui, "PRESS C OR BACK IN A RACE TO CHANGE CAMERA", 300.0));
+        }
+        Screen::Controller => {
+            let list = MenuList::new(&["VIBRATION"], 220.0).with_row(40.0);
+            kids.push(menu(&mut commands, &ui, list, 150.0, 80.0));
+            let (n, img) = ui.checkbox.node("ON", 0.5);
+            kids.push(commands.spawn((placed((n, img), 400.0, 84.0), VibrationBox)).id());
+            kids.push(controls_table(&mut commands, &ui));
+        }
     }
 
     // Button hints along the bottom.
     let hints: &[(&str, &str)] = match fe.screen {
         Screen::Title => &[],
         Screen::Main => &[("controlbuttoncross", "SELECT")],
+        Screen::Audio | Screen::Camera => &[("controlbuttoncross", "OK")],
+        Screen::Controller => &[("controlbuttoncross", "CHANGE"), ("controlbuttoncircle", "BACK")],
         _ => &[("controlbuttoncross", "SELECT"), ("controlbuttoncircle", "BACK")],
     };
     let footer = commands
@@ -510,6 +628,95 @@ fn menu(commands: &mut Commands, ui: &UiAssets, list: MenuList, left: f32, top: 
     spawn_menu_rows(commands, ui, e, &list);
     commands.entity(e).insert((list, Node { position_type: PositionType::Absolute, left: px(left), top: px(top), flex_direction: FlexDirection::Column, ..default() }));
     e
+}
+
+/// A volume bar: the unlit bar with the lit one over it, cut to the level.
+fn volume_bar(commands: &mut Commands, ui: &UiAssets, which: usize, left: f32, top: f32) -> Entity {
+    let off = ui.sound_bar.get("BAR_OFF").rect;
+    commands
+        .spawn(Node { position_type: PositionType::Absolute, left: px(left), top: px(top), width: px(off.width()), height: px(off.height()), ..default() })
+        .with_children(|b| {
+            b.spawn(placed(ui.sound_bar.node("BAR_OFF", 1.0), 0.0, 0.0));
+            b.spawn((Node { position_type: PositionType::Absolute, width: px(0), height: percent(100), overflow: Overflow::clip(), ..default() }, VolumeBar(which)))
+                .with_children(|clip| {
+                    clip.spawn(placed(ui.sound_bar.node("BAR_ON", 1.0), 0.0, 0.0));
+                });
+        })
+        .id()
+}
+
+/// Width of a volume bar's lit part for a level, in texels of its 128-wide
+/// sprite: the 16 segments run from x = 3 to 124.
+fn lit_width(level: u8) -> f32 {
+    if level == 0 { 0.0 } else { 3.0 + 121.0 * f32::from(level.min(VOLUME_STEPS)) / f32::from(VOLUME_STEPS) }
+}
+
+fn hint(commands: &mut Commands, ui: &UiAssets, text: &str, top: f32) -> Entity {
+    let w = ui.font(FontId::Small).width(text, 8.0);
+    commands.spawn((BitmapText::new(FontId::Small, 8.0, text).color(Color::srgb(0.75, 0.82, 0.95)), ui_at((SCREEN_W - w) / 2.0, top))).id()
+}
+
+/// The controls, pad and keyboard, beside the front of the big pad.
+fn controls_table(commands: &mut Commands, ui: &UiAssets) -> Entity {
+    const ROWS: [(&str, &str, &str); 10] = [
+        ("ACCELERATE", "RT OR A", "W OR UP"),
+        ("BRAKE AND REVERSE", "LT OR X", "S OR DOWN"),
+        ("STEER", "LEFT STICK", "A D OR LEFT RIGHT"),
+        ("LEAN", "LEFT STICK", "I K"),
+        ("PRE-LOAD AND HOP", "B OR RB", "SPACE"),
+        ("TRICKS IN THE AIR", "X Y LB RB", "1 2 3 4"),
+        ("CHANGE CAMERA", "BACK", "C"),
+        ("PAUSE", "START", "ESCAPE"),
+        ("BACK ON TRACK", "", "R"),
+        ("RESTART", "", "BACKSPACE"),
+    ];
+    let grey = Color::srgb(0.75, 0.82, 0.95);
+    commands
+        .spawn(Node { position_type: PositionType::Absolute, left: px(24), top: px(140), column_gap: px(14), align_items: AlignItems::Center, ..default() })
+        .with_children(|t| {
+            // The front of the pad is the bottom of the page.
+            let front = Rect::new(20.0, 280.0, 340.0, 512.0);
+            let scale = ui.big_pad.size.x / 512.0;
+            t.spawn(ui.big_pad.region(Rect::from_corners(front.min * scale, front.max * scale), 0.62 / scale));
+            t.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(9), ..default() }).with_children(|c| {
+                for (i, (action, pad, keys)) in [("", "PAD", "KEYBOARD")].into_iter().chain(ROWS).enumerate() {
+                    c.spawn(Node { column_gap: px(8), ..default() }).with_children(|r| {
+                        for (text, width, color) in [(action, 128.0, Color::WHITE), (pad, 88.0, grey), (keys, 116.0, grey)] {
+                            let color = if i == 0 { Color::srgb(1.0, 0.85, 0.3) } else { color };
+                            r.spawn(Node { width: px(width), ..default() }).with_children(|cell| {
+                                cell.spawn(BitmapText::new(FontId::Small, 7.0, text).color(color));
+                            });
+                        }
+                    });
+                }
+            });
+        })
+        .id()
+}
+
+fn update_options(
+    fe: Res<FrontEnd>,
+    settings: Res<Settings>,
+    ui: Option<Res<UiAssets>>,
+    mut bars: Query<(&VolumeBar, &mut Node)>,
+    mut boxes: Query<&mut ImageNode, With<VibrationBox>>,
+) {
+    let Some(ui) = ui else { return };
+    if !matches!(fe.screen, Screen::Audio | Screen::Controller) {
+        return;
+    }
+    for (b, mut n) in &mut bars {
+        let w = px(lit_width(if b.0 == 0 { settings.music } else { settings.effects }));
+        if n.width != w {
+            n.width = w;
+        }
+    }
+    for mut img in &mut boxes {
+        let rect = ui.checkbox.tex.image_rect(ui.checkbox.get(if settings.vibration { "ON" } else { "OFF" }).rect);
+        if img.rect != Some(rect) {
+            img.rect = Some(rect);
+        }
+    }
 }
 
 fn mug_pos(i: usize) -> (f32, f32) {

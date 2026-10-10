@@ -9,6 +9,7 @@ atv-hd = { version = "0.1.0", path = "../atv-hd" }
 atv-formats = { version = "0.1.0", path = "../atv-formats" }
 atv-sim = { version = "0.1.0", path = "../atv-sim" }
 bevy = "0.20"
+directories = "6"
 
 [[bin]]
 name = "atv2"

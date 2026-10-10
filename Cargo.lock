@@ -447,6 +447,7 @@ dependencies = [
  "atv-hd",
  "atv-sim",
  "bevy",
+ "directories",
 ]
 
 [[package]]

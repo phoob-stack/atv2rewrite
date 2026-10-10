@@ -16,6 +16,7 @@ use atv_formats::wav::{self, Pcm};
 use atv_formats::xwb::WaveBank;
 use atv_formats::GameSource;
 
+use crate::settings::{gain, Settings};
 use crate::{AppState, Game, Player, Selection};
 
 pub struct AudioPlugin;
@@ -211,6 +212,7 @@ fn start_race_audio(
     mut commands: Commands,
     game: Res<Game>,
     sel: Res<Selection>,
+    settings: Res<Settings>,
     mut data: Local<Option<SoundData>>,
     mut sounds: ResMut<Assets<Sound>>,
 ) {
@@ -239,11 +241,11 @@ fn start_race_audio(
         parts.extend(m.sections.iter().filter_map(|n| music(&game.0, n)));
         if parts.len() > usize::from(has_intro) {
             let loop_from = usize::from(has_intro);
-            play(Sound { parts: parts.into(), loop_from }, setup.mix_level("mMusicVol", 1.0), None);
+            play(Sound { parts: parts.into(), loop_from }, setup.mix_level("mMusicVol", 1.0) * gain(settings.music), None);
         }
     }
 
-    let ambient_vol = setup.mix_level("mAmbientVol", 0.3);
+    let ambient_vol = setup.mix_level("mAmbientVol", 0.3) * gain(settings.effects);
     for name in setup.ambient(&env).into_iter().chain(setup.crowd(&env)) {
         if let Some(bg) = bank(&game.0, name).into_iter().next() {
             play(Sound::looped(bg), ambient_vol, None);
@@ -283,6 +285,7 @@ pub fn engine_mix(r: f32, t: f32, pitch_zero: f32, pitch_span: f32) -> [(f32, f3
 fn engine_and_wheels(
     player: Option<Res<Player>>,
     mix: Option<Res<QuadMix>>,
+    settings: Res<Settings>,
     virt: Res<Time<Virtual>>,
     mut sinks: Query<(&mut AudioSink, Option<&EngineLoop>, Option<&WheelLoop>), With<PausesWithGame>>,
 ) {
@@ -309,7 +312,7 @@ fn engine_and_wheels(
             (_, Some(w)) => (w.volume * mix.engine * pace * contact, w.pitch * (0.8 + 0.4 * pace)),
             _ => continue,
         };
-        sink.set_volume(Volume::Linear(vol));
+        sink.set_volume(Volume::Linear(vol * gain(settings.effects)));
         sink.set_speed(pitch);
     }
 }

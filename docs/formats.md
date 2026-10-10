@@ -280,6 +280,27 @@ with the original's addresses.
   stadiums have real ones; they are the `TBOXn` locator boxes in the
   `.row` (scale = half size), several boxes per id for hoops. Linked boxes
   are the two ends of a gap.
+- `VehicleCameras.xml`: the follow cameras the Options menu offers,
+  `FollowNear` (CAM_FOLLOW_CLOSE), `FollowFar` and `FollowVeryClose`, plus
+  the replay mounts (`MountOnFront`, `MountOnWheel`, ...) and the
+  lead-back cameras. Each follow camera has a `PosOffset` and a
+  `LookOffset` (vehicle frame, Z forward) and `On/OffGroundPos/RotStiffness`.
+  The children repeat `X`/`Y`/`Z`, so they are read with `setup::child`
+  rather than flattened. Where the offsets are measured from is not known:
+  taken from the centre of mass they look down on the quad at 20-37
+  degrees and lose the horizon, so the rewrite aims 1 m above it. The
+  rewrite eases the offset (not the position) at the position stiffness,
+  so the camera lags turns but not speed, and turns the view at the
+  rotation stiffness. Very Close sits at the rider's head, so the rider
+  is hidden in it. `CameraDirector.xml` lists the replay director's
+  camera sets.
+- Options pages (`Frontend.xml` `Options*` screens): Audio has Music and
+  Sound Effects volume as 16-segment bars (`FrontEnd/SoundBar`: `BAR_ON`
+  over `BAR_OFF`); Camera picks one of the three follow cameras; Control
+  Config shows `FrontEnd/BigPad_Xbox` (top and front views of the Duke pad;
+  `BigPad_Overlay_Xbox` holds the leader lines for its labels) and a
+  Vibration tick box (`FrontEnd/checkbox`: `OFF`, `ON`). Replays, Profiles,
+  Language and Credits pages exist too; the disc has no credits text.
 
 ## Still unknown
 

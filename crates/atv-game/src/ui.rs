@@ -237,6 +237,11 @@ pub struct UiAssets {
     pub design: Sheet,
     pub pad: Sheet,
     pub bio: Sheet,
+    /// Options: the volume bar (`BAR_ON`, `BAR_OFF`), the tick box and the
+    /// big Xbox pad picture.
+    pub sound_bar: Sheet,
+    pub checkbox: Sheet,
+    pub big_pad: UiTex,
     pub logo: UiTex,
     pub mugs: UiTex,
     pub loading: UiTex,
@@ -294,6 +299,9 @@ impl UiAssets {
             design: l.sheet("FrontEnd/NewDesign")?,
             pad: l.sheet("FrontEnd/controlpadbuttonsXbox")?,
             bio: l.sheet("FrontEnd/BioPanel")?,
+            sound_bar: l.sheet("FrontEnd/SoundBar")?,
+            checkbox: l.sheet("FrontEnd/checkbox")?,
+            big_pad: l.tex("FrontEnd/BigPad_Xbox")?,
             logo: l.tex("FrontEnd/ATVLogoBIG")?,
             mugs: l.tex("FrontEnd/RiderMugs")?,
             loading: l.tex("FrontEnd/FELoading1")?,
