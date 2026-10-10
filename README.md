@@ -85,7 +85,10 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   with WASD (lean R/F, preload Space) or the first pad, player 2 with the
   arrow keys (lean Numpad 8/5, preload right Shift) or the second pad, and
   players 3 and 4 with the third and fourth pads. Once the first player is
-  home the others get a minute to finish.
+  home the others get a minute to finish. Freestyle Battle puts the same
+  players on a track against a time limit with no computer riders; the
+  most points wins. In split screen player 1's trick buttons are 1-4 and
+  player 2's are Numpad 1-4.
 
 Tricks are the 28 from `Setup/Tricks.xml`: hold a trick button (or two for
 the level 5-7 tricks: 1+2, 2+3, 3+4) and a direction while airborne. Keep

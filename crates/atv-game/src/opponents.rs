@@ -14,6 +14,7 @@ use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
 use crate::convert::{self, Loader, WheelVisual};
+use crate::freestyle::{self, Dir, Session, StuntClips};
 use crate::frontend::Roster;
 use crate::race::RaceProgress;
 use crate::rider::Rider;
@@ -77,6 +78,8 @@ pub struct Racer {
     /// A split-screen player (2 to 4) drives this quad; the AI driver only
     /// keeps track and brings it home after the flag.
     pub human: Option<usize>,
+    /// A player's tricks (and in Freestyle Battle, their score).
+    pub session: Option<Session>,
 }
 
 /// Marks a computer rider's seat, so the player's rider systems leave its
@@ -103,8 +106,8 @@ pub fn spawn(
     game: &GameSource,
     roster: &Roster,
     sel: &crate::Selection,
-    world: &TrackWorld,
-    collision: &TrackCollision,
+    (world, collision): (&TrackWorld, &TrackCollision),
+    session: &Session,
     count: usize,
 ) {
     if count == 0 {
@@ -244,6 +247,7 @@ pub fn spawn(
             body,
             upside_down: 0.0,
             human: human.map(|_| i + 2),
+            session: human.map(|_| session.clone()),
         });
         info!("computer rider {}: {} on {quad}", i + 1, rider.name);
     }
@@ -287,6 +291,7 @@ fn drive_opponents(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     args: Res<crate::Args>,
+    session: Option<Res<Session>>,
 ) {
     let (Some(race), Some(mut player), Some(progress), Some(mut opp), Some(mut standings)) =
         (race, player, progress, opponents, standings)
@@ -312,7 +317,14 @@ fn drive_opponents(
             .filter(|(j, _)| *j != i + 1)
             .map(|(_, t)| *t)
             .collect();
-        r.input = if r.progress.started() {
+        // Freestyle Battle runs on player 1's clock, with no laps.
+        let battle = r.session.as_ref().is_some_and(|s| s.freestyle);
+        let time_up = battle && session.as_ref().is_some_and(|s| s.over(progress.clock));
+        r.input = if !r.progress.started() {
+            Input::default()
+        } else if time_up {
+            Input { brake: if r.vehicle.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
+        } else {
             let ai = r.driver.drive(&opp.line, &r.vehicle, &others, dt);
             match r.human {
                 // A player drives until the flag; the AI brings them home
@@ -320,14 +332,22 @@ fn drive_opponents(
                 Some(n) if r.progress.finished.is_none() && !args.autodrive => crate::read_input(&keys, &pads, !r.vehicle.grounded(), Some(n - 1)),
                 _ => ai,
             }
-        } else {
-            Input::default()
         };
         r.vehicle.step(&r.input, dt, &race.collision);
+        if let (Some(s), Some(n)) = (r.session.as_mut(), r.human) {
+            let (mut buttons, mut dir) = freestyle::read_tricks(&keys, &pads, Some(n - 1));
+            if args.autodrive && s.active.is_none() && !r.vehicle.grounded() {
+                // The autopilot shows off, as for player 1.
+                let k = (s.time * 0.7) as usize + n;
+                buttons = 1 << (k % 4);
+                dir = Some([Dir::Up, Dir::Right, Dir::Down, Dir::Left][k / 4 % 4]);
+            }
+            s.step(&r.vehicle, buttons, dir, dt, r.progress.started() && !time_up && r.progress.finished.is_none());
+        }
 
         // Checkpoints. The racing line's alternative routes can pass wide
         // of one, so reaching the one after it counts for both.
-        if n > 0 {
+        if n > 0 && !battle {
             let near = |k: usize| {
                 (cps[k % n] - r.vehicle.position).with_y(0.0).length() < CHECKPOINT_RADIUS
             };
@@ -411,6 +431,7 @@ fn drive_opponents(
 fn sync_opponents(
     time: Res<Time>,
     opponents: Option<Res<Opponents>>,
+    clips: Option<Res<StuntClips>>,
     mut bodies: Query<&mut Transform, Without<WheelVisual>>,
     mut wheels: Query<(&WheelVisual, &mut Transform), Without<OpponentRider>>,
     mut riders: Query<(&ChildOf, &mut Rider), With<OpponentRider>>,
@@ -435,6 +456,14 @@ fn sync_opponents(
                 r.vehicle.preload,
                 time.delta_secs(),
             );
+            // A player's trick in progress.
+            let stunt = r.session.as_ref().zip(clips.as_deref()).and_then(|(s, clips)| {
+                let a = s.active.as_ref()?;
+                Some((clips.0.get(a.def)?.clone()?, a.t / s.tricks[a.def].total))
+            });
+            if r.human.is_some() {
+                rider.set_stunt(stunt, time.delta_secs());
+            }
         }
     }
 }

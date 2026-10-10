@@ -677,6 +677,8 @@ fn spawn_race_menu(
         opponents?.racers.get(i).map(|r| r.name.clone())
     });
     let freestyle = session.filter(|s| s.freestyle);
+    // Freestyle Battle: every player's score.
+    let battle = freestyle.zip(opponents).map(|(s, o)| mp::battle_scores(s, o)).filter(|b| b.len() > 1);
     let last_round = sel.round + 1 >= roster.arcade.len();
     let (title, items): (String, &[&str]) = match (results, sel.mode) {
         (false, Mode::Freestyle) if freestyle.is_some_and(|s| s.limit.is_none()) => ("PAUSED".into(), &["CONTINUE", "END SESSION", "RESTART", "QUIT"]),
@@ -684,6 +686,7 @@ fn spawn_race_menu(
         (false, Mode::Challenge) => ("PAUSED".into(), &["CONTINUE", "RESTART", "CHALLENGES", "QUIT"]),
         (false, _) => ("RACE PAUSED".into(), &["CONTINUE", "RESTART", "QUIT RACE"]),
         (true, Mode::Challenge) => (format!("CHALLENGE {} COMPLETE", sel.challenge), &["TRY AGAIN", "CHALLENGES", "MAIN MENU"]),
+        (true, Mode::Freestyle) if battle.is_some() => ("FREESTYLE BATTLE".into(), &["PLAY AGAIN", "MAIN MENU"]),
         (true, Mode::Freestyle) => ("FREESTYLE RESULTS".into(), &["PLAY AGAIN", "MAIN MENU"]),
         (true, Mode::Arcade) if p.out_of_time() => ("OUT OF TIME".into(), &["TRY AGAIN", "MAIN MENU"]),
         (true, Mode::Arcade) if last_round => ("ARCADE COMPLETED".into(), &["MAIN MENU"]),
@@ -695,6 +698,7 @@ fn spawn_race_menu(
     let panel = ui.bio.get("BIOPANEL").rect;
     let rows = match (results, freestyle.is_some()) {
         (false, _) => 0,
+        (true, true) if let Some(b) = &battle => 1 + b.len(),
         (true, true) => 7,
         (true, false) if let Some(o) = outcome => {
             2 + usize::from(o.penalties > 0.0) + usize::from(o.skill_points > 0) + usize::from(o.new_level.is_some()) + usize::from(o.unlocked.is_some())
@@ -739,7 +743,18 @@ fn spawn_race_menu(
                         _ => format!("{}  -  {}", track_title(&sel.track), sel.quad.to_uppercase()),
                     };
                     box_.spawn(BitmapText::new(FontId::Small, 9.0, sub).color(Color::srgb(0.75, 0.85, 1.0)));
-                    if let (true, Some(s)) = (results, freestyle) {
+                    if let (true, Some(b)) = (results, &battle) {
+                        box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), margin: UiRect::vertical(px(6)), ..default() }).with_children(|rows| {
+                            let mut order = b.clone();
+                            order.sort_by_key(|&(n, score)| (std::cmp::Reverse(score), n));
+                            let top = order[0].1;
+                            let winners: Vec<String> = order.iter().filter(|o| o.1 == top).map(|o| format!("PLAYER {}", o.0)).collect();
+                            row(rows, if winners.len() > 1 { "DRAW" } else { "WINNER" }, &winners.join(" + "), true);
+                            for &(n, score) in &order {
+                                row(rows, &format!("{} PLAYER {n}", ordinal(mp::place(b, n))), &score.to_string(), score == top);
+                            }
+                        });
+                    } else if let (true, Some(s)) = (results, freestyle) {
                         box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), margin: UiRect::vertical(px(6)), ..default() }).with_children(|rows| {
                             let medal = s.medal();
                             row(rows, "SCORE", &s.score.to_string(), medal.is_some());
