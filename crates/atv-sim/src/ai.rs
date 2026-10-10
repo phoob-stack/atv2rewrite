@@ -21,6 +21,10 @@
 //! - **Recovery** (0x67b40): a quad stuck below 8 mph backs up with the
 //!   steering reversed, then tries again; after repeated failures, or when
 //!   it ends up far off the line, it asks to be respotted.
+//! - **Pacing** (0x6a3f0, 0x6a970): a [`Pacer`] runs "pace cars" round the
+//!   track at the lap times `Setup/Tracks.xml` gives it
+//!   (`mAIBestLapTime`..`mAIWorstLapTime`), and scales each rider's target
+//!   speeds by how far ahead of or behind its pace car it is.
 //!
 //! Positions are in the sim frame (right-handed, -Z forward).
 
@@ -44,6 +48,9 @@ const PROGRESS_RADIUS: f32 = 10.0;
 const PROGRESS_WINDOW: f32 = 8.0;
 /// Jump nodes only get a hop from quads at least this fast (40 mph).
 const HOP_SPEED: f32 = 17.877_8;
+/// Seconds of travel ahead a jump node keeps the pacer from slowing a
+/// rider.
+const JUMP_RUN_UP: f32 = 4.0;
 
 #[derive(Debug, Clone)]
 pub struct LineNode {
@@ -77,6 +84,11 @@ pub struct Edge {
 pub struct RacingLine {
     pub nodes: Vec<LineNode>,
     pub edges: Vec<Edge>,
+    /// How far round the main loop each node is, metres from node 0
+    /// (nodes on alternative routes are shared out between where the route
+    /// leaves and rejoins the loop).
+    lap_pos: Vec<f32>,
+    lap_len: f32,
 }
 
 impl RacingLine {
@@ -115,7 +127,92 @@ impl RacingLine {
                 });
             }
         }
-        Self { nodes, edges }
+        let mut line = Self {
+            nodes,
+            edges,
+            lap_pos: Vec::new(),
+            lap_len: 0.0,
+        };
+        line.lap_len = line.lap_length();
+        line.lap_pos = line.lap_positions();
+        line
+    }
+
+    fn lap_positions(&self) -> Vec<f32> {
+        let n = self.nodes.len();
+        let mut pos = vec![None; n];
+        if let Some(mut e) = self.nodes.first().and_then(|n| n.out.first().copied()) {
+            let mut d = 0.0;
+            pos[0] = Some(0.0);
+            for _ in 0..self.edges.len() {
+                let to = self.edges[e].to;
+                d += self.edges[e].len;
+                if to == 0 || pos[to].is_some() {
+                    break;
+                }
+                pos[to] = Some(d);
+                match self.nodes[to].out.first() {
+                    Some(&next) => e = next,
+                    None => break,
+                }
+            }
+        }
+        // Off the loop: walk back and forward to it, and share the gap.
+        let main = pos.clone();
+        for (i, p) in pos.iter_mut().enumerate() {
+            if p.is_some() {
+                continue;
+            }
+            let walk = |forward: bool| {
+                let (mut at, mut d) = (i, 0.0);
+                for _ in 0..n {
+                    let e = if forward {
+                        self.nodes[at].out.first()
+                    } else {
+                        self.nodes[at].inc.first()
+                    };
+                    let &e = e?;
+                    d += self.edges[e].len;
+                    at = if forward {
+                        self.edges[e].to
+                    } else {
+                        self.edges[e].from
+                    };
+                    if let Some(m) = main[at] {
+                        return Some((m, d));
+                    }
+                }
+                None
+            };
+            *p = match (walk(false), walk(true)) {
+                (Some((a, da)), Some((mut b, db))) => {
+                    if b < a {
+                        b += self.lap_len;
+                    }
+                    Some((a + (b - a) * da / (da + db).max(1e-3)) % self.lap_len.max(1.0))
+                }
+                (Some((a, da)), None) => Some(a + da),
+                (None, Some((b, db))) => Some((b - db).max(0.0)),
+                (None, None) => Some(0.0),
+            };
+        }
+        pos.into_iter().map(|p| p.unwrap_or(0.0)).collect()
+    }
+
+    /// How far round the lap `t` along `edge` is, metres from node 0.
+    pub fn lap_position(&self, edge: usize, t: f32) -> f32 {
+        let e = &self.edges[edge];
+        let a = self.lap_pos[e.from];
+        let mut b = self.lap_pos[e.to];
+        if b < a - self.lap_len * 0.5 {
+            b += self.lap_len;
+        }
+        let p = a + (b - a) * t.clamp(0.0, 1.0);
+        if self.lap_len > 0.0 {
+            p % self.lap_len
+        } else {
+            p
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -239,11 +336,9 @@ pub struct AiDriver {
     /// Where on the line the quad is.
     pub edge: usize,
     pub t: f32,
-    /// Scales every speed the driver aims for (1 = the original's pace).
+    /// The [`Pacer`]'s scale on the speeds the driver aims for (1 = on
+    /// pace); set by the race each frame.
     pub pace: f32,
-    /// 0..1, from the rider's ability; shades how close to the limit
-    /// corners are taken.
-    pub ability: f32,
     /// Last steering target and target speed (for debugging views).
     pub target: Vec3,
     pub target_speed: f32,
@@ -265,6 +360,8 @@ pub struct AiDriver {
     /// Edge of the last respot and how many times in a row it was used.
     last_respot: Option<(usize, u32)>,
     rng: u32,
+    /// Distance covered round the line since the start, metres.
+    odometer: Odometer,
 }
 
 impl AiDriver {
@@ -278,7 +375,6 @@ impl AiDriver {
             edge,
             t,
             pace: 1.0,
-            ability: 1.0,
             target: position,
             target_speed: 0.0,
             steer_pid: Pid::new(1.0, 0.2, 0.01),
@@ -295,7 +391,25 @@ impl AiDriver {
             choice: None,
             last_respot: None,
             rng: seed.wrapping_mul(2_654_435_761).max(1),
+            odometer: Odometer::default(),
         }
+    }
+
+    /// Keeps track of a quad someone else drives (a player), for the
+    /// distance it has covered.
+    pub fn follow(&mut self, line: &RacingLine, pos: Vec3) {
+        if line.is_empty() {
+            return;
+        }
+        self.track(line, pos);
+        self.odometer
+            .update(line.lap_position(self.edge, self.t), line.lap_len);
+    }
+
+    /// Distance covered round the racing line since the start, metres
+    /// (negative on the grid behind node 0).
+    pub fn distance(&self) -> f32 {
+        self.odometer.total
     }
 
     fn random(&mut self) -> u32 {
@@ -446,7 +560,7 @@ impl AiDriver {
             return Input::default();
         }
         let pos = v.position;
-        self.track(line, pos);
+        self.follow(line, pos);
         let fwd = v.forward().with_y(0.0).normalize_or(Vec3::NEG_Z);
         let speed = v.velocity.dot(v.forward());
         let (left, right) = line.corridor(self.edge, self.t);
@@ -477,9 +591,21 @@ impl AiDriver {
             0.0
         };
 
+        // The rewrite's own: the port's quads are quicker than the
+        // original's between jumps, so a rider well ahead of its pace car
+        // would be held back to a crawl and come up to some jumps too slow
+        // to clear them (Swamp 2's ramp onto the jetty). Coming up to a
+        // jump node, the pacer doesn't slow it.
+        let pace =
+            if self.pace < 1.0 && self.jump_ahead(line, (speed.abs() * JUMP_RUN_UP).max(40.0)) {
+                1.0
+            } else {
+                self.pace
+            };
+
         // Walk forward along the line.
         let top = Self::top_speed(v);
-        let mut target_speed = top;
+        let mut target_speed = f32::MAX;
         let mut target = None;
         let mut e = self.edge;
         let mut dist = -line.edges[e].len * self.t;
@@ -497,13 +623,18 @@ impl AiDriver {
             }
             let reach = dist + len;
             if reach <= brake_look + len {
+                // 0x68760: the pacer slows every limit when the rider is
+                // ahead, but only lifts the top speed when it is behind.
                 let limit = line.nodes[line.edges[e].to].speed_limit;
-                if limit < NO_LIMIT {
-                    let allowed = (limit * limit + 2.0 * decel * reach.max(0.0)).sqrt();
-                    // Abler riders brake later for corners.
-                    let allowed = allowed * (0.9 + 0.1 * self.ability);
-                    target_speed = target_speed.min(allowed);
+                let mut allowed = (limit * limit + 2.0 * decel * reach.max(0.0)).sqrt();
+                if allowed <= top {
+                    if pace < 1.0 {
+                        allowed *= pace;
+                    }
+                } else {
+                    allowed = pace * top;
                 }
+                target_speed = target_speed.min(allowed);
             }
             if target.is_some() && reach > brake_look {
                 break;
@@ -515,7 +646,11 @@ impl AiDriver {
             }
         }
         let target = target.unwrap_or_else(|| line.point(e, 1.0));
-        let target_speed = target_speed.min(top) * self.pace;
+        let target_speed = if target_speed == f32::MAX {
+            pace * top
+        } else {
+            target_speed
+        };
         self.target = target;
         self.target_speed = target_speed;
 
@@ -550,6 +685,27 @@ impl AiDriver {
             }
         }
         input
+    }
+
+    /// Whether a jump node (one with a hop boost) is within `reach` metres
+    /// down the line.
+    fn jump_ahead(&self, line: &RacingLine, reach: f32) -> bool {
+        let mut e = self.edge;
+        let mut dist = -line.edges[e].len * self.t;
+        for _ in 0..line.edges.len() {
+            dist += line.edges[e].len;
+            if dist > reach {
+                return false;
+            }
+            if line.nodes[line.edges[e].to].boost > 0 {
+                return true;
+            }
+            match self.peek_edge(line, e) {
+                Some(n) => e = n,
+                None => return false,
+            }
+        }
+        false
     }
 
     /// Jump nodes (0x66380): coming up to one fast and lined up with the
@@ -667,14 +823,184 @@ impl AiDriver {
     }
 }
 
-/// The retail game's tweaks to an AI quad's handling (0x66200, 0x681d0):
-/// steering snaps straight to the driver's input, and the engine pulls
-/// harder with the rider's ability (`ability` 0-1, the rider's Ability
-/// characteristic out of 5).
+/// The retail game's tweaks to an AI quad's handling (rider skill setup
+/// 0x66200, applied at 0x681d0): the brake pedal moves instantly, the
+/// quad grips harder sideways and keeps more of its yaw damping in a slide
+/// the abler the rider is, and the side forces push at the height of the
+/// centre of mass, so they don't roll the quad. `ability` is the rider's Ability
+/// characteristic out of 5, as 0-1.
+///
+/// The original also makes the handbrake ("slide") pedal instant; the
+/// port's quads have no handbrake input.
 pub fn tune_for_ai(params: &mut VehicleParams, ability: f32) {
-    params.steer_rate = [1e6, 1e6];
-    params.steer_return_rate = [1e6, 1e6];
-    params.torque_curve.scale *= 1.15 * (1.0 + 0.1 * ability.clamp(0.0, 1.0));
+    let skill = 1.0 + 0.5 * ability.clamp(0.0, 1.0);
+    params.brake_rate = 1e6;
+    params.brake_return_rate = 1e6;
+    params.torque_slide_scale = [0.75 / skill; 2];
+    params.side_max = params.side_max.map(|m| m * 1.15 * skill);
+    params.force_point = 0.0;
+}
+
+/// Distance covered round a looped line, from lap positions.
+#[derive(Debug, Clone, Default)]
+struct Odometer {
+    last: Option<f32>,
+    total: f32,
+}
+
+impl Odometer {
+    fn update(&mut self, lap_pos: f32, lap_len: f32) {
+        let half = lap_len * 0.5;
+        match self.last {
+            // On the grid behind the line counts as short of it.
+            None => {
+                self.total = if lap_pos > half {
+                    lap_pos - lap_len
+                } else {
+                    lap_pos
+                }
+            }
+            Some(last) => {
+                let mut d = lap_pos - last;
+                if d < -half {
+                    d += lap_len;
+                } else if d > half {
+                    d -= lap_len;
+                }
+                self.total += d;
+            }
+        }
+        self.last = Some(lap_pos);
+    }
+}
+
+/// Pace scale limits and the lead (metres) that takes it to 0 (0x69950).
+const PACE_MAX: f32 = 1.5;
+const PACE_MIN: f32 = 0.5;
+const PACE_RANGE: f32 = 100.0;
+/// Riders sharing one pace car.
+const RIDERS_PER_PACE: usize = 3;
+/// How far (metres) a pace car may be pulled from its schedule towards a
+/// player, and how fast.
+const CHASE_LIMIT: f32 = 600.0;
+const CHASE_RATE: f32 = 20.0;
+
+#[derive(Debug, Clone)]
+struct PaceCar {
+    /// Metres per second: a lap in this pace car's lap time.
+    speed: f32,
+    covered: f32,
+    /// Pull towards the player it is chasing, metres.
+    offset: f32,
+}
+
+/// The original's AI pacer (0x69950, 0x6a3f0, 0x6a970): pace cars lap the
+/// track at lap times spread from the track's best to its worst AI lap
+/// time, one for every three riders plus one. The riders are ranked by
+/// [`pace_rating`] and the best three follow the fastest car, the next
+/// three the next, and so on. A rider's target speeds scale by 1 less its
+/// lead over its car per 100 m, kept to 0.5-1.5. A car with a player near
+/// it is pulled towards them (up to 600 m off its schedule), so the riders
+/// round a player race them rather than the clock.
+#[derive(Debug, Clone)]
+pub struct Pacer {
+    cars: Vec<PaceCar>,
+}
+
+impl Pacer {
+    /// `racers` counts every quad on the grid, players included. `None`
+    /// when the track gives no AI lap times.
+    pub fn new(
+        best: f32,
+        worst: f32,
+        racers: usize,
+        players: usize,
+        lap_length: f32,
+    ) -> Option<Self> {
+        if !(best > 0.0 && worst >= best && lap_length > 0.0) {
+            return None;
+        }
+        let n = racers / RIDERS_PER_PACE + 1;
+        let cars = (0..n)
+            .map(|i| {
+                let time = match (players, n) {
+                    // With nobody to race, everyone runs at the best time.
+                    (0, _) => best,
+                    (_, 1) => (best + worst) * 0.5,
+                    _ => best + (worst - best) * i as f32 / (n - 1) as f32,
+                };
+                PaceCar {
+                    speed: lap_length / time,
+                    covered: 0.0,
+                    offset: 0.0,
+                }
+            })
+            .collect();
+        Some(Self { cars })
+    }
+
+    /// Which pace car each rider follows, from their [`pace_rating`]s
+    /// (best first; ties keep grid order).
+    pub fn assign(&self, ratings: &[f32]) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..ratings.len()).collect();
+        order.sort_by(|&a, &b| ratings[b].total_cmp(&ratings[a]));
+        let mut car = vec![0; ratings.len()];
+        for (rank, &i) in order.iter().enumerate() {
+            car[i] = (rank / RIDERS_PER_PACE).min(self.cars.len() - 1);
+        }
+        car
+    }
+
+    /// Runs the pace cars on once the race is under way. `players`: the
+    /// distance each player has covered (see [`AiDriver::distance`]).
+    pub fn tick(&mut self, dt: f32, players: &[f32]) {
+        // Each player pulls the car nearest them, one player a car.
+        let mut chased: Vec<Option<f32>> = vec![None; self.cars.len()];
+        for &p in players {
+            let nearest = (0..self.cars.len()).min_by(|&a, &b| {
+                let d = |c: &PaceCar| (c.covered + c.offset - p).abs();
+                d(&self.cars[a]).total_cmp(&d(&self.cars[b]))
+            });
+            if let Some(i) = nearest
+                && chased[i].is_none()
+            {
+                chased[i] = Some(p);
+            }
+        }
+        let k = (CHASE_RATE * dt).min(1.0);
+        for (c, chase) in self.cars.iter_mut().zip(chased) {
+            c.covered += c.speed * dt;
+            c.offset = match chase {
+                Some(p) => {
+                    (c.offset + (p - (c.covered + c.offset)) * k).clamp(-CHASE_LIMIT, CHASE_LIMIT)
+                }
+                None => 0.0,
+            };
+        }
+    }
+
+    /// The speed scale for a rider following `car` who has covered
+    /// `distance` metres.
+    pub fn scale(&self, car: usize, distance: f32) -> f32 {
+        let Some(c) = self.cars.get(car) else {
+            return 1.0;
+        };
+        let lead = distance - (c.covered + c.offset);
+        (1.0 - lead / PACE_RANGE).clamp(PACE_MIN, PACE_MAX)
+    }
+}
+
+/// How a rider ranks for the pacer (0x25ab0): ability and technique (0-5)
+/// count half, the quad's top speed, acceleration and handling (0-5) the
+/// other half.
+pub fn pace_rating(
+    ability: f32,
+    technique: f32,
+    top_speed: f32,
+    acceleration: f32,
+    handling: f32,
+) -> f32 {
+    ((ability + technique) * 0.2 * 0.5 + (top_speed + acceleration + handling) * 0.2 / 3.0) * 0.5
 }
 
 /// Pushes two quads apart when they touch, trading the closing part of
@@ -741,6 +1067,44 @@ mod tests {
         let (e, t) = l.locate(Vec3::new(1.0, 0.0, -50.0));
         assert_eq!(e, 0);
         assert!((t - 0.5).abs() < 1e-3);
+    }
+
+    #[test]
+    fn lap_distance_runs_on_over_the_line() {
+        let l = square();
+        assert!((l.lap_position(1, 0.5) - 150.0).abs() < 1e-3);
+        assert!((l.lap_position(3, 0.5) - 350.0).abs() < 1e-3);
+        let mut o = Odometer::default();
+        // On the grid just behind the line.
+        o.update(390.0, 400.0);
+        assert!((o.total + 10.0).abs() < 1e-3);
+        for p in [5.0, 200.0, 395.0, 10.0] {
+            o.update(p, 400.0);
+        }
+        assert!((o.total - 410.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn pacer_spreads_lap_times_and_scales() {
+        // Seven on the grid with a player: three cars at 79, 80 and 81 s.
+        let mut p = Pacer::new(79.0, 81.0, 7, 1, 1580.0).unwrap();
+        assert_eq!(p.cars.len(), 3);
+        assert!((p.cars[0].speed - 20.0).abs() < 1e-3);
+        assert!((p.cars[2].speed - 1580.0 / 81.0).abs() < 1e-3);
+        // The best three riders follow the fastest car.
+        let cars = p.assign(&[0.1, 0.9, 0.5, 0.7, 0.3, 0.2]);
+        assert_eq!(cars, vec![1, 0, 0, 0, 1, 1]);
+        p.tick(1.0, &[]);
+        assert!((p.scale(0, 20.0) - 1.0).abs() < 1e-3);
+        assert!((p.scale(0, 70.0) - 0.5).abs() < 1e-3);
+        assert!((p.scale(0, 0.0) - 1.2).abs() < 1e-3);
+        assert!((p.scale(0, -100.0) - 1.5).abs() < 1e-3);
+        // A player pulls the car nearest them, at most 600 m.
+        for _ in 0..200 {
+            p.tick(1.0 / 60.0, &[-300.0]);
+        }
+        assert!((p.scale(2, -300.0) - 1.0).abs() < 0.01);
+        assert!(Pacer::new(0.0, 0.0, 4, 1, 1000.0).is_none());
     }
 
     #[test]

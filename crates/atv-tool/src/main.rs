@@ -248,7 +248,7 @@ fn sim(game: &GameSource, track: &str, quad: &str, seconds: f32) -> Result<()> {
 fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> {
     use atv_formats::aid::AiPath;
     use atv_formats::setup;
-    use atv_sim::ai::{AiDriver, RacingLine, Traffic, bump, tune_for_ai};
+    use atv_sim::ai::{AiDriver, Pacer, RacingLine, Traffic, bump, tune_for_ai};
     use atv_sim::{Vehicle, VehicleParams, track as trk};
     let quads: Vec<String> = std::env::var("ATV2_QUADS")
         .map(|q| q.split(',').map(str::to_owned).collect())
@@ -320,6 +320,17 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
             0u32,
         ));
     }
+    // Paced as in a race with a player on the grid, but nobody to chase.
+    let mut pacer = std::env::var_os("ATV2_NOPACE").is_none().then(|| {
+        Pacer::new(
+            info.as_ref().and_then(|e| e.num("mAIBestLapTime")).unwrap_or(0.0),
+            info.as_ref().and_then(|e| e.num("mAIWorstLapTime")).unwrap_or(0.0),
+            cars.len() + 1,
+            1,
+            line.lap_length(),
+        )
+    }).flatten();
+    let pace_car = pacer.as_ref().map(|p| p.assign(&vec![0.0; cars.len()])).unwrap_or_default();
     let dt = 1.0 / 60.0;
     let mut t = 0.0f32;
     let limit = laps as f32
@@ -337,7 +348,15 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
                 velocity: c.1.velocity,
             })
             .collect();
+        if let Some(p) = pacer.as_mut()
+            && t >= 1.0
+        {
+            p.tick(dt, &[]);
+        }
         for (i, (_, v, d, next, lap_start, times, armed, respots)) in cars.iter_mut().enumerate() {
+            if let Some(p) = &pacer {
+                d.pace = if t >= 1.0 { p.scale(pace_car[i], d.distance()) } else { 1.0 };
+            }
             let others: Vec<Traffic> = traffic
                 .iter()
                 .enumerate()
@@ -352,10 +371,12 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
             v.step(&input, dt, &col);
             if std::env::var_os("ATV2_TRACE").is_some() && i == 0 && (t * 60.0) as u32 % 120 == 0 {
                 println!(
-                    "  t={t:6.1} edge={} t={:.2} pos={:.0?} mph={:.0} target_mph={:.0} up={:.2} gear={} revs={:.0} thr={:.2} brk={:.2} wheels={}",
+                    "  t={t:6.1} edge={} t={:.2} pos={:.0?} dist={:.0} pace={:.2} mph={:.0} target_mph={:.0} up={:.2} gear={} revs={:.0} thr={:.2} brk={:.2} wheels={}",
                     d.edge,
                     d.t,
                     v.position,
+                    d.distance(),
+                    d.pace,
                     v.speed_mph(),
                     d.target_speed * 2.237,
                     v.up().y,

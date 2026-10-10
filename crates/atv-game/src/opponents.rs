@@ -1,7 +1,9 @@
 //! Computer riders in a single race. Each one drives its own quad with
 //! the original game's AI driver (`atv_sim::ai`) along the track's racing
 //! line, keeps its own laps, and is ranked against the player. Riders are
-//! thrown off by the same crash rules as the player's.
+//! thrown off by the same crash rules as the player's. The original's
+//! pacer holds them to the track's AI lap times and races the ones near a
+//! player against that player.
 
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::input::gamepad::Gamepad;
@@ -9,8 +11,9 @@ use bevy::prelude::*;
 
 use atv_formats::GameSource;
 use atv_formats::aid::AiPath;
+use atv_formats::setup;
 use atv_formats::row::World as TrackWorld;
-use atv_sim::ai::{AiDriver, RacingLine, Traffic, bump, tune_for_ai};
+use atv_sim::ai::{AiDriver, Pacer, RacingLine, Traffic, bump, pace_rating, tune_for_ai};
 use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
@@ -59,6 +62,11 @@ impl Plugin for OpponentsPlugin {
 pub struct Opponents {
     line: RacingLine,
     pub racers: Vec<Racer>,
+    /// The track's AI pacer, and the pace car each racer follows.
+    pacer: Option<Pacer>,
+    pace_car: Vec<usize>,
+    /// Keeps track of how far round player 1 is, for the pacer.
+    player_track: AiDriver,
 }
 
 impl Opponents {
@@ -189,6 +197,7 @@ pub fn spawn(
         .unwrap_or_default();
     let scoped = DespawnOnExit(AppState::Race);
     let mut racers = Vec::new();
+    let mut ratings = Vec::new();
     for i in 0..count.min(7) {
         if quads.is_empty() {
             quads = all_quads.clone();
@@ -213,9 +222,8 @@ pub fn spawn(
             .ok()
             .map(|b| String::from_utf8_lossy(&b).into_owned());
         let mut params = VehicleParams::from_files(&generic, own.as_deref());
-        let ability = (rider.stats[0] / 5.0).clamp(0.0, 1.0);
         if human.is_none() {
-            tune_for_ai(&mut params, ability);
+            tune_for_ai(&mut params, (rider.stats[0] / 5.0).clamp(0.0, 1.0));
         }
         let wheel_x: Vec<f32> = params.wheels.iter().map(|w| w.offset[0]).collect();
         let (pos, rot) = trk::start_pose(world, collision, i + 2);
@@ -245,8 +253,13 @@ pub fn spawn(
             }
             Err(e) => error!("failed to load rider {}: {e:#}", rider.model),
         }
-        let mut driver = AiDriver::new(&line, pos, i as u32 + 1);
-        driver.ability = ability;
+        let driver = AiDriver::new(&line, pos, i as u32 + 1);
+        let q = roster.quads.iter().find(|q| q.name.eq_ignore_ascii_case(&quad)).map_or([0.0; 5], |q| q.stats);
+        ratings.push(match human {
+            // Players don't take a place behind a pace car.
+            Some(_) => f32::MIN,
+            None => pace_rating(rider.stats[0], rider.stats[1], q[0], q[1], q[3]),
+        });
         let on_line = checkpoints
             .first()
             .is_some_and(|&c| (c - pos).with_y(0.0).length() < CHECKPOINT_RADIUS);
@@ -275,7 +288,20 @@ pub fn spawn(
         });
         info!("computer rider {}: {} on {quad}", i + 1, rider.name);
     }
-    commands.insert_resource(Opponents { line, racers });
+    let track = setup::entries(&String::from_utf8_lossy(&game.read("/Setup/Tracks.xml").unwrap_or_default()))
+        .into_iter()
+        .find(|e| e.name.eq_ignore_ascii_case(&sel.track));
+    let lap_time = |k: &str| track.as_ref().and_then(|e| e.num(k)).unwrap_or(0.0);
+    let pacer = Pacer::new(
+        lap_time("mAIBestLapTime"),
+        lap_time("mAIWorstLapTime"),
+        racers.len() + 1,
+        1 + humans.len(),
+        line.lap_length(),
+    );
+    let pace_car = pacer.as_ref().map(|p| p.assign(&ratings)).unwrap_or_default();
+    let player_track = AiDriver::new(&line, trk::start_pose(world, collision, 1).0, 0);
+    commands.insert_resource(Opponents { line, racers, pacer, pace_car, player_track });
     commands.init_resource::<Standings>();
 }
 
@@ -326,6 +352,16 @@ fn drive_opponents(
     let opp = &mut *opp;
     let cps = &race.checkpoints;
     let n = cps.len();
+    // The pace cars set off with the race.
+    opp.player_track.follow(&opp.line, player.0.position);
+    if progress.started()
+        && let Some(pacer) = opp.pacer.as_mut()
+    {
+        let players: Vec<f32> = std::iter::once(opp.player_track.distance())
+            .chain(opp.racers.iter().filter(|r| r.human.is_some()).map(|r| r.driver.distance()))
+            .collect();
+        pacer.tick(dt, &players);
+    }
     let traffic: Vec<Traffic> = std::iter::once(&player.0)
         .chain(opp.racers.iter().map(|r| &r.vehicle))
         .map(|v| Traffic {
@@ -352,6 +388,9 @@ fn drive_opponents(
         } else if time_up {
             Input { brake: if r.vehicle.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
         } else {
+            if let (Some(pacer), Some(&car), None) = (&opp.pacer, opp.pace_car.get(i), r.human) {
+                r.driver.pace = pacer.scale(car, r.driver.distance());
+            }
             let ai = r.driver.drive(&opp.line, &r.vehicle, &others, dt);
             match r.human {
                 // A player drives until the flag; the AI brings them home
