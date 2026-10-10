@@ -385,17 +385,16 @@ fn sync_quad(
     }
     for (w, mut t) in &mut wheels {
         let n = w.wheels.len() as f32;
-        let (mut comp, mut spin, mut steer) = (0.0, 0.0, 0.0);
+        let (mut height, mut spin, mut steer) = (0.0, 0.0, 0.0);
         for &i in &w.wheels {
             let (Some(ws), Some(wp)) = (v.wheels.get(i), v.params.wheels.get(i)) else { continue };
-            // Hanging fully = min_pos; compressed moves the wheel up.
-            comp += wp.min_pos + ws.compression;
+            // Wheel centre = attachment + travel along the strut.
+            height += wp.offset[1] + wp.min_pos + ws.compression;
             spin += ws.spin;
             steer += ws.steer;
         }
-        let (comp, spin, steer) = (comp / n, spin / n, steer / n);
-        // The model's wheel centre sits at rest-ish compression; offset from there.
-        t.translation = w.base + Vec3::Y * (comp + 0.07);
+        let (height, spin, steer) = (height / n, spin / n, steer / n);
+        t.translation = w.base.with_y(height + convert::COM_HEIGHT);
         let spin = if w.mirror { spin } else { -spin };
         t.rotation = Quat::from_rotation_y(steer) * Quat::from_rotation_x(spin);
     }
