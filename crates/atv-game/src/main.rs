@@ -23,6 +23,7 @@ mod career;
 mod challenge;
 mod convert;
 mod crash;
+mod effects;
 mod freestyle;
 mod frontend;
 mod hd;
@@ -424,6 +425,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(career)
         .insert_resource(challenges)
         .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin, mp::MpPlugin, knock::KnockPlugin, water::WaterPlugin, unlocks::UnlocksPlugin))
+        .add_plugins(effects::EffectsPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)

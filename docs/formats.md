@@ -432,6 +432,29 @@ left alone.
   `ALLCHAMPS` 0x20 (Qualifying, Professional and Custom open), `ALLCHALS`
   0x40 (all twelve challenges open) and `NOHUD` 0x80.
 
+## Particles (Setup/Materials.xml, Sprites/Particles)
+
+`Setup/Materials.xml` has one entry per ground type (28, read by 0x782e0
+into 0x58-byte records). Besides grip it says what a wheel throws up:
+`WheelDustType`/`WheelDustProb`/`WheelDustColour` (puffs off a wheel
+turning fast), `WheelParticleType` (`Dirt`, `Gravel` or `Snow`, the chunk
+sprites `Dirt0..2`, `Gravel0..3` or `Dust0`), `WheelParticleProb`,
+`WheelParticleDustProb`, `WheelParticleColour`, `WheelParticleSize`.
+Colours are stored as bytes and scaled by 1/128 when used, so 0.5 draws a
+sprite as it is.
+
+The particle manager (set up at 0x8e440, run by 0x8e380) keeps five pools
+on `Sprites/Particles`: sparks (50, 0.3 s), chunks (600, 1.5 s, gravity
+10, bouncing 0.9 off the ground they left), exhaust puffs (40, 0.3 s),
+dust (80, 1 s) and slow smoke (240, 4 s). Each frame it rolls, per wheel,
+a chance from the wheel's spray `1.8 v - tread speed x forward`, scaled
+from nothing at 5 mph to full at 30 mph (0x8bf40), and per wheel on the
+ground a dust chance from `min(speed / 50 mph, wheel rad/s / 100)^2`
+(0x8b900). The exhaust (0x8b330) puffs at low speed and, while boosting
+(the quad's flag at +0x1174), bursts dark smoke that thins out over a
+second and spits three sparks a frame (0x8ada0). Computer riders' quads
+throw half as much, and nothing is thrown past 50 m from the camera.
+
 ## Still unknown
 
 `.kdt` (likely collision tree), `.nin`, `.viz`, `.cuban` (compressed animation), the names of

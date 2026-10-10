@@ -282,6 +282,11 @@ impl Vehicle {
     pub fn grounded(&self) -> bool {
         self.struts.iter().any(|s| s.contact)
     }
+    /// How far the driven wheels are spinning past the ground (0 gripping,
+    /// up to the throttle when spinning freely).
+    pub fn wheelspin(&self) -> f32 {
+        self.wheelspin
+    }
 
     /// Puts the quad back at `position`, at rest.
     pub fn reset(&mut self, position: Vec3, rotation: Quat) {

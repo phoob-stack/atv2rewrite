@@ -115,6 +115,13 @@ pub struct WheelVisual {
     pub owner: Entity,
 }
 
+/// Where a quad's exhaust smokes (its body's `exhaustonsmokecentre`
+/// hard-point), relative to the quad's root (the centre of mass).
+#[derive(Component, Clone, Copy, Debug)]
+pub struct Exhaust {
+    pub tip: Vec3,
+}
+
 /// A rider's skinned mesh and the joint entities that pose it.
 pub struct RiderRig {
     /// Joint entities in skeleton order; the first is the pelvis, a child
@@ -820,6 +827,9 @@ impl<'a> Loader<'a> {
         let root = model_root;
         if self.dirt.is_some() {
             commands.entity(root_entity).insert(Mud::default());
+        }
+        if let Some(tip) = point("exhaustonsmokecentre") {
+            commands.entity(root_entity).insert(Exhaust { tip: tip - Vec3::new(0.0, COM_HEIGHT, 0.0) });
         }
         self.last_quad = Some(root_entity);
         self.spawn_model(commands, &body, root, Transform::default(), Look::Lit);
