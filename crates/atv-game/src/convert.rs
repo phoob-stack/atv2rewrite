@@ -472,7 +472,9 @@ impl<'a> Loader<'a> {
                 _ => 0.0,
             },
             perceptual_roughness: if gloss_map.is_some() { 1.0 } else { 0.7 },
-            reflectance: if gloss_map.is_some() { 0.4 } else { 0.15 },
+            // Kept low: there is no environment map, and Bevy's flat ambient
+            // turns a higher F0 into bright rims at grazing angles.
+            reflectance: if gloss_map.is_some() { 0.25 } else { 0.15 },
             metallic_roughness_texture: gloss_map,
             ..default()
         });
