@@ -374,8 +374,8 @@ left alone.
   `_Custom` (Current Standings).
 - Custom championship (`CustomChampSM`, 0x97850; `mCustomUnlocked` in the
   profile's `Unlockables`): rider and ATV, then `Career_Custom_Tracks`
-  (0x426a0 builds it, 0x42ea0 takes input) lists the fifteen race tracks
-  with a round and laps column. A adds the highlighted track as the next
+  (0x426a0 builds it, 0x42ea0 takes input) lists the race tracks the
+  profile has unlocked, with a round and laps column. A adds the highlighted track as the next
   round (0x42530) or takes it out and moves the later rounds up (0x42570);
   Right on an added track edits its laps, Up/Down 1 to 20, and a new track
   takes the last laps set (1 at first). Continue needs one track and hands
@@ -405,6 +405,32 @@ left alone.
   state machine (`ID_MULTIPLAYER_MODE_CHAMPIONSHIP` starts `CustomChampSM`
   at 0x98520): Choose Your Tracks, and Point Distribution once Custom is
   open (see the custom championship above).
+- Unlocks (the profile's `Unlockables`, saved at 0x12ed0): bit fields
+  `mTracksUnlocked` (17 tracks: the 15 race tracks, then Stadium 1 and 2),
+  `mRidersUnlocked` (24) and `mVehiclesUnlocked` (11), set at 0x12fa0,
+  0x12fe0 and 0x13020. `Tracks.xml` `mAvailable="1"` marks the tracks open
+  from the start (Dunes 1, Forest 1, Swamp 1); `Riders.xml` and
+  `VehicleSetup.xml` `mAvailability` is `Unlocked`, `LockedHuman` (the ten
+  pros; Bullet, Challenger, Nitro, Skyline, Storm), `LockedNeverAI`
+  (Devil Girl, Troll) or `LockedBoth` (ATC). A track opens when an Arcade
+  or Career round's status page comes up on it (0x95f60, 0x97050), and
+  an Arcade round won opens the next round's track with a "New Track"
+  message (0x7e290; the results pop-ups at 0x53da0 also say "New ATV",
+  "New Rider", "Rider Ranking Now" and "Skill Level Increased To %d").
+  Track select (`ID_TRACK_SELECT_PAGE`, Single Race and Time Trial) shows
+  a locked track with string 0x203 and won't start it; Choose Your Tracks
+  lists only open tracks. Rider select hides riders 22 and 23 (the
+  secret pair) while locked and shows the others with 0x1ac ("Earn gold
+  medals in freestyle challenge to unlock pro riders"); ATV select gives
+  0x1a ("Earn %d more gold medals in career mode") or, with no medal count
+  for it, 0x1c. Freestyle.xml's rider rewards list Jasmin Plante twice and
+  never Jeremiah Jones, so he only comes with a cheat.
+- Cheats (0x1cef14, names to bits; applied at 0x18f20 and kept in the
+  profile as `mCheat`): typed as a new profile's name instead of creating
+  one. `ALLOFEM` 0x7e (all below), `ALLRIDERS` 0x2, `ALLBIKES` 0x4,
+  `ALLTRACKS` 0x8, `ALLTRICKS` 0x10 (skill points to the maximum),
+  `ALLCHAMPS` 0x20 (Qualifying, Professional and Custom open), `ALLCHALS`
+  0x40 (all twelve challenges open) and `NOHUD` 0x80.
 
 ## Still unknown
 

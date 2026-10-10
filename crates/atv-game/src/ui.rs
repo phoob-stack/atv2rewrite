@@ -535,6 +535,9 @@ pub struct MenuList {
     pub items: Vec<String>,
     /// Items shown dimmed and skipped over (modes not built yet).
     pub disabled: Vec<bool>,
+    /// Items shown dimmed that can be highlighted but not picked (locked
+    /// tracks and ATVs).
+    pub locked: Vec<bool>,
     pub selected: usize,
     pub width: f32,
     pub row: f32,
@@ -542,7 +545,7 @@ pub struct MenuList {
 
 impl MenuList {
     pub fn new(items: &[&str], width: f32) -> Self {
-        Self { items: items.iter().map(|s| s.to_string()).collect(), disabled: vec![false; items.len()], selected: 0, width, row: 34.0 }
+        Self { items: items.iter().map(|s| s.to_string()).collect(), disabled: vec![false; items.len()], locked: vec![false; items.len()], selected: 0, width, row: 34.0 }
     }
 
     pub fn with_row(mut self, row: f32) -> Self {
@@ -563,6 +566,17 @@ impl MenuList {
             self.step(Nav::Down);
         }
         self
+    }
+
+    /// Marks items locked by index.
+    pub fn lock(mut self, locked: impl Fn(usize) -> bool) -> Self {
+        self.locked = (0..self.items.len()).map(locked).collect();
+        self
+    }
+
+    /// Whether the highlighted item can't be picked.
+    pub fn blocked(&self) -> bool {
+        [&self.disabled, &self.locked].iter().any(|v| v.get(self.selected) == Some(&true))
     }
 
     pub fn step(&mut self, nav: Nav) {
@@ -623,6 +637,8 @@ fn refresh_menus(lists: Query<(&MenuList, &Children)>, rows: Query<&Children>, m
                         if let Ok(mut t) = texts.get_mut(other) {
                             let c = if list.disabled.get(r.0) == Some(&true) {
                                 Color::srgba(0.6, 0.65, 0.75, 0.45)
+                            } else if list.locked.get(r.0) == Some(&true) {
+                                Color::srgba(0.6, 0.65, 0.75, if on { 0.8 } else { 0.45 })
                             } else if on {
                                 Color::WHITE
                             } else {

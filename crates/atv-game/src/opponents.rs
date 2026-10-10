@@ -182,6 +182,7 @@ pub fn spawn(
     let all_quads: Vec<&str> = roster
         .quads
         .iter()
+        .filter(|q| q.ai)
         .map(|q| q.name.as_str())
         .filter(|q| !NOT_FOR_AI.iter().any(|n| n.eq_ignore_ascii_case(q)))
         .collect();

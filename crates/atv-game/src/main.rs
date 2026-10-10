@@ -7,7 +7,7 @@
 //!             [--round N] [--opponents N] [--challenge N] [--players N]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
-//!             [--resolution 1280x720] [--fullscreen]
+//!             [--resolution 1280x720] [--fullscreen] [--cheat ALLOFEM]
 //!
 //! Without `--track` the game opens on its front end; with it, it goes
 //! straight into a race (`--frontend` shows the menus anyway, preselected).
@@ -37,6 +37,7 @@ mod rider;
 mod settings;
 mod trickbook;
 mod ui;
+mod unlocks;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -100,6 +101,8 @@ struct Args {
     challenge: usize,
     /// Humans in split screen (1 to 4).
     players: usize,
+    /// Cheats to enter (see [`unlocks::CHEATS`]).
+    cheats: Vec<String>,
 }
 
 /// The game modes on the main menu.
@@ -236,6 +239,7 @@ fn parse_args() -> anyhow::Result<Args> {
         opponents: 5,
         challenge: 1,
         players: 1,
+        cheats: Vec::new(),
     };
     let mut frontend = false;
     let mut it = std::env::args().skip(1);
@@ -293,6 +297,11 @@ fn parse_args() -> anyhow::Result<Args> {
                 a.direct = true;
             }
             "--players" => a.players = val().parse::<usize>()?.clamp(1, mp::MAX_PLAYERS),
+            "--cheat" => {
+                let name = val();
+                anyhow::ensure!(unlocks::cheat_bits(&name).is_some(), "unknown cheat {name} (ALLOFEM, ALLRIDERS, ALLBIKES, ALLTRACKS, ALLTRICKS, ALLCHAMPS, ALLCHALS)");
+                a.cheats.push(name);
+            }
             "--opponents" => a.opponents = val().parse::<usize>()?.min(7),
             "--quad" => a.quad = val(),
             "--rider" => a.rider = val(),
@@ -369,6 +378,13 @@ fn main() -> anyhow::Result<()> {
     // Career races the saved championship's next round.
     let mut career = career::Career::load();
     career.upgrade(&career_rules);
+    unlocks::upgrade(&mut career, &roster);
+    if !args.cheats.is_empty() {
+        for c in &args.cheats {
+            unlocks::apply_cheat(&mut career, &career_rules, c);
+        }
+        career.save();
+    }
     if args.mode == Mode::Career
         && let Some(run) = career.run.as_ref().filter(|r| !r.over())
         && let Some((t, laps)) = run.next_round()
@@ -407,7 +423,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(career_rules)
         .insert_resource(career)
         .insert_resource(challenges)
-        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin, mp::MpPlugin, knock::KnockPlugin, water::WaterPlugin))
+        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin, mp::MpPlugin, knock::KnockPlugin, water::WaterPlugin, unlocks::UnlocksPlugin))
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
