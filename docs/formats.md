@@ -298,10 +298,14 @@ The respots and the two countdowns need `mRespotsOn` (1 in the disc's
 A respot puts the racer on the line at the furthest point they reached
 on a stretch inside one checkpoint's run whose two nodes allow a respot,
 not the next checkpoint's own stretch (0x90400, 0x8fd30), on the nearer
-ground over or under it, facing down the line. The original spreads
-racers respotted at the same place across the corridor; the rewrite only
-watches player 1, and its other respots (R, a crash, upside down) still
-use the last spot where the quad was upright on the ground.
+ground over or under it, facing down the line; before the first such
+point, back down the line to the nearest node that allows one. Every
+respot in a race goes there, after a crash, stuck upside down or on the
+rider's say-so too (0x90ac0, run half a second into the fade 0x25f20).
+With any other racer within 10 m of the point (0x1c3160, squared), racer
+i of n goes i/n of the way across the corridor from its left edge, so
+player 1, the first, goes to the left edge. The rewrite only watches
+player 1, and puts the quad back without the fade.
 
 The original paces its computer riders (0x69950, 0x6a3f0, 0x6a970): "pace
 cars" lap the track at `mAIBestLapTime`..`mAIWorstLapTime` from

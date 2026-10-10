@@ -18,7 +18,11 @@
 //!
 //! None of it runs while the rider is off the quad. A respot puts the quad
 //! on the line at the furthest point the rider reached where both ends of
-//! the line's stretch allow a respot (0x90400, 0x8fd30).
+//! the line's stretch allow a respot (0x90400, 0x8fd30). Every respot in a
+//! race goes there, after a crash or on the rider's say-so too (0x90ac0);
+//! with another racer within 10 m of the spot, racer i of n goes i/n of the
+//! way across the corridor from its left edge, so player 1, the first,
+//! goes to the left edge.
 
 use bevy::prelude::*;
 
@@ -45,6 +49,9 @@ pub const WRONG_WAY: f32 = 2.0;
 const LOST: f32 = 3.0;
 /// The sector of a node with no way on (none in the shipped lines).
 const DEAD_END: i32 = -2;
+/// With another racer this near the respot point, metres, the quad goes to
+/// the edge of the corridor (0x1c3160, squared).
+const CROWDED: f32 = 10.0;
 
 /// A `Respot` box.
 #[derive(Debug, Clone, Copy)]
@@ -178,8 +185,8 @@ impl Marshal {
     }
 
     /// Where to put the quad back, facing down the line, and starts the
-    /// watch over from there.
-    pub fn respot(&mut self, collision: &TrackCollision) -> (Vec3, Quat) {
+    /// watch over from there. `others` are where the other racers are.
+    pub fn respot(&mut self, collision: &TrackCollision, others: &[Vec3]) -> (Vec3, Quat) {
         let (e, t) = match self.spot {
             Some((e, t, run)) => {
                 self.run = run;
@@ -199,7 +206,11 @@ impl Marshal {
             }
         };
         let t = t.clamp(0.0, 1.0);
-        let p = self.line.point(e, t);
+        let mut p = self.line.point(e, t);
+        if others.iter().any(|o| o.distance(p) < CROWDED) {
+            // Player 1 is the first racer: the corridor's left edge.
+            p += self.line.edges[e].side * self.line.corridor(e, t).0;
+        }
         // The nearer ground over or under the line.
         let ground = [Vec3::NEG_Y, Vec3::Y].into_iter().filter_map(|d| collision.raycast(p, d, 200.0)).min_by(|a, b| a.t.total_cmp(&b.t)).map_or(p.y, |h| h.point.y);
         let fwd = self.line.edges[e].dir.with_y(0.0).normalize_or(Vec3::NEG_Z);
@@ -397,7 +408,7 @@ mod tests {
         assert_eq!(respot, Some(40));
         // On the line as far as it got (alongside counts), on the ground,
         // facing on.
-        let (p, rot) = m.respot(&ground());
+        let (p, rot) = m.respot(&ground(), &[at(60.0, 0.0)]);
         assert!((p - to_sim([80.0, 0.6, 0.0])).length() < 0.01, "{p}");
         assert!((rot * Vec3::NEG_Z).dot(east) > 0.99);
         assert_eq!(m.warning(), None);
@@ -417,6 +428,19 @@ mod tests {
             }
         }
         assert_eq!(respot, Some(32));
+    }
+
+    #[test]
+    fn crowded_spots_go_to_the_left_edge() {
+        let mut m = Marshal::new(square(), &gates(), Vec::new(), true, at(60.0, 0.0)).unwrap();
+        let east = to_sim([1.0, 0.0, 0.0]);
+        for i in 0..20 {
+            m.watch(at(60.0 + i as f32, 0.0), east, 1, 4, 0.125);
+        }
+        // Someone 8 m along: over to the left of the way on, 6 m out.
+        let (p, rot) = m.respot(&ground(), &[at(87.0, 3.0)]);
+        let left = rot * Vec3::NEG_X;
+        assert!((p - to_sim([79.0, 0.6, 0.0]) - left * 6.0).length() < 0.01, "{p}");
     }
 
     #[test]
