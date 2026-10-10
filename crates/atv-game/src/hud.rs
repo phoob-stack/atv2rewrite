@@ -7,6 +7,7 @@
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
 
+use crate::boost::Boost;
 use crate::career::{self, Award, Career, Run};
 use crate::challenge::{self, Outcome};
 use crate::mp;
@@ -41,6 +42,9 @@ const NEEDLE_PER_1K: f32 = 22.1;
 struct NeedleHub;
 #[derive(Component)]
 struct PreloadArc;
+/// The speed boost meter: the disc in the small dial, filling clockwise.
+#[derive(Component)]
+struct BoostDisc;
 #[derive(Component)]
 enum Readout {
     Speed,
@@ -117,7 +121,14 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
                 n.left = px(p.x);
                 n.top = px(p.y);
                 g.spawn((n, ImageNode::new(ui.preload_steps[0].clone()).with_mode(bevy::ui::widget::NodeImageMode::Stretch), PreloadArc, Visibility::Hidden));
-                // Gear in the small dial, speed in the display window.
+                // The boost meter in the small dial, the gear over it,
+                // speed in the display window.
+                let p = local(boost_slot.min);
+                let (mut n, _) = hud.tex.region(boost_slot, GAUGE);
+                n.position_type = PositionType::Absolute;
+                n.left = px(p.x);
+                n.top = px(p.y);
+                g.spawn((n, ImageNode::new(ui.boost_steps[0].clone()).with_mode(bevy::ui::widget::NodeImageMode::Stretch), BoostDisc, Visibility::Hidden));
                 let b = local(boost_slot.center());
                 g.spawn((BitmapText::new(FontId::Chrome, 15.0, "N"), centred(b.x, b.y - 8.0, 20.0), Readout::Gear));
                 let speed_box = local(Vec2::new(152.0, 132.0) * hud.tex.size / Vec2::new(512.0, 256.0));
@@ -264,12 +275,15 @@ fn centred(x: f32, y: f32, w: f32) -> Node {
     Node { position_type: PositionType::Absolute, left: px(x - w / 2.0), top: px(y), width: px(w), justify_content: JustifyContent::Center, ..default() }
 }
 
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_gauge(
     player: Option<Res<Player>>,
     ui: Option<Res<UiAssets>>,
+    boost: Option<Res<Boost>>,
     mut needle: Query<&mut UiTransform, With<NeedleHub>>,
-    mut arc: Query<(&mut ImageNode, &mut Visibility), With<PreloadArc>>,
-    mut shown: Local<f32>,
+    mut arc: Query<(&mut ImageNode, &mut Visibility), (With<PreloadArc>, Without<BoostDisc>)>,
+    mut disc: Query<(&mut ImageNode, &mut Visibility), With<BoostDisc>>,
+    (mut shown, mut pulse): (Local<f32>, Local<f32>),
     time: Res<Time>,
 ) {
     let (Some(player), Some(ui)) = (player, ui) else { return };
@@ -287,6 +301,21 @@ fn update_gauge(
         if step > 0 && img.image != ui.preload_steps[step - 1] {
             img.image = ui.preload_steps[step - 1].clone();
         }
+    }
+    // The boost disc throbs, its alpha the sine of a phase going round
+    // at 2 a second over half a turn (0xa2ee0).
+    *pulse += 2.0 * time.delta_secs();
+    if *pulse > std::f32::consts::PI {
+        *pulse -= std::f32::consts::PI;
+    }
+    if let (Ok((mut img, mut vis)), Some(b)) = (disc.single_mut(), boost) {
+        let n = ui.boost_steps.len();
+        let step = (b.meter.clamp(0.0, 1.0) * n as f32).ceil() as usize;
+        vis.set_if_neq(if step == 0 { Visibility::Hidden } else { Visibility::Inherited });
+        if step > 0 && img.image != ui.boost_steps[step - 1] {
+            img.image = ui.boost_steps[step - 1].clone();
+        }
+        img.color = Color::srgba(1.0, 1.0, 1.0, pulse.sin());
     }
 }
 

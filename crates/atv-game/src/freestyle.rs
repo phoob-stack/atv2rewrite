@@ -313,6 +313,8 @@ pub struct Session {
     boxes: Vec<TrickBox>,
     pub spots: Vec<(Vec3, bool)>,
     pub score: u32,
+    /// Points banked since the speed boost last took them.
+    banked: u32,
     pub active: Option<ActiveTrick>,
     jump: Jump,
     ground: Option<(Ground, f32)>,
@@ -356,6 +358,7 @@ impl Session {
             boxes,
             spots: Vec::new(),
             score: 0,
+            banked: 0,
             active: None,
             jump: Jump::default(),
             ground: None,
@@ -421,6 +424,12 @@ impl Session {
     /// points for a career.
     fn award(&mut self, points: u32) {
         self.score += points;
+        self.banked += points;
+    }
+
+    /// Points banked since the last call, for the speed boost.
+    pub fn take_banked(&mut self) -> u32 {
+        std::mem::take(&mut self.banked)
     }
 
     /// The trick these buttons and this direction pull, if the rider's

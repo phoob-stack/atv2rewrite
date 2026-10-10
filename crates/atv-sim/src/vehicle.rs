@@ -119,6 +119,9 @@ pub struct Vehicle {
     /// Pre-load charge, 0..1.
     pub preload: f32,
     pub air_time: f32,
+    /// Scales the drive force; the game's speed boost raises it (the
+    /// original's torque modifier, 1.0 unless boosting).
+    pub drive_scale: f32,
 
     // Game-frame rigid body.
     pos: Vec3,
@@ -218,6 +221,7 @@ impl Vehicle {
             revs: params.min_revs,
             preload: 0.0,
             air_time: 0.0,
+            drive_scale: 1.0,
             pos: Vec3::ZERO,
             rot: Mat3::IDENTITY,
             momentum: Vec3::ZERO,
@@ -733,6 +737,7 @@ impl Vehicle {
                 * (1.0 - by_grip(p.drive_force_spin_scale, grip) * self.wheelspin)
                 * gear(self.gear)
                 * p.gear_multiplier
+                * self.drive_scale
                 * p.torque_curve.sample(self.revs)
                 * self.throttle
                 * self.clutch;

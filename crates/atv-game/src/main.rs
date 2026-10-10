@@ -17,6 +17,7 @@
 
 mod aitricks;
 mod audio;
+mod boost;
 mod career;
 mod challenge;
 mod convert;
@@ -454,6 +455,8 @@ fn teardown(mut commands: Commands, mut cams: Query<(Entity, &mut Camera), With<
     commands.remove_resource::<Controls>();
     commands.remove_resource::<RaceProgress>();
     commands.remove_resource::<Session>();
+    commands.remove_resource::<boost::Boost>();
+    commands.remove_resource::<boost::BoostRules>();
     commands.remove_resource::<StuntClips>();
     commands.remove_resource::<Wreck>();
     commands.remove_resource::<CrashClips>();
@@ -649,6 +652,8 @@ fn setup(
     commands.insert_resource(StuntClips::load(&game.0, &session.tricks));
     commands.insert_resource(Wreck::default());
     commands.insert_resource(session);
+    commands.insert_resource(boost::BoostRules::load(&game.0));
+    commands.insert_resource(boost::Boost::default());
     commands.insert_resource(water::Water(trk::water_surface(&scene.world)));
     commands.insert_resource(Race {
         collision,
@@ -741,6 +746,19 @@ fn read_input(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, airborne: boo
     i
 }
 
+/// The speed boost button: Y on the pad (on the ground; it's a trick
+/// button in the air), Shift on the keyboard, or for player 2 in split
+/// screen the number pad's 0.
+pub(crate) fn read_boost(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, airborne: bool, slot: Option<usize>) -> bool {
+    let key = match slot {
+        None => keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
+        Some(0) => keys.pressed(KeyCode::ShiftLeft),
+        Some(1) => keys.pressed(KeyCode::Numpad0),
+        Some(_) => false,
+    };
+    key || (!airborne && pads.iter().enumerate().any(|(n, pad)| slot.is_none_or(|s| s == n) && pad.pressed(GamepadButton::North)))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn drive(
     time: Res<Time>,
@@ -755,6 +773,7 @@ fn drive(
     mut wreck: Option<ResMut<Wreck>>,
     crash_clips: Option<Res<CrashClips>>,
     mut restart: ResMut<NextState<AppState>>,
+    (mut boost, boost_rules): (Option<ResMut<boost::Boost>>, Option<Res<boost::BoostRules>>),
 ) {
     let (Some(mut race), Some(mut player), Some(mut progress), Some(mut session)) = (race, player, progress, session) else { return };
     let dt = time.delta_secs();
@@ -768,7 +787,8 @@ fn drive(
     // brings the quad home; out of time, it rolls to a stop.
     let over = if freestyle { session.over(progress.clock) } else { progress.over() };
     let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
-    let input = if crashed {
+    let mut held = false;
+    let mut input = if crashed {
         // Thrown off: the quad rolls on by itself.
         Input::default()
     } else if !progress.started() || (over && (freestyle || race.course || progress.out_of_time() || progress.dnf)) {
@@ -778,10 +798,19 @@ fn drive(
         // Freestyle's autopilot goes exploring.
         trk::steer_towards(v, spot)
     } else if (args.autodrive || progress.finished.is_some()) && n > 0 {
+        // The autopilot spends a full boost meter.
+        held = progress.finished.is_none() && boost.as_ref().is_some_and(|b| b.on || b.meter >= 1.0);
         trk::steer_towards(v, race.checkpoints[next])
     } else {
+        held = read_boost(&keys, &pads, !v.grounded(), (race.players > 1).then_some(0));
         read_input(&keys, &pads, !v.grounded(), (race.players > 1).then_some(0))
     };
+    if held {
+        input.throttle = 1.0;
+    }
+    if let (Some(b), Some(rules)) = (boost.as_mut(), boost_rules.as_deref()) {
+        v.drive_scale = b.step(rules, held, session.take_banked(), dt);
+    }
     if race.course {
         // The challenge's gates are kept by `challenge::follow_course`.
     } else if let Some(&cp) = race.checkpoints.get(next).filter(|_| freestyle) {
@@ -822,6 +851,9 @@ fn drive(
                 // Which getting-up clip: any number that varies crash to crash.
                 let pick = ((v.position.x * 12.9898 + v.position.z * 78.233).sin() * 43758.547).fract().abs();
                 w.start(v, cause, way, pick);
+                if let (Some(b), Some(rules)) = (boost.as_mut(), boost_rules.as_deref()) {
+                    b.crashed(rules);
+                }
             } else if air > 0.5 && v.air_time == 0.0 {
                 w.landed = true;
             }
