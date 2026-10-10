@@ -214,7 +214,7 @@ What the UI uses:
 
 | Page | Contents |
 |---|---|
-| `Sprites/HUDTPAGE` | Rev gauge: `DIAL` (pivot = hub), `NEEDLE` (pivot = its hub end), `PRELOAD` arc drawn into the `DIAL_PRELOAD` slot, `BOOST` pie into `DIAL_BOOST`, `WEIRD_DOT` hub cap. Dial face reads 1-8 (x1000 rpm) from -134 deg to +21 deg, and KPH. `HUDTPAGE_b` is a larger, unused gauge with no sheet. |
+| `Sprites/HUDTPAGE` | Rev gauge: `DIAL` (pivot = hub), `NEEDLE` (pivot = its hub end), `PRELOAD` arc drawn into the `DIAL_PRELOAD` slot, `BOOST` pie into `DIAL_BOOST` (filled clockwise from 12 o'clock by the boost meter, its alpha throbbing as the sine of a phase that runs at 2 rad/s and wraps at pi; 0xa2a00 / 0xa2ee0), `WEIRD_DOT` hub cap. Dial face reads 1-8 (x1000 rpm) from -134 deg to +21 deg, and KPH. `HUDTPAGE_b` is a larger, unused gauge with no sheet. |
 | `Sprites/321go`, `Sprites/positions` | Countdown digits and GO; position balls. The sheet names P1-P8 but only P1-P4 have art; the P5-P8 cells are empty. |
 | `Sprites/Position_meter` | Lap progress line, chequered flag, markers and the CHECKPOINT banner. No sheet; regions measured from the page (see `ui.rs`). |
 | `Fonts/*` | Bitmap fonts: `MgrammeCombined` (outlined capitals, menus), `MgrammeSmall`, `kim36` (chrome mixed case), and outline/inner variants. `Fonts/blimey.ttf` on the disc is a TrueType font. |
@@ -289,7 +289,14 @@ with the original's addresses.
   Scarecrow = `crucifixtion`, Scissors = `leg_splt`, Spin Bike = `bike_spin`,
   Reverse Spin = `reverse_spin_grab`, Yogi = `Y`. `*_bike.bac` (1 bone) move
   the quad for the tricks that spin it. `Wheelie`, `Bicycle` and `Endo` give
-  ground-trick points; `SpeedBoost` is the race boost tricks earn.
+  ground-trick points; `SpeedBoost` is the race boost tricks earn: a
+  landed combo adds points x `TrickScoreMod` (0.0004) to a 0..1 meter
+  (0x62040 -> 0x1b830); while the boost input (input slot 11) is held and
+  the meter isn't empty the drive is multiplied by `BoostTorqueMod` (2.5,
+  the physics' drive factor at +0x7e4) and the meter drains `BoostTimeMod`
+  (0.1) a second (0x1b750); holding it also opens the throttle fully
+  (0x1a9a0). A crash takes `CrashLoss` (0.2); `AttackLoss` and
+  `AttackAwardAIMod` are for kicks and punches, which steal boost.
   `mLevel` (1-7, four tricks each) is the skill level a rider needs: the
   original refuses a trick above it (0x18439). A player's level comes from
   the profile's skill points (`Career.xml` `SkillLevelPoints`), another

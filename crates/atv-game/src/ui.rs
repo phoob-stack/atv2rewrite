@@ -229,6 +229,9 @@ pub struct UiAssets {
     pub hud: Sheet,
     /// Preload arc revealed in steps, for the gauge's preload meter.
     pub preload_steps: Vec<Handle<Image>>,
+    /// The speed boost disc revealed clockwise from 12 o'clock in steps,
+    /// as the original fills it (0xa2a00).
+    pub boost_steps: Vec<Handle<Image>>,
     pub positions: Sheet,
     pub countdown: Sheet,
     /// `Position_meter`: track progress bar, markers and the checkpoint
@@ -268,6 +271,7 @@ impl UiAssets {
         let mut l = PageLoader { game, images };
         let hud = l.sheet("Sprites/HUDTPAGE")?;
         let preload_steps = l.preload_steps(&hud)?;
+        let boost_steps = l.boost_steps(&hud)?;
         let meter_tex = l.tex("Sprites/Position_meter")?;
         let meter = Sheet {
             tex: meter_tex,
@@ -301,6 +305,7 @@ impl UiAssets {
         }
         Ok(Self {
             preload_steps,
+            boost_steps,
             positions: l.sheet("Sprites/positions")?,
             countdown: l.sheet("Sprites/321go")?,
             meter,
@@ -384,6 +389,35 @@ impl PageLoader<'_> {
     /// The gauge's preload meter fills along its arc. The arc sprite is cut
     /// into angular steps around the gauge hub, from its blue end (bottom)
     /// round to its red end (top right).
+    fn boost_steps(&mut self, hud: &Sheet) -> Result<Vec<Handle<Image>>> {
+        const STEPS: usize = 32;
+        let (w, _h, px, k) = self.pixels("Sprites/HUDTPAGE")?;
+        let disc = hud.get("BOOST").rect;
+        let (x0, y0) = ((disc.min.x * k) as u32, (disc.min.y * k) as u32);
+        let (dw, dh) = ((disc.width() * k) as u32, (disc.height() * k) as u32);
+        // Clockwise from straight up, in the square the pie is cut from.
+        let turn = |x: u32, y: u32| {
+            let (u, v) = ((x as f32 + 0.5) / dw as f32 * 2.0 - 1.0, (y as f32 + 0.5) / dh as f32 * 2.0 - 1.0);
+            u.atan2(-v).rem_euclid(std::f32::consts::TAU) / std::f32::consts::TAU
+        };
+        let mut steps = Vec::with_capacity(STEPS);
+        for n in 1..=STEPS {
+            let limit = n as f32 / STEPS as f32;
+            let mut out = vec![0u8; (dw * dh * 4) as usize];
+            for y in 0..dh {
+                for x in 0..dw {
+                    if turn(x, y) <= limit {
+                        let src = (((y0 + y) * w + x0 + x) * 4) as usize;
+                        let dst = ((y * dw + x) * 4) as usize;
+                        out[dst..dst + 4].copy_from_slice(&px[src..src + 4]);
+                    }
+                }
+            }
+            steps.push(self.add(dw, dh, out).image);
+        }
+        Ok(steps)
+    }
+
     fn preload_steps(&mut self, hud: &Sheet) -> Result<Vec<Handle<Image>>> {
         const STEPS: usize = 24;
         let (w, _h, px, k) = self.pixels("Sprites/HUDTPAGE")?;

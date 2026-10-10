@@ -56,6 +56,7 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
 | Steer | A / D | Left stick |
 | Lean back / forward | I / K | Left stick up/down |
 | Jump (preload) | Space | RB or B |
+| Speed boost | Shift | Y (on the ground) |
 | Respot | R | |
 | Restart | Backspace | |
 | Pause | Escape | Start |
@@ -88,8 +89,8 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   split top and bottom, three or four take a quarter each), with computer
   riders making the field up to four. Each player picks a rider (one
   another player has is greyed out) and an ATV in turn. Player 1 drives
-  with WASD (lean R/F, preload Space) or the first pad, player 2 with the
-  arrow keys (lean Numpad 8/5, preload right Shift) or the second pad, and
+  with WASD (lean R/F, preload Space, boost left Shift) or the first pad, player 2 with the
+  arrow keys (lean Numpad 8/5, preload right Shift, boost Numpad 0) or the second pad, and
   players 3 and 4 with the third and fourth pads. Once the first player is
   home the others get a minute to finish. Freestyle Battle puts the same
   players on a track against a time limit with no computer riders; the
@@ -114,6 +115,13 @@ needed. Computer riders throw tricks too, as the original's AI does: more
 than 1.75 m off the ground they pick a random trick of their skill rating
 that fits the air left, and chain another while it lasts. In a career their
 trick scores count against yours for the trick points.
+
+**Speed boost**, as in the original (Tricks.xml `SpeedBoost`): every
+point you bank fills the boost meter, the disc in the small dial above the
+speed (2500 points fill it). Hold the boost button to spend it: full
+throttle and 2.5 times the drive, for up to ten seconds of a full meter. A
+crash loses a fifth of it. Computer riders fill theirs with their tricks
+and spend it when it's full.
 
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on

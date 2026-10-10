@@ -374,3 +374,23 @@ fn does_not_drive_through_walls() {
     assert!(fastest > 50.0);
     assert!(v.position.z > z, "went through the wall");
 }
+
+#[test]
+fn boost_pulls_harder() {
+    let Some((v, world)) = settled() else {
+        return;
+    };
+    let full = Input {
+        throttle: 1.0,
+        ..Default::default()
+    };
+    let speed_after = |scale: f32| {
+        let mut v = v.clone();
+        v.drive_scale = scale;
+        run(&mut v, &world, full, 3.0);
+        v.speed_mph()
+    };
+    let (plain, boosted) = (speed_after(1.0), speed_after(2.5));
+    println!("after 3 s: {plain:.1} mph, boosted {boosted:.1} mph");
+    assert!(boosted > plain + 5.0);
+}

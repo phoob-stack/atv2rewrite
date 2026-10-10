@@ -17,6 +17,7 @@ use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 use crate::convert::{self, Loader, WheelVisual};
 use crate::crash::{CrashClips, Wreck};
 use crate::aitricks::AiTricks;
+use crate::boost::{Boost, BoostRules};
 use crate::freestyle::{self, Dir, Session, StuntClips};
 use crate::frontend::Roster;
 use crate::race::RaceProgress;
@@ -87,6 +88,7 @@ pub struct Racer {
     tricks: AiTricks,
     /// Thrown off, by the same rules as player 1.
     pub wreck: Wreck,
+    pub boost: Boost,
 }
 
 /// Marks a computer rider's seat, so the player's rider systems leave its
@@ -264,6 +266,7 @@ pub fn spawn(
             }),
             tricks: AiTricks::new(i as u32 * 7919 + 17),
             wreck: Wreck::default(),
+            boost: Boost::default(),
         });
         info!("computer rider {}: {} on {quad}", i + 1, rider.name);
     }
@@ -296,7 +299,7 @@ fn lap_fraction(checkpoints: &[Vec3], next: usize, at: Vec3, armed: bool) -> f32
     (((next + n - 1) % n) as f32 + along) / n as f32
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn drive_opponents(
     time: Res<Time>,
     race: Option<Res<Race>>,
@@ -307,7 +310,7 @@ fn drive_opponents(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     args: Res<crate::Args>,
-    (session, crash_clips): (Option<Res<Session>>, Option<Res<CrashClips>>),
+    (session, crash_clips, boost_rules): (Option<Res<Session>>, Option<Res<CrashClips>>, Option<Res<BoostRules>>),
 ) {
     let (Some(race), Some(mut player), Some(progress), Some(mut opp), Some(mut standings)) =
         (race, player, progress, opponents, standings)
@@ -337,6 +340,7 @@ fn drive_opponents(
         let battle = r.session.as_ref().is_some_and(|s| s.freestyle);
         let time_up = battle && session.as_ref().is_some_and(|s| s.over(progress.clock));
         let crashed = r.wreck.fall.is_some();
+        let mut held = false;
         r.input = if !r.progress.started() || crashed {
             // On the grid, or thrown off: the quad rolls on by itself.
             Input::default()
@@ -347,10 +351,22 @@ fn drive_opponents(
             match r.human {
                 // A player drives until the flag; the AI brings them home
                 // (and drives for them with --autodrive).
-                Some(n) if r.progress.finished.is_none() && !args.autodrive => crate::read_input(&keys, &pads, !r.vehicle.grounded(), Some(n - 1)),
-                _ => ai,
+                Some(n) if r.progress.finished.is_none() && !args.autodrive => {
+                    held = crate::read_boost(&keys, &pads, !r.vehicle.grounded(), Some(n - 1));
+                    crate::read_input(&keys, &pads, !r.vehicle.grounded(), Some(n - 1))
+                }
+                _ => {
+                    // Computer riders (and the autopilot) spend a full meter.
+                    held = r.progress.finished.is_none() && (r.boost.on || r.boost.meter >= 1.0);
+                    ai
+                }
             }
         };
+        if held {
+            r.input.throttle = 1.0;
+        }
+        let banked = r.session.as_mut().map_or(0, |s| s.take_banked());
+        r.vehicle.drive_scale = boost_rules.as_deref().map_or(1.0, |rules| r.boost.step(rules, held, banked, dt));
         let before = (r.vehicle.velocity, r.vehicle.angular_velocity);
         r.vehicle.step(&r.input, dt, &race.collision);
         let mut back_on = false;
@@ -366,6 +382,9 @@ fn drive_opponents(
             let p = r.vehicle.position;
             let pick = ((p.x * 12.9898 + p.z * 78.233 + i as f32).sin() * 43758.547).fract().abs();
             r.wreck.start(&r.vehicle, cause, way, pick);
+            if let Some(rules) = boost_rules.as_deref() {
+                r.boost.crashed(rules);
+            }
             debug!("{} crashed ({cause:?})", r.name);
         }
         let live = r.progress.started() && !time_up && r.progress.finished.is_none();
