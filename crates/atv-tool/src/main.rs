@@ -226,7 +226,7 @@ fn sim(game: &GameSource, track: &str, quad: &str, seconds: f32) -> Result<()> {
         if t > 1.0 && !cps.is_empty() {
             let target = cps[next % cps.len()];
             if (target - v.position).with_y(0.0).length() < 25.0 {
-                println!("  reached checkpoint {} at t={t:.1}", next % cps.len() + 2);
+                println!("  reached checkpoint {} at t={t:.1}", next % cps.len() + 1);
                 next += 1;
             }
             input = trk::steer_towards(&v, cps[next % cps.len()]);

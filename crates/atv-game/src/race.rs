@@ -174,7 +174,7 @@ impl RaceProgress {
 /// rounds 11, 12 and 15 can't be won in time, so here any case and the
 /// misspelling count.
 pub fn arcade_gates(world: &atv_formats::row::World) -> Vec<(usize, f32)> {
-    let number = |name: &str| -> Option<u32> { name.trim().to_ascii_lowercase().strip_prefix("checkpoint ")?.split_whitespace().next()?.parse().ok() };
+    let number = |name: &str| atv_sim::track::checkpoint_number(name);
     let mut all: Vec<u32> = world.locators.iter().filter_map(|l| number(&l.name)).collect();
     all.sort_unstable();
     all.dedup();
@@ -248,8 +248,9 @@ mod tests {
         let locator = |name: &str| atv_formats::rom::Locator { name: name.to_string(), pos: [0.0; 3], scale: [1.0; 3], rotation: [0.0; 9] };
         let names = ["Startpoint 1", "Checkpoint 2", "Checkpoint 3 Arcade 30", "checkpoint 4 Arcade 15", "Checkpoint 5 arcade 30", "Checkpoint 6 Acade 30", "Checkpoint 7 Arcade 20", "Checkpoint 7 Arcade 20", "Checkpoint 8 Arcade 0"];
         let world = atv_formats::row::World { fog_color: 0, materials: vec![], locators: names.map(locator).to_vec(), lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] };
-        // Checkpoints 2..8 are indices 0..6; a repeated one adds twice.
-        assert_eq!(arcade_gates(&world), vec![(1, 30.0), (2, 15.0), (3, 30.0), (4, 30.0), (5, 40.0)]);
+        // The start line and checkpoints 2..8 are indices 0..7; a repeated
+        // one adds twice.
+        assert_eq!(arcade_gates(&world), vec![(2, 30.0), (3, 15.0), (4, 30.0), (5, 30.0), (6, 40.0)]);
     }
 
     #[test]
