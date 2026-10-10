@@ -1,0 +1,189 @@
+//! Split-screen multiplayer: two to four players racing on one screen.
+//!
+//! As in the original, two players split the screen top and bottom and
+//! three or four take a quarter each (the fourth stays empty for three),
+//! and computer riders make the field up to four. Player 1 drives the
+//! usual player quad; players 2 to 4 drive racer quads (see
+//! [`opponents::Racer::human`]), each with their own keys or pad and their
+//! own view. The race is over once every player is home, or a minute
+//! after the first one.
+//!
+//! [`opponents::Racer::human`]: crate::opponents::Racer::human
+
+use bevy::camera::Viewport;
+use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
+
+use crate::frontend::Roster;
+use crate::hud::ordinal;
+use crate::opponents::{Opponents, Standings};
+use crate::race::{fmt_time, RaceProgress};
+use crate::ui::{set_text, BitmapText, FontId};
+use crate::AppState;
+
+pub const MAX_PLAYERS: usize = 4;
+/// Riders in a split-screen race, players included.
+pub const FIELD: usize = 4;
+/// How long the others get once the first player is home.
+pub const WAIT_SECS: f32 = 60.0;
+
+/// The view of player `0` (0-based) in split screen.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Split(pub usize);
+
+/// The camera the race menus draw on in split screen, over every view.
+#[derive(Component)]
+pub struct Overlay;
+
+/// Which part of the window (x, y, width, height, as shares of it) view
+/// `slot` takes with `players` playing.
+pub fn rect(slot: usize, players: usize) -> (f32, f32, f32, f32) {
+    match players {
+        0 | 1 => (0.0, 0.0, 1.0, 1.0),
+        2 => (0.0, slot as f32 * 0.5, 1.0, 0.5),
+        _ => ((slot % 2) as f32 * 0.5, (slot / 2) as f32 * 0.5, 0.5, 0.5),
+    }
+}
+
+/// Riders and quads for players 2 onwards when none were picked (from the
+/// command line): the next riders and quads in the roster.
+pub fn default_picks(roster: &Roster, rider: &str, quad: &str, players: usize) -> Vec<(String, String)> {
+    let riders = roster.riders.iter().map(|r| r.model.clone()).filter(|m| !m.eq_ignore_ascii_case(rider));
+    let mut quads = roster.quads.iter().map(|q| q.name.clone()).filter(|q| !q.eq_ignore_ascii_case(quad)).cycle();
+    riders.take(players.saturating_sub(1)).map(|r| (r, quads.next().unwrap_or_else(|| quad.to_string()))).collect()
+}
+
+/// The views for players 2 onwards, and the overlay for the menus.
+pub fn spawn_views(commands: &mut Commands, view: impl Bundle + Clone, players: usize, scoped: &DespawnOnExit<AppState>) {
+    for slot in 1..players.min(MAX_PLAYERS) {
+        commands.spawn((
+            view.clone(),
+            // Player 1's view clears the window; the rest draw over it.
+            Camera { order: slot as isize, clear_color: ClearColorConfig::None, ..default() },
+            Transform::default(),
+            crate::ChaseCam { offset: Vec3::new(0.0, 2.5, 6.0), facing: Quat::IDENTITY },
+            Split(slot),
+            scoped.clone(),
+        ));
+    }
+    commands.spawn((Camera2d, Camera { order: 10, clear_color: ClearColorConfig::None, ..default() }, Overlay, scoped.clone()));
+}
+
+/// Whether every player is home, or the others have had long enough.
+pub fn all_home(p1: &RaceProgress, opponents: Option<&Opponents>) -> bool {
+    let Some(opp) = opponents else { return p1.over() };
+    let humans: Vec<&RaceProgress> = std::iter::once(p1).chain(opp.racers.iter().filter(|r| r.human.is_some()).map(|r| &r.progress)).collect();
+    if humans.iter().all(|p| p.over()) {
+        return true;
+    }
+    // The first finish, on the race clock (everyone's clock runs alike).
+    let first = humans.iter().filter_map(|p| p.finished).reduce(f32::min);
+    first.is_some_and(|f| humans.iter().map(|p| p.clock).fold(0.0, f32::max) > f + WAIT_SECS)
+}
+
+pub struct MpPlugin;
+
+impl Plugin for MpPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Update, (split_views, spawn_hud.run_if(resource_added::<Opponents>), update_hud).chain().run_if(in_state(AppState::Race)));
+    }
+}
+
+/// Keeps each view on its part of the window.
+fn split_views(window: Query<&Window, With<PrimaryWindow>>, mut cams: Query<(&mut Camera, &Split)>) {
+    let Ok(window) = window.single() else { return };
+    let size = window.physical_size().as_vec2();
+    let players = cams.iter().count();
+    for (mut cam, split) in &mut cams {
+        let (x, y, w, h) = rect(split.0, players);
+        let vp = Viewport {
+            physical_position: (Vec2::new(x, y) * size).as_uvec2(),
+            physical_size: (Vec2::new(w, h) * size).as_uvec2().max(UVec2::ONE),
+            ..default()
+        };
+        if cam.viewport.as_ref().is_none_or(|v| v.physical_position != vp.physical_position || v.physical_size != vp.physical_size) {
+            cam.viewport = Some(vp);
+        }
+    }
+}
+
+#[derive(Component)]
+enum Readout {
+    Lap(usize),
+    Place(usize),
+    Time(usize),
+    Speed(usize),
+    Banner(usize),
+}
+
+/// A HUD on each other player's view: lap, place, time, speed. Player 1
+/// has the usual one on theirs.
+fn spawn_hud(mut commands: Commands, opponents: Res<Opponents>, cams: Query<(Entity, &Split)>) {
+    for (cam, split) in &cams {
+        let n = split.0 + 1;
+        if n == 1 || opponents.human(n).is_none() {
+            continue;
+        }
+        commands
+            .spawn((crate::ui::fullscreen(), UiTargetCamera(cam), DespawnOnExit(AppState::Race), Pickable::IGNORE))
+            .with_children(|root| {
+                root.spawn(Node { position_type: PositionType::Absolute, left: px(16), top: px(10), flex_direction: FlexDirection::Column, row_gap: px(3), ..default() })
+                    .with_children(|c| {
+                        c.spawn(BitmapText::new(FontId::Small, 9.0, format!("PLAYER {n}")).color(Color::srgb(1.0, 0.85, 0.3)));
+                        c.spawn((BitmapText::new(FontId::Chrome, 18.0, ""), Readout::Lap(n)));
+                        c.spawn((BitmapText::new(FontId::Chrome, 14.0, ""), Readout::Place(n)));
+                    });
+                root.spawn(Node { position_type: PositionType::Absolute, right: px(16), top: px(10), ..default() })
+                    .with_child((BitmapText::new(FontId::Chrome, 16.0, ""), Readout::Time(n)));
+                root.spawn(Node { position_type: PositionType::Absolute, right: px(16), bottom: px(10), ..default() })
+                    .with_child((BitmapText::new(FontId::Chrome, 16.0, ""), Readout::Speed(n)));
+                root.spawn(Node { position_type: PositionType::Absolute, width: percent(100), top: percent(40), justify_content: JustifyContent::Center, ..default() })
+                    .with_child((BitmapText::new(FontId::Menu, 18.0, ""), Readout::Banner(n)));
+            });
+    }
+}
+
+fn update_hud(opponents: Option<Res<Opponents>>, standings: Option<Res<Standings>>, p1: Option<Res<RaceProgress>>, mut readouts: Query<(&Readout, &mut BitmapText)>) {
+    let (Some(opp), Some(p1)) = (opponents, p1) else { return };
+    for (r, mut t) in &mut readouts {
+        let n = match r {
+            Readout::Lap(n) | Readout::Place(n) | Readout::Time(n) | Readout::Speed(n) | Readout::Banner(n) => *n,
+        };
+        let Some((i, racer)) = opp.racers.iter().enumerate().find(|(_, r)| r.human == Some(n)) else { continue };
+        let p = &racer.progress;
+        let text = match r {
+            Readout::Lap(_) => format!("LAP {}/{}", p.lap(), p.laps),
+            Readout::Place(_) => standings.as_ref().and_then(|s| s.opponents.get(i)).map_or(String::new(), |o| format!("{} OF {}", ordinal(o.0), opp.racers.len() + 1)),
+            Readout::Time(_) => fmt_time(p.finished.unwrap_or(p.clock)),
+            Readout::Speed(_) => format!("{:.0} MPH", racer.vehicle.speed_mph().abs()),
+            Readout::Banner(_) if !p.started() => String::new(),
+            Readout::Banner(_) if p.finished.is_some() && !p1.over() => "WAITING FOR OTHER COMPETITORS".into(),
+            Readout::Banner(_) if p.finished.is_some() => "FINISHED".into(),
+            Readout::Banner(_) => String::new(),
+        };
+        set_text(&mut t, &text);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layouts() {
+        // Two: top and bottom; three or four: quarters.
+        assert_eq!(rect(0, 2), (0.0, 0.0, 1.0, 0.5));
+        assert_eq!(rect(1, 2), (0.0, 0.5, 1.0, 0.5));
+        assert_eq!(rect(1, 3), (0.5, 0.0, 0.5, 0.5));
+        assert_eq!(rect(3, 4), (0.5, 0.5, 0.5, 0.5));
+    }
+
+    #[test]
+    fn waits_for_everyone_then_a_minute() {
+        let mut p1 = RaceProgress::new(1, true);
+        p1.countdown = 0.0;
+        assert!(!all_home(&p1, None));
+        p1.finished = Some(90.0);
+        assert!(all_home(&p1, None));
+    }
+}

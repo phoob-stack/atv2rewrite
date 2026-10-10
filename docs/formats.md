@@ -332,6 +332,16 @@ with the original's addresses.
   doesn't finish; a top-3 championship finish opens the next one
   (Amateur, then Open shown as Qualifying, Professional, Custom). The
   status screens are `Career_Status_Amateur`, `_Pro` and `_Pro2`.
+- Multiplayer (no setup file; from `Frontend.xml`, the strings and the
+  front-end code): Main menu `MULTIPLAYER` opens `Multiplayer_New_Game`
+  (Single Race, Freestyle Battle, Championship), then
+  `Multiplayer_Num_Players` (two to four), then rider and ATV select per
+  player (`Multiplayer_SingleRace_Rider`/`_ATV`/`_Track`, and `_Freestyle_`
+  and `_Career_` variants) with a `PLAYER n` banner;
+  `RIDER_LOCKED_MULTIPLAYER` refuses a rider another player has. Two
+  players split the screen top and bottom, three or four take quarters.
+  `WAITING_FOR_REST` ("Waiting For Other Competitors") shows on a finished
+  player's view.
 
 ## Still unknown
 

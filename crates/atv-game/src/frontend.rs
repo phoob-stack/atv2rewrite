@@ -6,6 +6,8 @@
 //! the Audio, Camera and Controller pages (see [`crate::settings`]).
 //! Career picks a championship, then rider and ATV, and comes back to the
 //! championship's status page between rounds (see [`crate::career`]).
+//! Multiplayer picks how many play, then each player picks a rider and ATV
+//! in turn before track select (see [`crate::mp`]).
 
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
@@ -171,6 +173,8 @@ pub enum Screen {
     /// Open Freestyle or the challenges.
     FreestyleType,
     Challenges,
+    /// Split screen: how many play.
+    MpPlayers,
 }
 
 /// The Options menu's rows, and the page each opens.
@@ -200,6 +204,10 @@ pub struct FrontEnd {
     pub return_to: Option<Screen>,
     /// The Freestyle Challenge picked (1-based).
     challenge: usize,
+    /// How many play (more than one is split screen), and whose rider and
+    /// ATV are being picked (0-based).
+    players: usize,
+    picking: usize,
 }
 
 impl FrontEnd {
@@ -263,6 +271,13 @@ fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>, car
     fe.quad = roster.quads.iter().position(|q| q.name.eq_ignore_ascii_case(&sel.quad)).unwrap_or(fe.quad);
     fe.track = roster.tracks.iter().position(|t| t.eq_ignore_ascii_case(&sel.track)).unwrap_or(fe.track);
     fe.challenge = sel.challenge.clamp(1, challenge::COUNT);
+    fe.players = sel.players;
+    fe.picking = 0;
+}
+
+/// Whether an earlier player has picked `model` in split screen.
+fn taken(fe: &FrontEnd, sel: &Selection, model: &str) -> bool {
+    fe.picking > 0 && std::iter::once(&sel.rider).chain(sel.others.iter().take(fe.picking - 1).map(|o| &o.0)).any(|m| m.eq_ignore_ascii_case(model))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -296,26 +311,39 @@ fn navigate(
                 }
             }
             Nav::Accept | Nav::Start => match list.as_ref().map(|l| l.current().to_string()).as_deref() {
-                Some("FREESTYLE") => fe.screen = Screen::FreestyleType,
-                Some(item @ ("ARCADE" | "SINGLE RACE" | "TIME TRIAL")) => {
-                    fe.mode = match item {
-                        "ARCADE" => Mode::Arcade,
-                        "TIME TRIAL" => Mode::TimeTrial,
-                        _ => Mode::SingleRace,
-                    };
-                    sel.mode = fe.mode;
-                    fe.screen = Screen::Rider;
+                Some("MULTIPLAYER") => {
+                    fe.mode = Mode::SingleRace;
+                    sel.mode = Mode::SingleRace;
+                    fe.screen = Screen::MpPlayers;
                 }
-                Some("CAREER") => {
-                    fe.mode = Mode::Career;
-                    sel.mode = Mode::Career;
-                    fe.screen = Screen::CareerChamp;
+                item => {
+                    // Everything else is one player.
+                    fe.players = 1;
+                    sel.players = 1;
+                    sel.others.clear();
+                    match item {
+                        Some("FREESTYLE") => fe.screen = Screen::FreestyleType,
+                        Some(item @ ("ARCADE" | "SINGLE RACE" | "TIME TRIAL")) => {
+                            fe.mode = match item {
+                                "ARCADE" => Mode::Arcade,
+                                "TIME TRIAL" => Mode::TimeTrial,
+                                _ => Mode::SingleRace,
+                            };
+                            sel.mode = fe.mode;
+                            fe.screen = Screen::Rider;
+                        }
+                        Some("CAREER") => {
+                            fe.mode = Mode::Career;
+                            sel.mode = Mode::Career;
+                            fe.screen = Screen::CareerChamp;
+                        }
+                        Some("OPTIONS") => fe.screen = Screen::Options,
+                        Some("QUIT GAME") => {
+                            exit.write(AppExit::Success);
+                        }
+                        _ => {}
+                    }
                 }
-                Some("OPTIONS") => fe.screen = Screen::Options,
-                Some("QUIT GAME") => {
-                    exit.write(AppExit::Success);
-                }
-                _ => {}
             },
             Nav::Back => fe.screen = Screen::Title,
             _ => {}
@@ -329,10 +357,24 @@ fn navigate(
                 Nav::Down => fe.rider = (fe.rider + 8) % n,
                 Nav::Accept | Nav::Start => {
                     if let Some(r) = roster.riders.get(fe.rider) {
-                        sel.rider = r.model.clone();
+                        if taken(&fe, &sel, &r.model) {
+                            return;
+                        }
+                        if fe.picking == 0 {
+                            sel.rider = r.model.clone();
+                        } else {
+                            sel.others.truncate(fe.picking - 1);
+                            let quad = sel.quad.clone();
+                            sel.others.push((r.model.clone(), quad));
+                        }
                     }
                     fe.screen = Screen::Quad;
                 }
+                Nav::Back if fe.picking > 0 => {
+                    fe.picking -= 1;
+                    fe.screen = Screen::Quad;
+                }
+                Nav::Back if fe.players > 1 => fe.screen = Screen::MpPlayers,
                 Nav::Back if fe.mode == Mode::Career => fe.screen = Screen::CareerChamp,
                 Nav::Back if fe.mode == Mode::Freestyle => fe.screen = Screen::FreestyleType,
                 Nav::Back if fe.mode == Mode::Challenge => fe.screen = Screen::Challenges,
@@ -351,9 +393,20 @@ fn navigate(
                     return;
                 }
                 if let Some(q) = roster.quads.get(fe.quad) {
-                    sel.quad = q.name.clone();
+                    match fe.picking.checked_sub(1).and_then(|i| sel.others.get_mut(i)) {
+                        Some(other) => other.1 = q.name.clone(),
+                        None => sel.quad = q.name.clone(),
+                    }
                 }
-                if fe.mode == Mode::Career {
+                if fe.picking + 1 < fe.players {
+                    // The next player picks theirs, from the first rider free.
+                    fe.picking += 1;
+                    let n = roster.riders.len();
+                    if let Some(i) = (0..n).map(|i| (fe.rider + i) % n).find(|&i| !taken(&fe, &sel, &roster.riders[i].model)) {
+                        fe.rider = i;
+                    }
+                    fe.screen = Screen::Rider;
+                } else if fe.mode == Mode::Career {
                     let rider = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider));
                     let name = rider.map_or(sel.rider.to_uppercase(), |r| r.name.clone());
                     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos());
@@ -542,6 +595,22 @@ fn navigate(
             Nav::Back => fe.screen = Screen::FreestyleType,
             _ => {}
         },
+        Screen::MpPlayers => match nav {
+            Nav::Up | Nav::Down => {
+                if let Some(l) = list.as_mut() {
+                    l.step(nav);
+                }
+            }
+            Nav::Accept | Nav::Start => {
+                fe.players = list.as_ref().map_or(2, |l| l.selected + 2);
+                sel.players = fe.players;
+                sel.others.clear();
+                fe.picking = 0;
+                fe.screen = Screen::Rider;
+            }
+            Nav::Back => fe.screen = Screen::Main,
+            _ => {}
+        },
     }
 }
 
@@ -580,6 +649,7 @@ fn rebuild(
     (career, rules, defs): (Res<Career>, Res<career::Rules>, Res<challenge::Defs>),
     ui: Option<Res<UiAssets>>,
     roots: Query<Entity, With<ScreenRoot>>,
+    sel: Res<Selection>,
 ) {
     let Some(ui) = ui else { return };
     if fe.built == Some(fe.screen) {
@@ -598,7 +668,10 @@ fn rebuild(
         Mode::Career => ("Profile_Rider", "Career_ATV", "SingleRace_Track"),
         Mode::Challenge => ("Freestyle_Open_Rider", "Freestyle_Challenge_ATV", "Freestyle_Challenge"),
     };
-    let label = fe.mode.label();
+    let split = fe.players > 1;
+    let (rider_key, atv_key, track_key) =
+        if split { ("Multiplayer_SingleRace_Rider", "Multiplayer_SingleRace_ATV", "Multiplayer_SingleRace_Track") } else { (rider_key, atv_key, track_key) };
+    let label = if split { "MULTIPLAYER" } else { fe.mode.label() };
     let (key, watermark) = match fe.screen {
         Screen::Title => ("Main_Menu", ""),
         Screen::Main => ("Main_Menu", ""),
@@ -614,6 +687,7 @@ fn rebuild(
         Screen::CareerComplete => ("Career_Complete", "CAREER"),
         Screen::FreestyleType => ("Freestyle_Picktype", "FREESTYLE"),
         Screen::Challenges => ("Freestyle_Challenge", "FREESTYLE"),
+        Screen::MpPlayers => ("Multiplayer_Num_Players", "MULTIPLAYER"),
     };
     let (bg, title) = roster.screen(key);
 
@@ -653,6 +727,12 @@ fn rebuild(
         let e = commands.spawn((BitmapText::new(FontId::Small, 9.0, watermark).color(Color::srgba(0.7, 0.8, 1.0, 0.8)), ui_at(SCREEN_W - 40.0 - w, 36.0))).id();
         kids.push(e);
     }
+    // Whose pick it is, in split screen.
+    if split && matches!(fe.screen, Screen::Rider | Screen::Quad) {
+        let t = format!("PLAYER {}", fe.picking + 1);
+        let w = ui.font(FontId::Menu).width(&t, 16.0);
+        kids.push(commands.spawn((BitmapText::new(FontId::Menu, 16.0, t).color(Color::srgb(1.0, 0.85, 0.3)), ui_at(SCREEN_W - 40.0 - w, 52.0))).id());
+    }
 
     match fe.screen {
         Screen::Title => {
@@ -666,6 +746,7 @@ fn rebuild(
             let w = 400.0;
             kids.push(commands.spawn(placed(ui.logo.node(w, w / 4.0), (SCREEN_W - w) / 2.0, 34.0)).id());
             let current = match fe.mode {
+                _ if fe.players > 1 => 5,
                 Mode::Arcade => 0,
                 Mode::SingleRace => 2,
                 Mode::TimeTrial => 3,
@@ -676,8 +757,8 @@ fn rebuild(
             if roster.arcade.is_empty() {
                 off.push("ARCADE");
             }
-            let list = MenuList::new(&["ARCADE", "CAREER", "SINGLE RACE", "TIME TRIAL", "FREESTYLE", "OPTIONS", "QUIT GAME"], 280.0)
-                .with_row(36.0)
+            let list = MenuList::new(&["ARCADE", "CAREER", "SINGLE RACE", "TIME TRIAL", "FREESTYLE", "MULTIPLAYER", "OPTIONS", "QUIT GAME"], 280.0)
+                .with_row(32.0)
                 .select(current)
                 .disable(&off);
             kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 280.0) / 2.0, 160.0));
@@ -688,12 +769,16 @@ fn rebuild(
             let (mut n, img) = ui.design.tex.region(sq, (MUG + 22.0) / sq.width());
             n.position_type = PositionType::Absolute;
             kids.push(commands.spawn((n, img, MugCursor)).id());
-            for (i, _) in roster.riders.iter().enumerate().take(24) {
+            for (i, rider) in roster.riders.iter().enumerate().take(24) {
                 let (x, y) = mug_pos(i);
                 let rect = Rect::new((i % 8) as f32 * 64.0, (i / 8) as f32 * 64.0, (i % 8) as f32 * 64.0 + 64.0, (i / 8) as f32 * 64.0 + 64.0);
                 let scale = ui.mugs.size.x / 512.0;
                 let rect = Rect::from_corners(rect.min * scale, rect.max * scale);
-                let (mut n, img) = ui.mugs.region(rect, MUG / rect.width());
+                let (mut n, mut img) = ui.mugs.region(rect, MUG / rect.width());
+                if taken(&fe, &sel, &rider.model) {
+                    // Another player has them.
+                    img.color = Color::srgb(0.25, 0.25, 0.25);
+                }
                 n.position_type = PositionType::Absolute;
                 n.left = px(x);
                 n.top = px(y);
@@ -793,6 +878,11 @@ fn rebuild(
             if !locked.is_empty() {
                 kids.push(hint(&mut commands, &ui, "FINISH IN THE TOP 3 OF A CHAMPIONSHIP TO OPEN THE NEXT", 370.0));
             }
+        }
+        Screen::MpPlayers => {
+            let list = MenuList::new(&["TWO PLAYERS", "THREE PLAYERS", "FOUR PLAYERS"], 320.0).with_row(36.0).select(fe.players.clamp(2, 4) - 2);
+            kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 170.0));
+            kids.push(hint(&mut commands, &ui, "COMPUTER RIDERS MAKE THE FIELD UP TO FOUR", 330.0));
         }
         Screen::FreestyleType => {
             let list = MenuList::new(&["OPEN FREESTYLE", "FREESTYLE CHALLENGE"], 320.0).with_row(36.0).select(usize::from(fe.mode == Mode::Challenge));

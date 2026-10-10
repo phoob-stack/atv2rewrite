@@ -9,6 +9,7 @@ use bevy::prelude::*;
 
 use crate::career::{self, Award, Career, Run};
 use crate::challenge::{self, Outcome};
+use crate::mp;
 use crate::freestyle::{limit_label, Session, MEDALS};
 use crate::frontend::{FrontEnd, Roster, Screen};
 use crate::opponents::{Opponents, Standings};
@@ -538,7 +539,7 @@ fn update_banners(
 
 /// Escape / Start pauses the race; finishing shows the results. Both are
 /// menus over the frozen race.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn race_menus(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
@@ -555,14 +556,17 @@ fn race_menus(
     mut finished_for: Local<f32>,
     field: (Option<Res<Standings>>, Option<Res<Opponents>>),
     (mut career, rules, mut fe): (ResMut<Career>, Res<career::Rules>, ResMut<FrontEnd>),
-    (defs, course): (Res<challenge::Defs>, Option<Res<challenge::Course>>),
+    (defs, course, overlay): (Res<challenge::Defs>, Option<Res<challenge::Course>>, Query<Entity, With<mp::Overlay>>),
 ) {
+    let overlay = overlay.iter().next();
     let (Some(ui), Some(p)) = (ui, progress) else { return };
     let field = (field.0.as_deref(), field.1.as_deref());
     let nav = read_nav(&keys, &pads);
     // Results come up a moment after the line (or the clock running out).
     let over = match session.as_deref() {
         Some(s) if s.freestyle => s.over(p.clock),
+        // Split screen waits for the other players.
+        _ if selection.players > 1 => mp::all_home(&p, field.1),
         _ => p.over(),
     };
     *finished_for = if over { *finished_for + virt.delta_secs() } else { 0.0 };
@@ -571,7 +575,7 @@ fn race_menus(
         // Escape or Start pauses (Backspace is the quick restart).
         if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start)) && !over {
             virt.pause();
-            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None));
+            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None), overlay);
         } else if *finished_for > 2.5 && menus.is_empty() {
             let award = (selection.mode == Mode::Career).then(|| {
                 let run = career.run.clone()?;
@@ -595,7 +599,7 @@ fn race_menus(
                     Some(o)
                 })
                 .flatten();
-            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), career.run.as_ref(), outcome.as_ref()));
+            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), career.run.as_ref(), outcome.as_ref()), overlay);
         }
         return;
     };
@@ -649,7 +653,23 @@ fn spawn_race_menu(
     roster: &Roster,
     (standings, opponents): (Option<&Standings>, Option<&Opponents>),
     (award, run, outcome): (Option<&Award>, Option<&Run>, Option<&Outcome>),
+    overlay: Option<Entity>,
 ) {
+    // Split screen: each other player's place and time.
+    let others: Vec<(usize, String)> = opponents
+        .map(|o| {
+            o.racers
+                .iter()
+                .enumerate()
+                .filter_map(|(i, r)| {
+                    let n = r.human?;
+                    let place = standings.and_then(|s| s.opponents.get(i)).map_or(String::new(), |o| ordinal(o.0));
+                    let time = r.progress.finished.map_or("DNF".to_string(), fmt_time);
+                    Some((n, format!("{place}  {time}")))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     // Place and the winner when there were computer riders.
     let place = standings.filter(|s| s.racers > 1 && p.finished.is_some());
     let winner = place.filter(|s| s.player > 1).and_then(|s| {
@@ -685,6 +705,7 @@ fn spawn_race_menu(
                 + usize::from(p.arcade.is_some() && p.finished.is_some())
                 + usize::from(place.is_some())
                 + usize::from(winner.is_some())
+                + others.len()
                 + award.map_or(0, |a| 3 + usize::from(a.new_level.is_some()) + usize::from(a.gold) + a.unlocked.len())
         }
     };
@@ -698,6 +719,7 @@ fn spawn_race_menu(
             DespawnOnExit(AppState::Race),
             RaceMenu { results },
         ))
+        .insert_if(UiTargetCamera(overlay.unwrap_or(Entity::PLACEHOLDER)), || overlay.is_some())
         .with_children(|c| {
             c.spawn(Node { width: px(pw), height: px(ph), flex_direction: FlexDirection::Column, align_items: AlignItems::Center, padding: UiRect::all(px(16)), row_gap: px(8), ..default() })
                 .with_children(|box_| {
@@ -757,7 +779,11 @@ fn spawn_race_menu(
                     } else if results {
                         box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), margin: UiRect::vertical(px(6)), ..default() }).with_children(|rows| {
                             if let Some(s) = place {
-                                row(rows, "POSITION", &format!("{} OF {}", ordinal(s.player), s.racers), s.player == 1);
+                                let label = if others.is_empty() { "POSITION" } else { "PLAYER 1" };
+                                row(rows, label, &format!("{} OF {}", ordinal(s.player), s.racers), s.player == 1);
+                            }
+                            for (n, text) in &others {
+                                row(rows, &format!("PLAYER {n}"), text, text.starts_with("1ST"));
                             }
                             if let Some(w) = &winner {
                                 row(rows, "WINNER", w, false);
