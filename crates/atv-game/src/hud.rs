@@ -16,6 +16,7 @@ use crate::freestyle::{limit_label, Session, MEDALS};
 use crate::frontend::{self, FrontEnd, Roster, Screen};
 use crate::opponents::{Opponents, Standings};
 use crate::race::{fmt_time, RaceProgress};
+use crate::replay;
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::unlocks;
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets};
@@ -626,8 +627,12 @@ fn race_menus(
     mut finished_for: Local<f32>,
     field: (Option<Res<Standings>>, Option<Res<Opponents>>),
     (mut career, rules, mut fe, mut settings): (ResMut<Career>, Res<career::Rules>, ResMut<FrontEnd>, ResMut<Settings>),
-    (defs, course, overlay, mut mp_champ): (Res<challenge::Defs>, Option<Res<challenge::Course>>, Query<Entity, With<mp::Overlay>>, ResMut<mp::MpChamp>),
+    (defs, course, overlay, mut mp_champ, replay): (Res<challenge::Defs>, Option<Res<challenge::Course>>, Query<Entity, With<mp::Overlay>>, ResMut<mp::MpChamp>, Option<Res<replay::Playback>>),
 ) {
+    // The replay has the controls while it plays.
+    if replay.is_some() {
+        return;
+    }
     let overlay = overlay.iter().next();
     let (Some(ui), Some(p)) = (ui, progress) else { return };
     let field = (field.0.as_deref(), field.1.as_deref());
@@ -765,6 +770,7 @@ fn race_menus(
                 next.set(AppState::FrontEnd);
             }
             "RETURN TO RACE" => close(&mut commands, &mut virt),
+            "REPLAY" => commands.insert_resource(replay::Playback::new()),
             "END SESSION" => {
                 if let Some(s) = session.as_mut() {
                     s.ended = true;
@@ -869,7 +875,13 @@ fn spawn_race_menu(
         (true, Mode::SingleRace) if run.is_some() => (format!("ROUND {} COMPLETE", sel.round + 1), &["CHAMPIONSHIP STATUS", "MAIN MENU"]),
         (true, _) => ("RACE RESULTS".into(), &["RACE AGAIN", "MAIN MENU"]),
     };
-    let list = MenuList::new(items, 220.0).select(items.iter().position(|i| *i == focus).unwrap_or(0));
+    // One player's race can be watched again.
+    let mut items = items.to_vec();
+    if results && sel.players <= 1 {
+        let at = if items.len() > 1 { items.len() - 1 } else { items.len() };
+        items.insert(at, "REPLAY");
+    }
+    let list = MenuList::new(&items, 220.0).select(items.iter().position(|i| *i == focus).unwrap_or(0));
     let panel = ui.bio.get("BIOPANEL").rect;
     let rows = match (results, freestyle.is_some()) {
         (false, _) => 0,

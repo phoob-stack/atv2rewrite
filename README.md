@@ -180,6 +180,19 @@ in the config folder, and the last one loaded comes back next time; the
 first one made carries on any progress from before profiles
 (`career.cfg`).
 
+**Replays**, as in the original: the results of a one-player race or
+session offer Replay, which plays it back with the original's TV
+director (`Setup/CameraDirector.xml`). The track's own trackside cameras
+film you as you pass, zooming to frame you, and the director cuts to
+cameras that follow or ride on the quad (Two Rider, Low Behind, Wheel,
+Follow Far Behind, Follow High, Orbit). As in the original, it only cuts
+with all four wheels down and holds every shot at least eight seconds. A
+or Enter pauses and plays, X or R starts again, and B or Escape goes back
+to the results. Beyond the original, holding Left or Right rewinds or
+fast forwards, Up/Down watches another rider, Y or C holds one camera
+(each in turn, then back to the director), and the right stick turns the
+Orbit camera. The original could save one replay; that isn't ported.
+
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on
 track select.

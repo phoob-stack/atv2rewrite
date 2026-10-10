@@ -288,6 +288,10 @@ impl Vehicle {
     pub fn grounded(&self) -> bool {
         self.struts.iter().any(|s| s.contact)
     }
+    /// Every wheel on the ground.
+    pub fn all_wheels_down(&self) -> bool {
+        !self.struts.is_empty() && self.struts.iter().all(|s| s.contact)
+    }
     /// How far the driven wheels are spinning past the ground (0 gripping,
     /// up to the throttle when spinning freely).
     pub fn wheelspin(&self) -> f32 {
