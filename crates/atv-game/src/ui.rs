@@ -455,9 +455,15 @@ pub enum Nav {
 }
 
 pub fn read_nav(keys: &ButtonInput<KeyCode>, pads: &Query<&bevy::input::gamepad::Gamepad>) -> Option<Nav> {
+    read_nav_from(keys, pads, None)
+}
+
+/// [`read_nav`] taking pad input from the `pad`-th pad only (the order
+/// split screen hands pads to players in); the keyboard always counts.
+pub fn read_nav_from(keys: &ButtonInput<KeyCode>, pads: &Query<&bevy::input::gamepad::Gamepad>, pad: Option<usize>) -> Option<Nav> {
     use bevy::input::gamepad::GamepadButton as B;
     let k = |c: &[KeyCode]| c.iter().any(|c| keys.just_pressed(*c));
-    let p = |b: B| pads.iter().any(|pad| pad.just_pressed(b));
+    let p = |b: B| pads.iter().enumerate().any(|(n, p)| pad.is_none_or(|i| i == n) && p.just_pressed(b));
     if k(&[KeyCode::ArrowUp, KeyCode::KeyW]) || p(B::DPadUp) {
         Some(Nav::Up)
     } else if k(&[KeyCode::ArrowDown, KeyCode::KeyS]) || p(B::DPadDown) {
