@@ -247,6 +247,8 @@ pub struct UiAssets {
     pub loading: UiTex,
     pub backgrounds: HashMap<String, UiTex>,
     pub tracks: HashMap<String, UiTex>,
+    /// The Freestyle Challenges' pictures, by number.
+    pub challenges: HashMap<usize, UiTex>,
     fonts: [Font; 3],
 }
 
@@ -281,6 +283,7 @@ impl UiAssets {
         };
         let mut backgrounds = HashMap::new();
         let mut tracks = HashMap::new();
+        let mut challenges = HashMap::new();
         let paths: Vec<String> = game.archive_paths().map(str::to_owned).collect();
         for p in &paths {
             let lower = p.to_ascii_lowercase();
@@ -289,6 +292,8 @@ impl UiAssets {
                 backgrounds.insert(name.to_string(), l.tex(stem)?);
             } else if let Some(name) = stem.strip_prefix("/frontend/track_").and_then(|s| s.strip_suffix("_large")) {
                 tracks.insert(name.to_string(), l.tex(stem)?);
+            } else if let Some(n) = stem.strip_prefix("/frontend/freestyle_challenge").and_then(|s| s.strip_suffix("_small")).and_then(|n| n.parse().ok()) {
+                challenges.insert(n, l.tex(stem)?);
             }
         }
         Ok(Self {
@@ -307,6 +312,7 @@ impl UiAssets {
             loading: l.tex("FrontEnd/FELoading1")?,
             backgrounds,
             tracks,
+            challenges,
             fonts: [l.font("Fonts/MgrammeCombined")?, l.font("Fonts/MgrammeSmall")?, l.font("Fonts/kim36")?],
             hud,
         })

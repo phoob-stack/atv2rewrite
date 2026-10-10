@@ -265,7 +265,21 @@ with the original's addresses.
   the lap each covers.
 - `Freestyle.xml`: `OpenFSRecords/TimeNMinute(s)` and `TimeUnlimited` each
   hold Bronze/Silver/Gold `Record=` scores for Open Freestyle; `FSChallenge`
-  has 12 challenges (not built yet) and `Unlockable*` rewards.
+  has `Challenge_1..12`, each with `mBronze/Silver/GoldBonus` and
+  Bronze/Silver/Gold `Record=` times in seconds (lower is better), and
+  `Unlockable0..11` (`mRider="1"`) give a rider for gold in challenge K+1
+  (the bare `<Unlockable>` is ignored). All twelve run on Stadium 2: the
+  course of challenge N is the `checkpoint` locators N*100..N*100+39 in
+  `Stadium2.row` (lower-case, sometimes with a trailing space or words
+  after the number, `checkpoint 600 endo box`), and `startN` is its start.
+  Props whose flags carry numbers after the first word (`FREE 1` cones,
+  `GEN_Start_gate 1 2 3 5 6`, `GEN_stasignfloor 2 3`) are only out in those
+  challenges; `GEN_stasignfloor` has no model on the disc. Challenge 12
+  ("burst all the balloons") has no checkpoints or balloons placed. The
+  original's medal test is strict (`time < record`), and a better medal
+  pays its bonus once per tier climbed. The texts are `CHALLENGE_TEXT_N`
+  in `Strings/Strings_ENG.txt`, which holds values only, in sorted key
+  order (lines 92-103 for `_1`, `_10`, `_11`, `_12`, `_2`..`_9`).
 - `Tricks.xml`: one element per trick with `mControlCombo="KeyAHeld,
   StickUp"` (buttons D, A, B, E for levels 1-4, `KeyCombo1/3/2` for 5-7),
   `mScorePoints`, `mHoldPoints`, `mTotalTrickTimeSec`, `mTrickEndTimeSec`
