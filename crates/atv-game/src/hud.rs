@@ -582,10 +582,17 @@ fn race_menus(
             let award = (selection.mode == Mode::Career).then(|| {
                 let run = career.run.clone()?;
                 let order = finishing_order(&run, p.dnf, field);
-                let mut tricks = vec![0; run.field.len()];
-                if let (Some(i), Some(s)) = (run.field.iter().position(|e| e.player), session.as_deref()) {
-                    tricks[i] = s.score;
-                }
+                // Everyone's trick score: the player's, and the computer
+                // riders' from their own tricks.
+                let tricks: Vec<u32> = run
+                    .field
+                    .iter()
+                    .map(|e| match (e.player, field.1) {
+                        (true, _) => session.as_deref().map_or(0, |s| s.score),
+                        (false, Some(o)) => o.racers.iter().find(|r| r.model.eq_ignore_ascii_case(&e.model)).and_then(|r| r.session.as_ref()).map_or(0, |s| s.score),
+                        (false, None) => 0,
+                    })
+                    .collect();
                 let award = career.score(&rules, &selection.track, &order, &tricks);
                 career.save();
                 award

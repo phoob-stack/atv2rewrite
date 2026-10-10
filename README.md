@@ -110,7 +110,10 @@ players 2-4 get their rider's own skill rating. The **Trick Book** (Y or T
 on rider select, track select and the career status page) shows every trick
 with its level, points and buttons, lit on the pad picture, while the rider
 performs it; tricks above your level are greyed with the skill points still
-needed.
+needed. Computer riders throw tricks too, as the original's AI does: more
+than 1.75 m off the ground they pick a random trick of their skill rating
+that fits the air left, and chain another while it lasts. In a career their
+trick scores count against yours for the trick points.
 
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on

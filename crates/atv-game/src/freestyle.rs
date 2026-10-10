@@ -374,6 +374,11 @@ impl Session {
         }
     }
 
+    #[cfg(test)]
+    pub fn test_with(tricks: Vec<TrickDef>) -> Self {
+        Self::with(tricks, GroundPoints { wheelie: 20, bicycle: 20, endo: 20 }, Vec::new())
+    }
+
     pub fn time_left(&self, clock: f32) -> Option<f32> {
         self.limit.map(|l| (l - clock).max(0.0))
     }
@@ -422,6 +427,14 @@ impl Session {
     /// skill level allows it.
     pub fn trick_for(&self, buttons: u8, dir: Dir) -> Option<usize> {
         self.tricks.iter().position(|t| t.buttons == buttons && t.dir == dir && t.level <= self.level)
+    }
+
+    /// Starts trick `def` now, as a computer rider does (0x63330): it runs
+    /// its full length without being held at the peak.
+    pub fn start_trick(&mut self, def: usize) {
+        if self.active.is_none() && self.tricks.get(def).is_some_and(|t| t.level <= self.level) {
+            self.active = Some(ActiveTrick { def, t: 0.0, held: 0.0, released: true });
+        }
     }
 
     /// One physics step. `live`: the clock is running (tricks are held

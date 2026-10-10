@@ -15,6 +15,7 @@
 //! none; arcade races its rounds' tracks, `--round` starts on one; career
 //! with `--round` races the saved championship's next round).
 
+mod aitricks;
 mod audio;
 mod career;
 mod challenge;

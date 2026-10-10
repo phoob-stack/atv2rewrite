@@ -16,6 +16,7 @@ use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
 use crate::convert::{self, Loader, WheelVisual};
 use crate::crash::{CrashClips, Wreck};
+use crate::aitricks::AiTricks;
 use crate::freestyle::{self, Dir, Session, StuntClips};
 use crate::frontend::Roster;
 use crate::race::RaceProgress;
@@ -80,8 +81,10 @@ pub struct Racer {
     /// A split-screen player (2 to 4) drives this quad; the AI driver only
     /// keeps track and brings it home after the flag.
     pub human: Option<usize>,
-    /// A player's tricks (and in Freestyle Battle, their score).
+    /// The rider's tricks (and in Freestyle Battle, a player's score).
     pub session: Option<Session>,
+    /// A computer rider's trick picker.
+    tricks: AiTricks,
     /// Thrown off, by the same rules as player 1.
     pub wreck: Wreck,
 }
@@ -252,12 +255,14 @@ pub fn spawn(
             body,
             upside_down: 0.0,
             human: human.map(|_| i + 2),
-            // Another player's rider pulls the tricks of its own skill rating.
-            session: human.map(|_| {
+            // Other players and computer riders pull the tricks of their
+            // rider's own skill rating.
+            session: Some({
                 let mut s = session.clone();
                 s.level = rider.skill;
                 s
             }),
+            tricks: AiTricks::new(i as u32 * 7919 + 17),
             wreck: Wreck::default(),
         });
         info!("computer rider {}: {} on {quad}", i + 1, rider.name);
@@ -363,15 +368,25 @@ fn drive_opponents(
             r.wreck.start(&r.vehicle, cause, way, pick);
             debug!("{} crashed ({cause:?})", r.name);
         }
-        if let (Some(s), Some(n)) = (r.session.as_mut(), r.human) {
-            let (mut buttons, mut dir) = freestyle::read_tricks(&keys, &pads, Some(n - 1));
-            if args.autodrive && s.active.is_none() && !r.vehicle.grounded() {
-                // The autopilot shows off, as for player 1.
-                let k = (s.time * 0.7) as usize + n;
-                buttons = 1 << (k % 4);
-                dir = Some([Dir::Up, Dir::Right, Dir::Down, Dir::Left][k / 4 % 4]);
+        let live = r.progress.started() && !time_up && r.progress.finished.is_none();
+        match (r.session.as_mut(), r.human) {
+            (Some(s), Some(n)) => {
+                let (mut buttons, mut dir) = freestyle::read_tricks(&keys, &pads, Some(n - 1));
+                if args.autodrive && s.active.is_none() && !r.vehicle.grounded() {
+                    // The autopilot shows off, as for player 1.
+                    let k = (s.time * 0.7) as usize + n;
+                    buttons = 1 << (k % 4);
+                    dir = Some([Dir::Up, Dir::Right, Dir::Down, Dir::Left][k / 4 % 4]);
+                }
+                s.step(&r.vehicle, buttons, dir, dt, live);
             }
-            s.step(&r.vehicle, buttons, dir, dt, r.progress.started() && !time_up && r.progress.finished.is_none());
+            (Some(s), None) => {
+                if live && r.wreck.fall.is_none() {
+                    r.tricks.step(s, &r.vehicle, &race.collision);
+                }
+                s.step(&r.vehicle, 0, None, dt, live);
+            }
+            _ => {}
         }
 
         // Checkpoints. The racing line's alternative routes can pass wide
@@ -505,14 +520,12 @@ fn sync_opponents(
                 r.vehicle.preload,
                 time.delta_secs(),
             );
-            // A player's trick in progress.
+            // The trick in progress, a player's or a computer rider's.
             let stunt = r.session.as_ref().zip(clips.as_deref()).and_then(|(s, clips)| {
                 let a = s.active.as_ref()?;
                 Some((clips.0.get(a.def)?.clone()?, a.t / s.tricks[a.def].total))
             });
-            if r.human.is_some() {
-                rider.set_stunt(stunt, time.delta_secs());
-            }
+            rider.set_stunt(stunt, time.delta_secs());
         }
     }
 }
