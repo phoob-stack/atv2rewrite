@@ -3,7 +3,7 @@
 //!
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
 //!             [--rider Male1] [--laps 3] [--frontend [--screen rider]]
-//!             [--mode race|timetrial|arcade|freestyle] [--minutes N]
+//!             [--mode race|timetrial|arcade|freestyle|career] [--minutes N]
 //!             [--round N] [--opponents N]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
@@ -12,9 +12,11 @@
 //! Without `--track` the game opens on its front end; with it, it goes
 //! straight into a race (`--frontend` shows the menus anyway, preselected).
 //! `--mode` picks the mode (`--minutes` is Open Freestyle's limit, 0 for
-//! none; arcade races its rounds' tracks, `--round` starts on one).
+//! none; arcade races its rounds' tracks, `--round` starts on one; career
+//! with `--round` races the saved championship's next round).
 
 mod audio;
+mod career;
 mod convert;
 mod crash;
 mod freestyle;
@@ -99,6 +101,8 @@ enum Mode {
     Arcade,
     /// Open Freestyle: roam a track scoring tricks, trick boxes and spots.
     Freestyle,
+    /// A round of a career championship (see [`career`]).
+    Career,
 }
 
 impl Mode {
@@ -109,6 +113,7 @@ impl Mode {
             Mode::TimeTrial => "TIME TRIAL",
             Mode::Arcade => "ARCADE",
             Mode::Freestyle => "FREESTYLE",
+            Mode::Career => "CAREER",
         }
     }
 }
@@ -136,6 +141,8 @@ struct Selection {
     round: usize,
     /// Open Freestyle's time limit in minutes (None = unlimited).
     time_limit: Option<u32>,
+    /// The computer riders' models, when the field is set (career).
+    field: Vec<String>,
 }
 
 #[derive(Resource, Clone)]
@@ -225,6 +232,8 @@ fn parse_args() -> anyhow::Result<Args> {
                     "audio" => Screen::Audio,
                     "camera" => Screen::Camera,
                     "controller" => Screen::Controller,
+                    "career" => Screen::CareerChamp,
+                    "status" => Screen::CareerStatus,
                     other => anyhow::bail!("unknown screen {other} (title, main, rider, atv, track)"),
                 });
             }
@@ -234,6 +243,7 @@ fn parse_args() -> anyhow::Result<Args> {
                     "timetrial" | "time" => Mode::TimeTrial,
                     "arcade" => Mode::Arcade,
                     "freestyle" => Mode::Freestyle,
+                    "career" => Mode::Career,
                     other => anyhow::bail!("unknown mode {other} (race, timetrial, arcade, freestyle)"),
                 }
             }
@@ -281,6 +291,7 @@ fn main() -> anyhow::Result<()> {
     let game = Game(Arc::new(GameSource::open(&args.game)?));
     hd::init(args.hd.clone(), args.use_hd);
     let roster = Roster::load(&game.0);
+    let career_rules = career::Rules::load(&game.0);
     let mut selection = Selection {
         track: args.track.clone(),
         quad: args.quad.clone(),
@@ -289,12 +300,26 @@ fn main() -> anyhow::Result<()> {
         mode: args.mode,
         round: args.round,
         time_limit: args.minutes,
+        field: Vec::new(),
     };
     // Arcade races its rounds' tracks (`--round N` starts on one).
     if args.mode == Mode::Arcade
         && let Some(t) = roster.arcade.get(args.round)
     {
         selection.track = t.clone();
+    }
+    // Career races the saved championship's next round.
+    let career = career::Career::load();
+    if args.mode == Mode::Career
+        && let Some(run) = career.run.as_ref().filter(|r| !r.over())
+        && let Some(t) = career_rules.tracks[run.champ.index()].get(run.round)
+    {
+        selection.track = t.clone();
+        selection.round = run.round;
+        selection.laps = career::LAPS;
+        selection.rider = run.rider.clone();
+        selection.quad = run.quad.clone();
+        selection.field = run.opponents();
     }
     let first = if args.direct { AppState::Loading } else { AppState::FrontEnd };
     let front_end = FrontEnd::at(args.screen.unwrap_or_default());
@@ -320,12 +345,14 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(selection)
         .insert_resource(front_end)
         .insert_resource(Settings::load())
+        .insert_resource(career_rules)
+        .insert_resource(career)
         .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin))
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
         .add_systems(OnExit(AppState::Race), teardown)
-        .add_systems(FixedUpdate, drive.run_if(in_state(AppState::Race)))
+        .add_systems(FixedUpdate, (drive, career::dnf_cutoff).run_if(in_state(AppState::Race)))
         .add_systems(
             Update,
             (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, cycle_camera, chase_camera, fly_camera, follow_sky, rumble)
@@ -438,9 +465,12 @@ fn setup(
         }
         Err(e) => error!("failed to load quad {}: {e:#}", sel.quad),
     }
-    if sel.mode == Mode::SingleRace {
-        opponents::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, &roster, &sel, &scene.world, &collision, args.opponents);
-    }
+    let field = match sel.mode {
+        Mode::SingleRace => args.opponents,
+        Mode::Career => sel.field.len(),
+        _ => 0,
+    };
+    opponents::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, &roster, &sel, &scene.world, &collision, field);
     info!(
         "loaded {}: {} world meshes, {} props, {} collision tris, {} checkpoints",
         sel.track,
@@ -624,7 +654,7 @@ fn drive(
     let input = if crashed {
         // Thrown off: the quad rolls on by itself.
         Input::default()
-    } else if !progress.started() || (over && (freestyle || progress.out_of_time())) {
+    } else if !progress.started() || (over && (freestyle || progress.out_of_time() || progress.dnf)) {
         // Brake to a stop (braking at a standstill would reverse).
         Input { brake: if over && v.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
     } else if let Some(spot) = session.next_spot(v.position).filter(|_| args.autodrive && freestyle) {

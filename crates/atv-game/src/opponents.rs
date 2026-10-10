@@ -56,6 +56,8 @@ pub struct Opponents {
 pub struct Racer {
     /// Rider's name as the menus show it.
     pub name: String,
+    /// Rider's model folder.
+    pub model: String,
     pub vehicle: Vehicle,
     driver: AiDriver,
     pub progress: RaceProgress,
@@ -128,6 +130,12 @@ pub fn spawn(
         .iter()
         .filter(|r| r.ai && !r.model.eq_ignore_ascii_case(&sel.rider))
         .collect();
+    // A set field (career) races in its own order.
+    let set_field: Vec<_> = sel
+        .field
+        .iter()
+        .filter_map(|m| roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(m)))
+        .collect();
     let all_quads: Vec<&str> = roster
         .quads
         .iter()
@@ -150,10 +158,14 @@ pub fn spawn(
         if quads.is_empty() {
             quads = all_quads.clone();
         }
-        if riders.is_empty() || quads.is_empty() {
+        if (riders.is_empty() && set_field.len() <= i) || quads.is_empty() {
             break;
         }
-        let rider = riders.swap_remove(pick(riders.len()));
+        let rider = match set_field.get(i) {
+            Some(r) => *r,
+            None if !sel.field.is_empty() => break,
+            None => riders.swap_remove(pick(riders.len())),
+        };
         let quad = quads.swap_remove(pick(quads.len())).to_string();
         let own = game
             .read(&format!("/Cars/{quad}/{quad}.params"))
@@ -197,6 +209,7 @@ pub fn spawn(
             .is_some_and(|&c| (c - pos).with_y(0.0).length() < CHECKPOINT_RADIUS);
         racers.push(Racer {
             name: rider.name.clone(),
+            model: rider.model.clone(),
             vehicle: Vehicle::new(params, pos, rot),
             driver,
             progress: RaceProgress::new(sel.laps, on_line),
