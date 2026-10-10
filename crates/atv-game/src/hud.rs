@@ -607,10 +607,19 @@ fn race_menus(
                     Some(o)
                 })
                 .flatten();
-            // A finished Arcade round: the next is where Arcade carries on.
-            if selection.mode == Mode::Arcade && p.finished.is_some() && !p.out_of_time() {
-                let next = selection.round + 1;
-                career.arcade = if next < roster.arcade.len() { next } else { 0 };
+            // An Arcade round won: the next is where Arcade carries on. Not
+            // won: one of the round's three attempts gone, and with the
+            // last of them Arcade starts again from the first round.
+            if selection.mode == Mode::Arcade {
+                if arcade_won(&p, field.0) {
+                    let next = selection.round + 1;
+                    career.arcade = if next < roster.arcade.len() { next } else { 0 };
+                } else {
+                    selection.failed += 1;
+                    if selection.failed >= ARCADE_ATTEMPTS {
+                        career.arcade = 0;
+                    }
+                }
                 career.save();
             }
             let run = if champ_round { mp_champ.run.as_ref() } else { career.run.as_ref() };
@@ -638,6 +647,7 @@ fn race_menus(
             "NEXT ROUND" => {
                 if let Some(t) = roster.arcade.get(selection.round + 1) {
                     selection.round += 1;
+                    selection.failed = 0;
                     selection.track = t.clone();
                     next.set(AppState::Loading);
                 }
@@ -660,6 +670,17 @@ fn race_menus(
         },
         _ => {}
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Tries at an Arcade round (the original's "Attempts: %d/3").
+const ARCADE_ATTEMPTS: usize = 3;
+
+/// An Arcade round is won by finishing in time and, with computer riders,
+/// in first place ("You need to finish in first place to move onto the
+/// next round").
+fn arcade_won(p: &RaceProgress, standings: Option<&Standings>) -> bool {
+    p.finished.is_some() && !p.out_of_time() && standings.is_none_or(|s| s.racers <= 1 || s.player == 1)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -708,7 +729,11 @@ fn spawn_race_menu(
         (true, Mode::Challenge) => (format!("CHALLENGE {} COMPLETE", sel.challenge), &["TRY AGAIN", "CHALLENGES", "MAIN MENU"]),
         (true, Mode::Freestyle) if battle.is_some() => ("FREESTYLE BATTLE".into(), &["PLAY AGAIN", "MAIN MENU"]),
         (true, Mode::Freestyle) => ("FREESTYLE RESULTS".into(), &["PLAY AGAIN", "MAIN MENU"]),
-        (true, Mode::Arcade) if p.out_of_time() => ("OUT OF TIME".into(), &["TRY AGAIN", "MAIN MENU"]),
+        (true, Mode::Arcade) if !arcade_won(p, standings) => {
+            let title = if p.out_of_time() { "OUT OF TIME" } else { "ARCADE RESULTS" };
+            let items: &[&str] = if sel.failed >= ARCADE_ATTEMPTS { &["MAIN MENU"] } else { &["TRY AGAIN", "MAIN MENU"] };
+            (title.into(), items)
+        }
         (true, Mode::Arcade) if last_round => ("ARCADE COMPLETED".into(), &["MAIN MENU"]),
         (true, Mode::Arcade) => (format!("ROUND {} COMPLETE", sel.round + 1), &["NEXT ROUND", "RACE AGAIN", "MAIN MENU"]),
         (true, Mode::Career) => (format!("ROUND {} COMPLETE", sel.round + 1), &["CHAMPIONSHIP STATUS", "MAIN MENU"]),
@@ -728,6 +753,7 @@ fn spawn_race_menu(
             p.lap_times.len()
                 + 1
                 + usize::from(p.arcade.is_some() && p.finished.is_some())
+                + if sel.mode == Mode::Arcade && !arcade_won(p, standings) { 1 + 3 * usize::from(!p.out_of_time()) } else { 0 }
                 + usize::from(place.is_some())
                 + usize::from(winner.is_some())
                 + others.len()
@@ -835,6 +861,16 @@ fn spawn_race_menu(
                             row(rows, "TOTAL", &total, false);
                             if let Some(a) = p.arcade.as_ref().filter(|_| p.finished.is_some()) {
                                 row(rows, "TIME LEFT", &fmt_time(a.left), false);
+                            }
+                            if sel.mode == Mode::Arcade && !arcade_won(p, standings) {
+                                if !p.out_of_time() {
+                                    // The original's message, line for line.
+                                    for line in ["YOU NEED TO FINISH", "IN FIRST PLACE TO MOVE", "ONTO THE NEXT ROUND"] {
+                                        row(rows, line, "", false);
+                                    }
+                                }
+                                let over = if sel.failed >= ARCADE_ATTEMPTS { "BACK TO ROUND 1" } else { "" };
+                                row(rows, &format!("ATTEMPTS: {}/{ARCADE_ATTEMPTS}", sel.failed.min(ARCADE_ATTEMPTS)), over, false);
                             }
                             if let Some(a) = award {
                                 row(rows, "RACE POINTS", &format!("+{}", a.position_points), false);

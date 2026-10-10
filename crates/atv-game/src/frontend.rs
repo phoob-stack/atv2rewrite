@@ -437,6 +437,7 @@ fn navigate(
                     // Arcade starts on its first round, or the saved one.
                     if let Some(t) = roster.arcade.get(fe.arcade_round) {
                         sel.round = fe.arcade_round;
+                        sel.failed = 0;
                         sel.track = t.clone();
                         sel.laps = 3;
                         next.set(AppState::Loading);

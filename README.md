@@ -71,8 +71,10 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   stays locked for now.
 - **Arcade**: the 16 rounds of the disc's `Setup/Arcade.xml` back to back.
   The clock starts at the track's arcade time (40 s) and the arcade
-  checkpoints and the line add more; run out and it's over. Finish a round
-  for the next one. Seven computer riders race each round, as in the
+  checkpoints and the line add more. Win a round (finish first, in time)
+  for the next one; each round allows three attempts, and losing the third
+  sends Arcade back to round 1 (the disc's "You need to finish in first
+  place to move onto the next round" and "Attempts: %d/3"). Seven computer riders race each round, as in the
   original (its arcade mode seats 1 player and 7 AI).
   The next round is saved after each one (`arcade` in career.cfg, the
   original's `mArcadeProgress`); choosing Arcade then offers to continue
