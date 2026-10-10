@@ -78,6 +78,14 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   Gold targets. Points come from tricks, multi-trick combos, flips and spins,
   big air, wheelies, endos and bicycles, the Stadium trick boxes (Cage Jump,
   Bus Leap, Hoopa...) and the first visit to each of the track's spots.
+- **Multiplayer**: split-screen Single Race for two to four players (two
+  split top and bottom, three or four take a quarter each), with computer
+  riders making the field up to four. Each player picks a rider (one
+  another player has is greyed out) and an ATV in turn. Player 1 drives
+  with WASD (lean R/F, preload Space) or the first pad, player 2 with the
+  arrow keys (lean Numpad 8/5, preload right Shift) or the second pad, and
+  players 3 and 4 with the third and fourth pads. Once the first player is
+  home the others get a minute to finish.
 
 Tricks are the 28 from `Setup/Tricks.xml`: hold a trick button (or two for
 the level 5-7 tricks: 1+2, 2+3, 3+4) and a direction while airborne. Keep
@@ -94,6 +102,7 @@ then preselects), `--screen title|main|rider|atv|track` (open on that
 front-end screen), `--mode race|timetrial|arcade|freestyle` with
 `--minutes N` (freestyle limit, 0 = unlimited) or `--round N` (arcade round),
 `--opponents N` (computer riders in a single race, default 5),
+`--players N` (split-screen race for N players),
 `--autodrive` (autopilot chases checkpoints and throws tricks), `--camera
 x,y,z,tx,ty,tz` (free-fly camera in game coordinates: WASD, Q/E, Shift, right
 mouse to look), `--screenshot out.png --after 8` (saves a frame and exits),

@@ -4,7 +4,7 @@
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
 //!             [--rider Male1] [--laps 3] [--frontend [--screen rider]]
 //!             [--mode race|timetrial|arcade|freestyle|career] [--minutes N]
-//!             [--round N] [--opponents N] [--challenge N]
+//!             [--round N] [--opponents N] [--challenge N] [--players N]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
 //!             [--resolution 1280x720] [--fullscreen]
@@ -25,6 +25,7 @@ mod frontend;
 mod hd;
 mod mud;
 mod hud;
+mod mp;
 mod opponents;
 mod race;
 mod rider;
@@ -91,6 +92,8 @@ struct Args {
     opponents: usize,
     /// Freestyle challenge to run (1-based).
     challenge: usize,
+    /// Humans in split screen (1 to 4).
+    players: usize,
 }
 
 /// The game modes on the main menu.
@@ -151,6 +154,10 @@ struct Selection {
     field: Vec<String>,
     /// The Freestyle Challenge (1-based).
     challenge: usize,
+    /// Humans in a split-screen race (1 alone), and the rider and quad of
+    /// each after the first.
+    players: usize,
+    others: Vec<(String, String)>,
 }
 
 #[derive(Resource, Clone)]
@@ -163,6 +170,8 @@ struct Race {
     next_checkpoint: usize,
     /// The checkpoints are a challenge course, kept by [`challenge`].
     course: bool,
+    /// Humans racing, in split screen when more than one.
+    players: usize,
     start: (Vec3, Quat),
     /// Last pose where the quad was upright on the ground (for respots).
     safe: (Vec3, Quat),
@@ -218,6 +227,7 @@ fn parse_args() -> anyhow::Result<Args> {
         // The original's default field (`mNumAIPlayers` in user.xml).
         opponents: 5,
         challenge: 1,
+        players: 1,
     };
     let mut frontend = false;
     let mut it = std::env::args().skip(1);
@@ -247,6 +257,7 @@ fn parse_args() -> anyhow::Result<Args> {
                     "status" => Screen::CareerStatus,
                     "freestyle" => Screen::FreestyleType,
                     "challenges" => Screen::Challenges,
+                    "multiplayer" => Screen::MpPlayers,
                     other => anyhow::bail!("unknown screen {other} (title, main, rider, atv, track)"),
                 });
             }
@@ -271,6 +282,7 @@ fn parse_args() -> anyhow::Result<Args> {
                 a.mode = Mode::Challenge;
                 a.direct = true;
             }
+            "--players" => a.players = val().parse::<usize>()?.clamp(1, mp::MAX_PLAYERS),
             "--opponents" => a.opponents = val().parse::<usize>()?.min(7),
             "--quad" => a.quad = val(),
             "--rider" => a.rider = val(),
@@ -322,7 +334,12 @@ fn main() -> anyhow::Result<()> {
         time_limit: args.minutes,
         field: Vec::new(),
         challenge: args.challenge,
+        players: args.players,
+        others: Vec::new(),
     };
+    if args.players > 1 {
+        selection.others = mp::default_picks(&roster, &selection.rider, &selection.quad, args.players);
+    }
     if args.mode == Mode::Challenge {
         selection.track = challenge::TRACK.into();
         selection.laps = 1;
@@ -373,7 +390,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(career_rules)
         .insert_resource(career)
         .insert_resource(challenges)
-        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin))
+        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin, mp::MpPlugin))
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
@@ -506,6 +523,8 @@ fn setup(
         Err(e) => error!("failed to load quad {}: {e:#}", sel.quad),
     }
     let field = match sel.mode {
+        // Split screen: the other humans, and computer riders to make four.
+        Mode::SingleRace if sel.players > 1 => mp::FIELD - 1,
         Mode::SingleRace => args.opponents,
         Mode::Career => sel.field.len(),
         _ => 0,
@@ -588,7 +607,11 @@ fn setup(
             commands.spawn((view, t, FlyCam { yaw, pitch }, IsDefaultUiCamera, scoped.clone()));
         }
         None => {
-            commands.spawn((view, cam, ChaseCam { offset: eye - start.0, facing: cam.rotation }, IsDefaultUiCamera, scoped.clone()));
+            let e = commands.spawn((view.clone(), cam, ChaseCam { offset: eye - start.0, facing: cam.rotation }, IsDefaultUiCamera, scoped.clone())).id();
+            if sel.players > 1 {
+                commands.entity(e).insert(mp::Split(0));
+                mp::spawn_views(&mut commands, view, sel.players, &scoped);
+            }
         }
     }
     // Whether the grid is on the start/finish line or still has to cross it.
@@ -608,6 +631,7 @@ fn setup(
         next_checkpoint: if in_challenge { 0 } else { usize::from(on_line && checkpoints.len() > 1) },
         checkpoints,
         course: in_challenge,
+        players: sel.players,
         start,
         safe: start,
         safe_timer: 0.0,
@@ -643,18 +667,39 @@ fn baked_level(world: &atv_formats::row::World, at: Vec3) -> f32 {
     if n == 0.0 { 1.0 } else { (sum / n).clamp(0.35, 1.2) }
 }
 
+/// Keys for each player in split screen: throttle, brake, left, right,
+/// lean back, lean forward, hop.
+const PLAYER_KEYS: [[KeyCode; 7]; 2] = [
+    [KeyCode::KeyW, KeyCode::KeyS, KeyCode::KeyA, KeyCode::KeyD, KeyCode::KeyR, KeyCode::KeyF, KeyCode::Space],
+    [KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::Numpad8, KeyCode::Numpad5, KeyCode::ShiftRight],
+];
+
 /// `airborne`: the pad's X and RB are trick buttons in the air, so they
-/// don't brake or pre-load there.
-fn read_input(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, airborne: bool) -> Input {
+/// don't brake or pre-load there. `slot`: in split screen, the player
+/// (0-based), who has their own keys (players 1 and 2) and their own pad
+/// (the slot-th one); alone, every key and pad drives.
+fn read_input(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, airborne: bool, slot: Option<usize>) -> Input {
     let key = |k: KeyCode| -> f32 { if keys.pressed(k) { 1.0 } else { 0.0 } };
-    let mut i = Input {
-        throttle: key(KeyCode::ArrowUp).max(key(KeyCode::KeyW)),
-        brake: key(KeyCode::ArrowDown).max(key(KeyCode::KeyS)),
-        steer: key(KeyCode::ArrowRight).max(key(KeyCode::KeyD)) - key(KeyCode::ArrowLeft).max(key(KeyCode::KeyA)),
-        lean: key(KeyCode::KeyI) - key(KeyCode::KeyK),
-        jump: keys.pressed(KeyCode::Space),
+    let mut i = match slot {
+        None => Input {
+            throttle: key(KeyCode::ArrowUp).max(key(KeyCode::KeyW)),
+            brake: key(KeyCode::ArrowDown).max(key(KeyCode::KeyS)),
+            steer: key(KeyCode::ArrowRight).max(key(KeyCode::KeyD)) - key(KeyCode::ArrowLeft).max(key(KeyCode::KeyA)),
+            lean: key(KeyCode::KeyI) - key(KeyCode::KeyK),
+            jump: keys.pressed(KeyCode::Space),
+        },
+        Some(n) => match PLAYER_KEYS.get(n) {
+            Some(k) => Input {
+                throttle: key(k[0]),
+                brake: key(k[1]),
+                steer: key(k[3]) - key(k[2]),
+                lean: key(k[4]) - key(k[5]),
+                jump: keys.pressed(k[6]),
+            },
+            None => Input::default(),
+        },
     };
-    for pad in pads {
+    for (_, pad) in pads.iter().enumerate().filter(|(n, _)| slot.is_none_or(|s| s == *n)) {
         let stick_x = pad.get(GamepadAxis::LeftStickX).unwrap_or(0.0);
         let stick_y = pad.get(GamepadAxis::LeftStickY).unwrap_or(0.0);
         let dead = |v: f32| if v.abs() < 0.15 { 0.0 } else { v };
@@ -710,7 +755,7 @@ fn drive(
     } else if (args.autodrive || progress.finished.is_some()) && n > 0 {
         trk::steer_towards(v, race.checkpoints[next])
     } else {
-        read_input(&keys, &pads, !v.grounded())
+        read_input(&keys, &pads, !v.grounded(), (race.players > 1).then_some(0))
     };
     if race.course {
         // The challenge's gates are kept by `challenge::follow_course`.
@@ -876,16 +921,35 @@ fn chase_camera(
     settings: Res<Settings>,
     player: Option<Res<Player>>,
     race: Option<Res<Race>>,
-    mut cam: Query<(&mut Transform, &mut ChaseCam)>,
+    opponents: Option<Res<opponents::Opponents>>,
+    mut cams: Query<(&mut Transform, &mut ChaseCam, Option<&mp::Split>)>,
     mut riders: Query<(&Rider, &mut Visibility), Without<OpponentRider>>,
     mut rig: Local<Option<(CameraView, FollowCam)>>,
 ) {
-    let (Some(player), Some(race), Ok((mut t, mut cam))) = (player, race, cam.single_mut()) else { return };
+    let (Some(player), Some(race)) = (player, race) else { return };
     if rig.map(|r| r.0) != Some(settings.camera) {
         *rig = Some((settings.camera, FollowCam::load(&game.0, settings.camera)));
     }
     let Some((_, follow)) = *rig else { return };
-    let v = &player.0;
+    for (mut t, mut cam, split) in &mut cams {
+        // Split screen: each view follows its own player's quad.
+        let v = match split.map_or(0, |s| s.0) {
+            0 => &player.0,
+            slot => match opponents.as_deref().and_then(|o| o.human(slot + 1)) {
+                Some(r) => &r.vehicle,
+                None => continue,
+            },
+        };
+        follow_quad(&time, &race, &follow, v, &mut t, &mut cam);
+    }
+    // Very close puts the camera at the rider's head: ride without them.
+    for (r, mut vis) in &mut riders {
+        let hide = settings.camera == CameraView::VeryClose && !r.crashed() && race.players == 1;
+        vis.set_if_neq(if hide { Visibility::Hidden } else { Visibility::Inherited });
+    }
+}
+
+fn follow_quad(time: &Time, race: &Race, follow: &FollowCam, v: &Vehicle, t: &mut Transform, cam: &mut ChaseCam) {
     let fwd = v.forward().with_y(0.0).normalize_or(Vec3::NEG_Z);
     let right = fwd.cross(Vec3::Y);
     let at = |o: Vec3| v.position + right * o.x + Vec3::Y * o.y + fwd * o.z;
@@ -918,11 +982,6 @@ fn chase_camera(
         cam.facing = cam.facing.slerp(want, ease(follow.rot_stiffness[air])).normalize();
     }
     t.rotation = cam.facing;
-    // Very close puts the camera at the rider's head: ride without them.
-    for (r, mut vis) in &mut riders {
-        let hide = settings.camera == CameraView::VeryClose && !r.crashed();
-        vis.set_if_neq(if hide { Visibility::Hidden } else { Visibility::Inherited });
-    }
 }
 
 /// C or the pad's Back button steps through the follow cameras; the pick
@@ -971,8 +1030,10 @@ fn rumble(
     }
 }
 
-fn follow_sky(cam: Query<&Transform, With<Camera3d>>, mut sky: Query<&mut Transform, (With<SkyDome>, Without<Camera3d>)>) {
-    let (Ok(cam), Ok(mut sky)) = (cam.single(), sky.single_mut()) else { return };
+fn follow_sky(cams: Query<(&Transform, Option<&mp::Split>), With<Camera3d>>, mut sky: Query<&mut Transform, (With<SkyDome>, Without<Camera3d>)>) {
+    // Player 1's view in split screen.
+    let cam = cams.iter().find(|(_, s)| s.is_none_or(|s| s.0 == 0)).map(|c| c.0);
+    let (Some(cam), Ok(mut sky)) = (cam, sky.single_mut()) else { return };
     // Sunk a little so the hazy rim sits under the horizon.
     sky.translation = cam.translation - Vec3::Y * convert::SKY_RADIUS * 0.08;
 }

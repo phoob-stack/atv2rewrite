@@ -3,6 +3,7 @@
 //! line, keeps its own laps, and is ranked against the player.
 
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
+use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
 
 use atv_formats::GameSource;
@@ -53,6 +54,13 @@ pub struct Opponents {
     pub racers: Vec<Racer>,
 }
 
+impl Opponents {
+    /// Split-screen player `n`'s (2 to 4) quad.
+    pub fn human(&self, n: usize) -> Option<&Racer> {
+        self.racers.iter().find(|r| r.human == Some(n))
+    }
+}
+
 pub struct Racer {
     /// Rider's name as the menus show it.
     pub name: String,
@@ -66,6 +74,9 @@ pub struct Racer {
     /// The quad's root entity.
     pub body: Entity,
     upside_down: f32,
+    /// A split-screen player (2 to 4) drives this quad; the AI driver only
+    /// keeps track and brings it home after the flag.
+    pub human: Option<usize>,
 }
 
 /// Marks a computer rider's seat, so the player's rider systems leave its
@@ -125,10 +136,18 @@ pub fn spawn(
         seed ^= seed << 5;
         seed as usize % n.max(1)
     };
+    // Split screen: the other players first, behind player 1.
+    let humans: Vec<_> = sel
+        .others
+        .iter()
+        .take(sel.players.saturating_sub(1))
+        .filter_map(|(rider, quad)| Some((roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(rider))?, quad.clone())))
+        .collect();
+    let taken = |m: &str| m.eq_ignore_ascii_case(&sel.rider) || humans.iter().any(|h| h.0.model.eq_ignore_ascii_case(m));
     let mut riders: Vec<_> = roster
         .riders
         .iter()
-        .filter(|r| r.ai && !r.model.eq_ignore_ascii_case(&sel.rider))
+        .filter(|r| r.ai && !taken(&r.model))
         .collect();
     // A set field (career) races in its own order.
     let set_field: Vec<_> = sel
@@ -146,7 +165,7 @@ pub fn spawn(
     let mut quads: Vec<&str> = all_quads
         .iter()
         .copied()
-        .filter(|q| !q.eq_ignore_ascii_case(&sel.quad))
+        .filter(|q| !q.eq_ignore_ascii_case(&sel.quad) && !humans.iter().any(|h| h.1.eq_ignore_ascii_case(q)))
         .collect();
     let generic = game
         .read("/Cars/Generic/Generic.params")
@@ -158,22 +177,29 @@ pub fn spawn(
         if quads.is_empty() {
             quads = all_quads.clone();
         }
-        if (riders.is_empty() && set_field.len() <= i) || quads.is_empty() {
+        let human = humans.get(i);
+        if human.is_none() && ((riders.is_empty() && set_field.len() <= i) || quads.is_empty()) {
             break;
         }
-        let rider = match set_field.get(i) {
-            Some(r) => *r,
-            None if !sel.field.is_empty() => break,
-            None => riders.swap_remove(pick(riders.len())),
+        let rider = match (human, set_field.get(i)) {
+            (Some(h), _) => h.0,
+            (None, Some(r)) => *r,
+            (None, None) if !sel.field.is_empty() => break,
+            (None, None) => riders.swap_remove(pick(riders.len())),
         };
-        let quad = quads.swap_remove(pick(quads.len())).to_string();
+        let quad = match human {
+            Some(h) => h.1.clone(),
+            None => quads.swap_remove(pick(quads.len())).to_string(),
+        };
         let own = game
             .read(&format!("/Cars/{quad}/{quad}.params"))
             .ok()
             .map(|b| String::from_utf8_lossy(&b).into_owned());
         let mut params = VehicleParams::from_files(&generic, own.as_deref());
         let ability = (rider.stats[0] / 5.0).clamp(0.0, 1.0);
-        tune_for_ai(&mut params, ability);
+        if human.is_none() {
+            tune_for_ai(&mut params, ability);
+        }
         let wheel_x: Vec<f32> = params.wheels.iter().map(|w| w.offset[0]).collect();
         let (pos, rot) = trk::start_pose(world, collision, i + 2);
         let at = Transform::from_translation(pos).with_rotation(rot);
@@ -217,6 +243,7 @@ pub fn spawn(
             input: Input::default(),
             body,
             upside_down: 0.0,
+            human: human.map(|_| i + 2),
         });
         info!("computer rider {}: {} on {quad}", i + 1, rider.name);
     }
@@ -249,6 +276,7 @@ fn lap_fraction(checkpoints: &[Vec3], next: usize, at: Vec3, armed: bool) -> f32
     (((next + n - 1) % n) as f32 + along) / n as f32
 }
 
+#[allow(clippy::too_many_arguments)]
 fn drive_opponents(
     time: Res<Time>,
     race: Option<Res<Race>>,
@@ -256,6 +284,9 @@ fn drive_opponents(
     progress: Option<Res<RaceProgress>>,
     opponents: Option<ResMut<Opponents>>,
     standings: Option<ResMut<Standings>>,
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
+    args: Res<crate::Args>,
 ) {
     let (Some(race), Some(mut player), Some(progress), Some(mut opp), Some(mut standings)) =
         (race, player, progress, opponents, standings)
@@ -282,7 +313,13 @@ fn drive_opponents(
             .map(|(_, t)| *t)
             .collect();
         r.input = if r.progress.started() {
-            r.driver.drive(&opp.line, &r.vehicle, &others, dt)
+            let ai = r.driver.drive(&opp.line, &r.vehicle, &others, dt);
+            match r.human {
+                // A player drives until the flag; the AI brings them home
+                // (and drives for them with --autodrive).
+                Some(n) if r.progress.finished.is_none() && !args.autodrive => crate::read_input(&keys, &pads, !r.vehicle.grounded(), Some(n - 1)),
+                _ => ai,
+            }
         } else {
             Input::default()
         };
@@ -319,7 +356,8 @@ fn drive_opponents(
             0.0
         };
         let fell = r.vehicle.position.y < race.safe.0.y.min(race.start.0.y) - 60.0;
-        if r.driver.wants_respot() || r.upside_down > 2.5 || fell {
+        let gave_up = r.driver.wants_respot() && (r.human.is_none() || r.progress.finished.is_some());
+        if gave_up || r.upside_down > 2.5 || fell {
             let (p, rot) = r.driver.respot(&opp.line);
             let ground = race
                 .collision
