@@ -290,6 +290,16 @@ with the original's addresses.
   Reverse Spin = `reverse_spin_grab`, Yogi = `Y`. `*_bike.bac` (1 bone) move
   the quad for the tricks that spin it. `Wheelie`, `Bicycle` and `Endo` give
   ground-trick points; `SpeedBoost` is the race boost tricks earn.
+  `mLevel` (1-7, four tricks each) is the skill level a rider needs: the
+  original refuses a trick above it (0x18439). A player's level comes from
+  the profile's skill points (`Career.xml` `SkillLevelPoints`), another
+  player's rider's from its `Riders.xml` `mSkillRating` (0x25590); Training
+  is level 1. The trick ids, the Trick Book's order, are the xbe's name table
+  at 0x1d05d0 (Scissors = 0 .. Surfer_Flip = 27). The book's pad picture is
+  `FrontEnd/TrickPad_XBox`: `PAD`, `BUTTON0-3` the d-pad's up, down, left
+  and right, `BUTTON4-7` Y, B, A and X, `BUTTON8/9` the triggers on the top
+  view, and the `BUTTON` and `SHOULDER1` glows that light them.
+  `FrontEnd/TrickPics` is a placeholder (one picture repeated).
 - `TrickBoxes.xml`: per track, `TBOXn Name Points LinkedBox`. Only the
   stadiums have real ones; they are the `TBOXn` locator boxes in the
   `.row` (scale = half size), several boxes per id for hoops. Linked boxes

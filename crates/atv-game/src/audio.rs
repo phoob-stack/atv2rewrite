@@ -409,8 +409,13 @@ fn menu_sounds(
     banks: Option<Res<Banks>>,
     settings: Res<Settings>,
     mut sounds: ResMut<Assets<Sound>>,
+    fe: Option<Res<crate::frontend::FrontEnd>>,
 ) {
     let (Some(banks), Some(nav)) = (banks, crate::ui::read_nav(&keys, &pads)) else { return };
+    // Y only does something where a page offers the Trick Book.
+    if nav == crate::ui::Nav::Extra && !fe.is_some_and(|fe| crate::frontend::offers_book(fe.screen)) {
+        return;
+    }
     spot_fx(&mut commands, &mut sounds, &banks, &settings, nav_sound(nav));
 }
 
@@ -436,7 +441,8 @@ fn pause_menu_sounds(
     let index = match crate::ui::read_nav(&keys, &pads) {
         _ if toggled => 2,
         // Start and Back close the pause menu: the panel sound covers it.
-        Some(Nav::Start | Nav::Back) => return,
+        // Y does nothing there.
+        Some(Nav::Start | Nav::Back | Nav::Extra) => return,
         Some(nav) if !menus.is_empty() => nav_sound(nav),
         _ => return,
     };
@@ -448,7 +454,7 @@ fn nav_sound(nav: crate::ui::Nav) -> usize {
     use crate::ui::Nav;
     match nav {
         Nav::Up | Nav::Down | Nav::Left | Nav::Right => 0,
-        Nav::Accept | Nav::Start | Nav::Back => 1,
+        Nav::Accept | Nav::Start | Nav::Back | Nav::Extra => 1,
     }
 }
 

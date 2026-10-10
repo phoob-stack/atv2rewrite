@@ -74,6 +74,8 @@ pub enum Dir {
 pub struct TrickDef {
     /// "SEAT GRAB".
     pub name: String,
+    /// Skill level (1 to 7) a rider needs to pull it (`mLevel`).
+    pub level: u8,
     pub buttons: u8,
     pub dir: Dir,
     pub points: u32,
@@ -84,6 +86,9 @@ pub struct TrickDef {
     /// Stunt clip under `Animations/Stunts/Bac`.
     pub clip: String,
 }
+
+/// The highest skill level, at which every trick can be pulled.
+pub const MAX_LEVEL: u8 = 7;
 
 /// Points per quarter second of wheelie, bicycle and endo.
 #[derive(Clone, Copy, Debug)]
@@ -119,6 +124,7 @@ pub fn load_tricks(game: &GameSource) -> (Vec<TrickDef>, GroundPoints) {
             let clip = stunt_clip(e.get("mMainClip").unwrap_or(""), &stems)?;
             Some(TrickDef {
                 name: e.name.replace('_', " ").to_uppercase(),
+                level: e.num("mLevel").map_or(1, |l| l.clamp(1.0, MAX_LEVEL as f32) as u8),
                 buttons: combo_mask(buttons)?,
                 dir,
                 points: e.num("mScorePoints").unwrap_or(100.0) as u32,
@@ -299,6 +305,10 @@ pub struct Session {
     pub limit: Option<f32>,
     pub medals: Option<[u32; 3]>,
     pub tricks: Vec<TrickDef>,
+    /// The rider's skill level: tricks above it don't start, as in the
+    /// original (0x18439), which takes it from the profile's skill points
+    /// or, for another player's rider, its `mSkillRating` (0x25590).
+    pub level: u8,
     ground_points: GroundPoints,
     boxes: Vec<TrickBox>,
     pub spots: Vec<(Vec3, bool)>,
@@ -341,6 +351,7 @@ impl Session {
             limit: None,
             medals: None,
             tricks,
+            level: MAX_LEVEL,
             ground_points,
             boxes,
             spots: Vec::new(),
@@ -407,6 +418,12 @@ impl Session {
         }
     }
 
+    /// The trick these buttons and this direction pull, if the rider's
+    /// skill level allows it.
+    pub fn trick_for(&self, buttons: u8, dir: Dir) -> Option<usize> {
+        self.tricks.iter().position(|t| t.buttons == buttons && t.dir == dir && t.level <= self.level)
+    }
+
     /// One physics step. `live`: the clock is running (tricks are held
     /// during the countdown and after the end).
     pub fn step(&mut self, v: &Vehicle, buttons: u8, dir: Option<Dir>, dt: f32, live: bool) {
@@ -438,7 +455,7 @@ impl Session {
         }
         if live && air > TRICK_AIR && self.active.is_none() && self.armed && buttons != 0 && self.steady >= COMBO_WINDOW
             && let Some(dir) = dir
-            && let Some(def) = self.tricks.iter().position(|t| t.buttons == buttons && t.dir == dir)
+            && let Some(def) = self.trick_for(buttons, dir)
         {
             self.active = Some(ActiveTrick { def, t: 0.0, held: 0.0, released: false });
             self.armed = false;
@@ -648,8 +665,10 @@ pub fn read_tricks(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, slot: Op
     let mut x: f32 = key(right) - key(left);
     let mut y: f32 = key(up) - key(down);
     for pad in pads() {
-        x += pad.get(GamepadAxis::LeftStickX).unwrap_or(0.0);
-        y += pad.get(GamepadAxis::LeftStickY).unwrap_or(0.0);
+        // The stick, or the d-pad the Trick Book's pad picture lights.
+        let d = |b: GamepadButton| if pad.pressed(b) { 1.0 } else { 0.0 };
+        x += pad.get(GamepadAxis::LeftStickX).unwrap_or(0.0) + d(GamepadButton::DPadRight) - d(GamepadButton::DPadLeft);
+        y += pad.get(GamepadAxis::LeftStickY).unwrap_or(0.0) + d(GamepadButton::DPadUp) - d(GamepadButton::DPadDown);
     }
     let dir = if x.abs().max(y.abs()) < 0.5 {
         None
@@ -809,7 +828,7 @@ mod tests {
     }
 
     fn trick(name: &str, points: u32) -> TrickDef {
-        TrickDef { name: name.into(), buttons: 1, dir: Dir::Up, points, hold_points: 20, total: 1.0, end: 0.4, clip: String::new() }
+        TrickDef { name: name.into(), level: 1, buttons: 1, dir: Dir::Up, points, hold_points: 20, total: 1.0, end: 0.4, clip: String::new() }
     }
 
     fn session() -> Session {
@@ -836,6 +855,17 @@ mod tests {
         s.jump.boxes = vec![1];
         s.land(1.0, Vec3::ZERO);
         assert_eq!(s.score, 740 * 2 + 1500);
+    }
+
+    #[test]
+    fn skill_level_gates_tricks() {
+        let mut s = session();
+        s.tricks[1].level = 3;
+        s.tricks[1].buttons = 2;
+        s.level = 2;
+        assert_eq!((s.trick_for(1, Dir::Up), s.trick_for(2, Dir::Up)), (Some(0), None));
+        s.level = 3;
+        assert_eq!(s.trick_for(2, Dir::Up), Some(1));
     }
 
     #[test]

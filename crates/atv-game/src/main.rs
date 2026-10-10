@@ -2,7 +2,7 @@
 //! the player's own copy of the game.
 //!
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
-//!             [--rider Male1] [--laps 3] [--frontend [--screen rider]]
+//!             [--rider Male1] [--laps 3] [--frontend [--screen rider|tricks]]
 //!             [--mode race|timetrial|arcade|freestyle|career] [--minutes N]
 //!             [--round N] [--opponents N] [--challenge N] [--players N]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
@@ -32,6 +32,7 @@ mod opponents;
 mod race;
 mod rider;
 mod settings;
+mod trickbook;
 mod ui;
 
 use std::path::PathBuf;
@@ -263,6 +264,7 @@ fn parse_args() -> anyhow::Result<Args> {
                     "challenges" => Screen::Challenges,
                     "multiplayer" => Screen::MpMode,
                     "players" => Screen::MpPlayers,
+                    "tricks" | "trickbook" => Screen::TrickBook,
                     other => anyhow::bail!("unknown screen {other} (title, main, rider, atv, track)"),
                 });
             }
@@ -472,6 +474,7 @@ fn setup(
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
+    (career, rules): (Res<career::Career>, Res<career::Rules>),
 ) {
     set_ui_camera(&mut commands, &mut ui_cams, false);
     let scoped = DespawnOnExit(AppState::Race);
@@ -545,7 +548,10 @@ fn setup(
         _ => 0,
     };
     // Tricks and freestyle scoring; split-screen players get one each.
-    let session = Session::new(&game.0, &sel, &scene.world);
+    let mut session = Session::new(&game.0, &sel, &scene.world);
+    // Player 1's tricks are the profile's: its skill level from career and
+    // challenge skill points.
+    session.level = rules.skill_level(career.skill_points) as u8;
     opponents::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, &roster, &sel, (&scene.world, &collision), &session, field);
     info!(
         "loaded {}: {} world meshes, {} props, {} collision tris, {} checkpoints",

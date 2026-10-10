@@ -7,7 +7,9 @@
 //! Career picks a championship, then rider and ATV, and comes back to the
 //! championship's status page between rounds (see [`crate::career`]).
 //! Multiplayer picks how many play, then each player picks a rider and ATV
-//! in turn before track select (see [`crate::mp`]).
+//! in turn before track select (see [`crate::mp`]). Y (or T) on rider
+//! select, track select and the career status opens the Trick Book (see
+//! [`crate::trickbook`]).
 
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
@@ -15,13 +17,14 @@ use bevy::prelude::*;
 use atv_formats::setup::{self, Entry};
 use atv_formats::GameSource;
 
-use crate::freestyle::{self, limit_label, MEDALS, TIME_LIMITS};
+use crate::freestyle::{self, limit_label, TrickDef, MEDALS, TIME_LIMITS};
 use crate::career::{self, Career, Champ, Run};
 use crate::challenge;
 use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::ui::{fullscreen, placed, read_nav_from, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::mp::MpChamp;
+use crate::trickbook::{self, TrickDemo};
 use crate::{AppState, Mode, Selection};
 
 pub struct FrontEndPlugin;
@@ -32,7 +35,19 @@ impl Plugin for FrontEndPlugin {
             .add_systems(OnEnter(AppState::FrontEnd), enter)
             .add_systems(
                 Update,
-                (navigate, rebuild, update_rider_panel, update_quad_panel, update_track_panel, update_options, blink, showroom, turntable)
+                (
+                    navigate,
+                    rebuild,
+                    update_rider_panel,
+                    update_quad_panel,
+                    update_track_panel,
+                    update_options,
+                    blink,
+                    showroom,
+                    demo_clip,
+                    trickbook::demo,
+                    turntable,
+                )
                     .chain()
                     .run_if(in_state(AppState::FrontEnd)),
             )
@@ -51,6 +66,9 @@ pub struct Roster {
     pub arcade: Vec<String>,
     /// Open Freestyle's Bronze/Silver/Gold scores per [`TIME_LIMITS`] entry.
     pub freestyle_medals: Vec<Option<[u32; 3]>>,
+    /// `Tricks.xml`, and its order in the Trick Book.
+    pub tricks: Vec<TrickDef>,
+    book: Vec<usize>,
     info: Vec<(String, TrackInfo)>,
     screens: Vec<Entry>,
 }
@@ -84,6 +102,9 @@ pub struct RiderInfo {
     /// Whether computer opponents may ride as this rider (not the
     /// `LockedNeverAI` secret riders).
     pub ai: bool,
+    /// Skill level (1 to 7, `mSkillRating`): the tricks this rider pulls
+    /// when another player rides them.
+    pub skill: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +128,7 @@ impl Roster {
                     from: e.get("mResidence").unwrap_or("").trim().to_uppercase(),
                     stats: ["mAbility", "mTechnique", "mAggression", "mStrength"].map(|k| e.num(k).unwrap_or(0.0)),
                     ai: e.get("mAvailability") != Some("LockedNeverAI"),
+                    skill: e.num("mSkillRating").map_or(1, |l| l.clamp(1.0, freestyle::MAX_LEVEL as f32) as u8),
                 })
             })
             .collect();
@@ -140,7 +162,9 @@ impl Roster {
             .filter(|t| tracks.iter().any(|k| k.eq_ignore_ascii_case(t)))
             .collect();
         let freestyle_medals = TIME_LIMITS.iter().map(|&l| freestyle::medal_targets(game, l)).collect();
-        Self { riders, quads, tracks, arcade, freestyle_medals, info, screens: setup::entries(&read("/Setup/Frontend.xml")) }
+        let tricks = freestyle::load_tricks(game).0;
+        let book = trickbook::book(&tricks);
+        Self { riders, quads, tracks, arcade, freestyle_medals, tricks, book, info, screens: setup::entries(&read("/Setup/Frontend.xml")) }
     }
 
     pub fn info(&self, track: &str) -> TrackInfo {
@@ -180,6 +204,8 @@ pub enum Screen {
     /// The split-screen championship: which one, then its standings.
     MpChamp,
     MpChampStatus,
+    /// Every trick, a page each.
+    TrickBook,
     /// Arcade with a saved round: carry on from it or start again.
     ArcadeNew,
 }
@@ -219,6 +245,9 @@ pub struct FrontEnd {
     mp_champ: bool,
     /// The Arcade round to start on.
     arcade_round: usize,
+    /// The Trick Book's page, and the screen it was opened from.
+    trick: usize,
+    book_from: Screen,
 }
 
 impl FrontEnd {
@@ -289,6 +318,47 @@ fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>, car
 /// Whether an earlier player has picked `model` in split screen.
 fn taken(fe: &FrontEnd, sel: &Selection, model: &str) -> bool {
     fe.picking > 0 && std::iter::once(&sel.rider).chain(sel.others.iter().take(fe.picking - 1).map(|o| &o.0)).any(|m| m.eq_ignore_ascii_case(model))
+}
+
+/// Whether Y opens the Trick Book on this screen (or closes it).
+pub fn offers_book(screen: Screen) -> bool {
+    matches!(screen, Screen::Rider | Screen::Track | Screen::CareerStatus | Screen::TrickBook)
+}
+
+/// The skill level the Trick Book shows tricks against: the profile's,
+/// from career and challenge skill points, or while another player picks
+/// a rider, that rider's own rating. The second value: whether locked
+/// tricks are shown (the profile's) or skipped.
+fn book_level(fe: &FrontEnd, roster: &Roster, career: &Career, rules: &career::Rules) -> (u8, bool) {
+    match roster.riders.get(fe.rider) {
+        Some(r) if fe.picking > 0 && fe.book_from == Screen::Rider => (r.skill, false),
+        _ => (rules.skill_level(career.skill_points) as u8, true),
+    }
+}
+
+/// The rider and ATV the Trick Book shows performing: the one highlighted
+/// on rider select, the career's own, or the last picked.
+fn book_rider(fe: &FrontEnd, roster: &Roster, sel: &Selection, career: &Career) -> (String, String) {
+    let quad = match fe.picking.checked_sub(1).and_then(|i| sel.others.get(i)) {
+        Some(o) => o.1.clone(),
+        None => sel.quad.clone(),
+    };
+    match (&career.run, fe.book_from) {
+        (_, Screen::Rider) => (roster.riders.get(fe.rider).map_or(sel.rider.clone(), |r| r.model.clone()), quad),
+        (Some(r), Screen::CareerStatus) => (r.rider.clone(), r.quad.clone()),
+        _ => (sel.rider.clone(), sel.quad.clone()),
+    }
+}
+
+/// Opens the Trick Book from `fe.screen`, on an unlocked page if locked
+/// ones are skipped.
+fn open_book(fe: &mut FrontEnd, roster: &Roster, career: &Career, rules: &career::Rules) {
+    fe.book_from = fe.screen;
+    fe.screen = Screen::TrickBook;
+    let (level, all) = book_level(fe, roster, career, rules);
+    if !all && roster.book.get(fe.trick).is_none_or(|&i| roster.tricks[i].level > level) {
+        fe.trick = roster.book.iter().position(|&i| roster.tricks[i].level <= level).unwrap_or(0);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -392,6 +462,7 @@ fn navigate(
                 Nav::Back if fe.mode == Mode::Freestyle => fe.screen = Screen::FreestyleType,
                 Nav::Back if fe.mode == Mode::Challenge => fe.screen = Screen::Challenges,
                 Nav::Back => fe.screen = Screen::Main,
+                Nav::Extra => open_book(&mut fe, &roster, &career, &rules),
             }
         }
         Screen::Quad => match nav {
@@ -470,6 +541,7 @@ fn navigate(
                 next.set(AppState::Loading);
             }
             Nav::Back => fe.screen = Screen::Quad,
+            Nav::Extra => open_book(&mut fe, &roster, &career, &rules),
         },
         Screen::Options => match nav {
             Nav::Up | Nav::Down => {
@@ -501,6 +573,7 @@ fn navigate(
                     settings.save();
                     fe.screen = Screen::Options;
                 }
+                Nav::Extra => {}
             }
         }
         Screen::Camera => match nav {
@@ -582,6 +655,22 @@ fn navigate(
                 next.set(AppState::Loading);
             }
             Nav::Back => fe.screen = Screen::Main,
+            Nav::Extra => open_book(&mut fe, &roster, &career, &rules),
+            _ => {}
+        },
+        Screen::TrickBook => match nav {
+            Nav::Left | Nav::Right => {
+                let n = roster.book.len().max(1);
+                let (level, all) = book_level(&fe, &roster, &career, &rules);
+                for _ in 0..n {
+                    fe.trick = if nav == Nav::Left { (fe.trick + n - 1) % n } else { (fe.trick + 1) % n };
+                    if all || roster.book.get(fe.trick).is_some_and(|&i| roster.tricks[i].level <= level) {
+                        break;
+                    }
+                }
+                fe.built = None;
+            }
+            Nav::Accept | Nav::Back | Nav::Start | Nav::Extra => fe.screen = fe.book_from,
             _ => {}
         },
         Screen::CareerComplete => {
@@ -787,6 +876,7 @@ fn rebuild(
         Screen::MpChamp => ("Career_Newgame", "CHAMPIONSHIP"),
         Screen::MpChampStatus => (mp_champ.run.as_ref().map_or("Career_Status_Amateur", |r| r.champ.status_screen()), "CHAMPIONSHIP"),
         Screen::ArcadeNew => ("Arcade_Newgame", "ARCADE"),
+        Screen::TrickBook => ("Trickbook", ""),
     };
     let (bg, title) = roster.screen(key);
 
@@ -1067,6 +1157,50 @@ fn rebuild(
                 }
             }
         }
+        Screen::TrickBook => {
+            let (level, all) = book_level(&fe, &roster, &career, &rules);
+            if let Some(def) = roster.book.get(fe.trick).and_then(|&i| roster.tricks.get(i)) {
+                let locked = def.level > level;
+                let plain = Color::srgb(0.75, 0.82, 0.95);
+                let (x, y) = (360.0, 76.0);
+                kids.extend(trickbook::heading(&mut commands, def, locked, (x, y)));
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, "ACTIVATION").color(plain), ui_at(x, y + 76.0))).id());
+                for (i, (dev, names)) in [("PAD", &trickbook::PAD_NAMES), ("KEYS", &trickbook::KEY_NAMES)].into_iter().enumerate() {
+                    let t = format!("{dev}  {}", trickbook::activation(def, names));
+                    kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, t), ui_at(x, y + 92.0 + 15.0 * i as f32))).id());
+                }
+                kids.push(trickbook::pad_picture(&mut commands, &ui, def, locked, (x - 6.0, y + 122.0), 0.9));
+                // The page count under the rider, between arrows.
+                let count = format!("{} OF {}", fe.trick + 1, roster.book.len());
+                let w = ui.font(FontId::Small).width(&count, 9.0);
+                let mid = (TRICK_VIEW.min.x + TRICK_VIEW.max.x) / 2.0;
+                let row = commands
+                    .spawn(Node { position_type: PositionType::Absolute, left: px(mid - w / 2.0 - 30.0), top: px(TRICK_VIEW.max.y + 10.0), align_items: AlignItems::Center, column_gap: px(10), ..default() })
+                    .with_children(|r| {
+                        let (n, mut img) = ui.design.node("DARKLRARROW", 0.6);
+                        img.flip_x = true;
+                        r.spawn((n, img));
+                        r.spawn(BitmapText::new(FontId::Small, 9.0, count));
+                        r.spawn(ui.design.node("DARKLRARROW", 0.6));
+                    })
+                    .id();
+                kids.push(row);
+                let skill = if all {
+                    format!("SKILL LEVEL {level}   -   {} SKILL POINTS", career.skill_points)
+                } else {
+                    let name = roster.riders.get(fe.rider).map_or(String::new(), |r| r.name.clone());
+                    format!("{name}  -  SKILL LEVEL {level}")
+                };
+                kids.push(hint(&mut commands, &ui, &skill, 398.0));
+                if locked {
+                    // The disc's "Earn %d more skill points in career and challenge mode".
+                    let need = rules.skill_levels.get(usize::from(def.level) - 1).map_or(0, |p| p.saturating_sub(career.skill_points));
+                    let msg = format!("EARN {need} MORE SKILL POINTS IN CAREER AND CHALLENGE MODE");
+                    let w = ui.font(FontId::Small).width(&msg, 8.0);
+                    kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, msg).color(Color::srgb(1.0, 0.85, 0.3)), ui_at((SCREEN_W - w) / 2.0, 414.0))).id());
+                }
+            }
+        }
         Screen::CareerStatus | Screen::CareerComplete => {
             if let Some(run) = &career.run {
                 let complete = fe.screen == Screen::CareerComplete || run.over();
@@ -1100,7 +1234,9 @@ fn rebuild(
         Screen::Audio | Screen::Camera => &[("controlbuttoncross", "OK")],
         Screen::CareerChamp => &[("controlbuttoncross", "SELECT"), ("controlbuttoncircle", "BACK")],
         Screen::Controller => &[("controlbuttoncross", "CHANGE"), ("controlbuttoncircle", "BACK")],
-        Screen::CareerStatus => &[("controlbuttoncross", "RACE"), ("controlbuttoncircle", "BACK")],
+        Screen::CareerStatus => &[("controlbuttoncross", "RACE"), ("YButton", "TRICK BOOK"), ("controlbuttoncircle", "BACK")],
+        Screen::Rider | Screen::Track => &[("controlbuttoncross", "SELECT"), ("YButton", "TRICK BOOK"), ("controlbuttoncircle", "BACK")],
+        Screen::TrickBook => &[("controlbuttoncircle", "BACK")],
         Screen::MpChampStatus if mp_champ.run.as_ref().is_some_and(|r| r.over()) => &[("controlbuttoncross", "OK")],
         Screen::MpChampStatus => &[("controlbuttoncross", "RACE"), ("controlbuttoncircle", "BACK")],
         Screen::CareerComplete => &[("controlbuttoncross", "OK")],
@@ -1432,10 +1568,12 @@ fn finish_loading(mut frames: Local<u32>, mut next: ResMut<NextState<AppState>>)
 }
 
 /// The ATV select screen's turning 3D quad, drawn by its own camera over
-/// the menu in the empty top-right of the screen.
+/// the menu in the empty top-right of the screen; on the Trick Book, the
+/// rider on their quad performing the page's trick.
 #[derive(Component)]
 struct Showroom {
-    quad: usize,
+    quad: String,
+    rider: Option<String>,
 }
 #[derive(Component)]
 struct Turntable;
@@ -1444,12 +1582,13 @@ struct ShowroomCamera;
 
 /// Screen-unit area of the 640x480 frame the quad is shown in.
 const SHOWROOM: Rect = Rect { min: Vec2::new(270.0, 64.0), max: Vec2::new(620.0, 244.0) };
+/// The Trick Book's, left of the page's text.
+const TRICK_VIEW: Rect = Rect { min: Vec2::new(30.0, 70.0), max: Vec2::new(340.0, 360.0) };
 
 #[allow(clippy::too_many_arguments)]
 fn showroom(
     mut commands: Commands,
-    fe: Res<FrontEnd>,
-    roster: Res<Roster>,
+    (fe, roster, sel, career): (Res<FrontEnd>, Res<Roster>, Res<Selection>, Res<Career>),
     game: Res<crate::Game>,
     shown: Query<(Entity, &Showroom)>,
     mut cams: Query<&mut Camera, With<ShowroomCamera>>,
@@ -1457,24 +1596,33 @@ fn showroom(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut images: ResMut<Assets<Image>>,
+    mut bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
 ) {
-    let want = (fe.screen == Screen::Quad).then_some(fe.quad);
-    let current = shown.iter().next();
-    if current.map(|(_, s)| s.quad) != want {
+    let book = fe.screen == Screen::TrickBook;
+    let want = match fe.screen {
+        Screen::Quad => roster.quads.get(fe.quad).map(|q| (q.name.clone(), None)),
+        Screen::TrickBook => {
+            let (rider, quad) = book_rider(&fe, &roster, &sel, &career);
+            Some((quad, Some(rider)))
+        }
+        _ => None,
+    };
+    let current = shown.iter().next().map(|(_, s)| (s.quad.clone(), s.rider.clone()));
+    if current != want {
         for (e, _) in &shown {
             commands.entity(e).despawn();
         }
-        if let Some(i) = want
-            && let Some(q) = roster.quads.get(i)
-        {
+        if let Some((quad, rider)) = want {
+            // The rider and their tricks stand taller than the quad alone.
+            let (eye, look) = if book { (Vec3::new(0.0, 1.5, 4.4), Vec3::new(0.0, 0.8, 0.0)) } else { (Vec3::new(0.0, 0.85, 2.7), Vec3::new(0.0, 0.25, 0.0)) };
             let root = commands
-                .spawn((Transform::default(), Visibility::default(), Showroom { quad: i }, DespawnOnExit(AppState::FrontEnd)))
+                .spawn((Transform::default(), Visibility::default(), Showroom { quad: quad.clone(), rider: rider.clone() }, DespawnOnExit(AppState::FrontEnd)))
                 .with_children(|r| {
                     r.spawn((
                         Camera3d::default(),
                         Camera { order: 1, clear_color: ClearColorConfig::None, ..default() },
                         bevy::core_pipeline::tonemapping::Tonemapping::None,
-                        Transform::from_xyz(0.0, 0.85, 2.7).looking_at(Vec3::new(0.0, 0.25, 0.0), Vec3::Y),
+                        Transform::from_translation(eye).looking_at(look, Vec3::Y),
                         ShowroomCamera,
                     ));
                     r.spawn((
@@ -1484,28 +1632,80 @@ fn showroom(
                 })
                 .id();
             let generic = game.0.read("/Cars/Generic/Generic.params").map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-            let own = game.0.read(&format!("/Cars/{0}/{0}.params", q.name)).ok().map(|b| String::from_utf8_lossy(&b).into_owned());
+            let own = game.0.read(&format!("/Cars/{quad}/{quad}.params")).ok().map(|b| String::from_utf8_lossy(&b).into_owned());
             let params = atv_sim::VehicleParams::from_files(&generic, own.as_deref());
             let wheel_x: Vec<f32> = params.wheels.iter().map(|w| w.offset[0]).collect();
             let mut loader = crate::convert::Loader::new(&game.0, &mut meshes, &mut materials, &mut images);
-            match loader.spawn_quad(&mut commands, &q.name, Transform::from_xyz(0.0, crate::convert::COM_HEIGHT, 0.0), &wheel_x) {
-                Ok(quad) => {
-                    let table = commands.spawn((Transform::from_rotation(Quat::from_rotation_y(-0.6)), Visibility::default(), Turntable)).add_child(quad).id();
+            match loader.spawn_quad(&mut commands, &quad, Transform::from_xyz(0.0, crate::convert::COM_HEIGHT, 0.0), &wheel_x) {
+                Ok(body) => {
+                    if let Some(rider) = &rider {
+                        // Seated as in a race: the riding clips are in the
+                        // quad model's space, below the physics body.
+                        let seat = commands.spawn((Transform::from_xyz(0.0, -crate::convert::COM_HEIGHT, 0.0), Visibility::default())).id();
+                        commands.entity(body).add_child(seat);
+                        match loader.spawn_rider(&mut commands, &mut bindposes, rider, seat).and_then(|rig| crate::rider::Rider::new(&game.0, rig)) {
+                            Ok(r) => {
+                                commands.entity(seat).insert((r, TrickDemo { clip: None, total: 1.0, t: 0.0 }));
+                            }
+                            Err(e) => error!("failed to load rider {rider}: {e:#}"),
+                        }
+                    }
+                    let table = commands.spawn((Transform::from_rotation(Quat::from_rotation_y(-0.6)), Visibility::default(), Turntable)).add_child(body).id();
                     commands.entity(root).add_child(table);
                 }
-                Err(e) => error!("failed to load quad {}: {e:#}", q.name),
+                Err(e) => error!("failed to load quad {quad}: {e:#}"),
             }
         }
     }
     // Keep the camera's viewport on the showroom area as the window changes.
     let Ok(w) = windows.single() else { return };
+    let area = if book { TRICK_VIEW } else { SHOWROOM };
     let scale = w.height() / SCREEN_H * w.scale_factor();
     let left = (w.physical_width() as f32 - SCREEN_W * scale) / 2.0;
     for mut cam in &mut cams {
-        let pos = Vec2::new(left + SHOWROOM.min.x * scale, SHOWROOM.min.y * scale).max(Vec2::ZERO);
-        let size = (SHOWROOM.size() * scale).min(Vec2::new(w.physical_width() as f32, w.physical_height() as f32) - pos);
+        let pos = Vec2::new(left + area.min.x * scale, area.min.y * scale).max(Vec2::ZERO);
+        let size = (area.size() * scale).min(Vec2::new(w.physical_width() as f32, w.physical_height() as f32) - pos);
         if size.x >= 1.0 && size.y >= 1.0 {
             cam.viewport = Some(bevy::camera::Viewport { physical_position: pos.as_uvec2(), physical_size: size.as_uvec2(), ..default() });
+        }
+    }
+}
+
+/// Gives the Trick Book's rider the page's trick to perform, none while
+/// it is locked (the original only shows unlocked ones).
+fn demo_clip(
+    fe: Res<FrontEnd>,
+    roster: Res<Roster>,
+    game: Res<crate::Game>,
+    (career, rules): (Res<Career>, Res<career::Rules>),
+    mut demos: Query<&mut TrickDemo>,
+    mut clips: Local<std::collections::HashMap<String, Option<std::sync::Arc<crate::rider::Clip>>>>,
+) {
+    if fe.screen != Screen::TrickBook {
+        return;
+    }
+    let (level, _) = book_level(&fe, &roster, &career, &rules);
+    let def = roster.book.get(fe.trick).and_then(|&i| roster.tricks.get(i)).filter(|d| d.level <= level);
+    let clip = def.and_then(|d| {
+        clips
+            .entry(d.clip.clone())
+            .or_insert_with(|| match crate::rider::Clip::load_from(&game.0, &format!("/Animations/Stunts/Bac/{}.bac", d.clip)) {
+                Ok(c) => Some(std::sync::Arc::new(c)),
+                Err(e) => {
+                    warn!("stunt {}: {e:#}", d.clip);
+                    None
+                }
+            })
+            .clone()
+    });
+    for mut d in &mut demos {
+        let same = match (&d.clip, &clip) {
+            (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            *d = TrickDemo { clip: clip.clone(), total: def.map_or(1.0, |d| d.total), t: 0.0 };
         }
     }
 }

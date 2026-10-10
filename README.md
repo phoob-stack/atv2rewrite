@@ -59,7 +59,7 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
 | Respot | R | |
 | Restart | Backspace | |
 | Pause | Escape | Start |
-| Tricks (in the air) | 1 / 2 / 3 / 4 + direction | X / Y / LB / RB + left stick |
+| Tricks (in the air) | 1 / 2 / 3 / 4 + direction | X / Y / LB / RB + left stick or D-pad |
 
 ## Game modes
 
@@ -102,7 +102,15 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
 Tricks are the 28 from `Setup/Tricks.xml`: hold a trick button (or two for
 the level 5-7 tricks: 1+2, 2+3, 3+4) and a direction while airborne. Keep
 holding at the peak for extra points; land before the trick's recovery and
-you bail and lose the jump. Different tricks in one jump multiply.
+you bail and lose the jump. Different tricks in one jump multiply. As in the
+original, each trick has a level (four per level) and you can only pull the
+ones up to your skill level, which rises with career and challenge skill
+points: a new player has the four level 1 tricks on button 1. Split-screen
+players 2-4 get their rider's own skill rating. The **Trick Book** (Y or T
+on rider select, track select and the career status page) shows every trick
+with its level, points and buttons, lit on the pad picture, while the rider
+performs it; tricks above your level are greyed with the skill points still
+needed.
 
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on
@@ -110,7 +118,7 @@ track select.
 
 The quad respots automatically when it is upside down or falls off the world.
 Other options: `--frontend` (show the menus even with `--track`, which
-then preselects), `--screen title|main|rider|atv|track` (open on that
+then preselects), `--screen title|main|rider|atv|track|tricks` (open on that
 front-end screen), `--mode race|timetrial|arcade|freestyle` with
 `--minutes N` (freestyle limit, 0 = unlimited) or `--round N` (arcade round),
 `--opponents N` (computer riders in a single race, default 5),

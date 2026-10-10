@@ -252,7 +252,12 @@ pub fn spawn(
             body,
             upside_down: 0.0,
             human: human.map(|_| i + 2),
-            session: human.map(|_| session.clone()),
+            // Another player's rider pulls the tricks of its own skill rating.
+            session: human.map(|_| {
+                let mut s = session.clone();
+                s.level = rider.skill;
+                s
+            }),
             wreck: Wreck::default(),
         });
         info!("computer rider {}: {} on {quad}", i + 1, rider.name);

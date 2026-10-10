@@ -241,6 +241,9 @@ pub struct UiAssets {
     /// big Xbox pad picture.
     pub sound_bar: Sheet,
     pub checkbox: Sheet,
+    /// The Trick Book's pad picture (`PAD`), the spots of its buttons
+    /// (`BUTTON0`-`BUTTON9`) and the glows that light them.
+    pub trick_pad: Sheet,
     pub big_pad: UiTex,
     pub logo: UiTex,
     pub mugs: UiTex,
@@ -306,6 +309,7 @@ impl UiAssets {
             bio: l.sheet("FrontEnd/BioPanel")?,
             sound_bar: l.sheet("FrontEnd/SoundBar")?,
             checkbox: l.sheet("FrontEnd/checkbox")?,
+            trick_pad: l.sheet("FrontEnd/TrickPad_XBox")?,
             big_pad: l.tex("FrontEnd/BigPad_Xbox")?,
             logo: l.tex("FrontEnd/ATVLogoBIG")?,
             mugs: l.tex("FrontEnd/RiderMugs")?,
@@ -452,6 +456,8 @@ pub enum Nav {
     Back,
     /// The gamepad's Start button.
     Start,
+    /// Y on a pad, or T: the Trick Book where a page offers it.
+    Extra,
 }
 
 pub fn read_nav(keys: &ButtonInput<KeyCode>, pads: &Query<&bevy::input::gamepad::Gamepad>) -> Option<Nav> {
@@ -478,6 +484,8 @@ pub fn read_nav_from(keys: &ButtonInput<KeyCode>, pads: &Query<&bevy::input::gam
         Some(Nav::Back)
     } else if p(B::Start) {
         Some(Nav::Start)
+    } else if k(&[KeyCode::KeyT]) || p(B::North) {
+        Some(Nav::Extra)
     } else {
         None
     }
