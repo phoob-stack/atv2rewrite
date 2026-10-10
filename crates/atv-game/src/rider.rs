@@ -193,6 +193,11 @@ impl Rider {
         self.crash = crash;
     }
 
+    /// The skeleton's joint entities.
+    pub fn joints(&self) -> &[Entity] {
+        &self.joints
+    }
+
     pub fn crashed(&self) -> bool {
         self.crash.is_some()
     }

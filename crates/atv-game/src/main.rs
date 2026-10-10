@@ -35,6 +35,7 @@ mod water;
 mod mp;
 mod opponents;
 mod race;
+mod replay;
 mod rider;
 mod settings;
 mod trickbook;
@@ -455,6 +456,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(career)
         .insert_resource(challenges)
         .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin, mp::MpPlugin, knock::KnockPlugin, water::WaterPlugin, unlocks::UnlocksPlugin))
+        .add_plugins(replay::ReplayPlugin)
         .add_plugins(effects::EffectsPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))

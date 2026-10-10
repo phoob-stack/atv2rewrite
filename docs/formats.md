@@ -505,6 +505,65 @@ ground a dust chance from `min(speed / 50 mph, wheel rad/s / 100)^2`
 second and spits three sparks a frame (0x8ada0). Computer riders' quads
 throw half as much, and nothing is thrown past 50 m from the camera.
 
+## Replays and their cameras
+
+The original records only the human riders' processed pad input: three
+bytes a tick (steering X and Y in sevenths, throttle and brake, the
+trick it detected, a few buttons) behind a `[00][u32 tick]` timestamp,
+into a 256 KiB buffer (0xf6a10, packed by 0x87190), which fills after
+about six and a half minutes. Playback feeds the bytes back in place of
+the pad and runs the whole race again, AI riders included. There is no
+rewind. The replay page (0x4ab00, handler 0x84400) has five icons: start
+again, pause, play, save (`REPLAY0` in the save game `ATVREP`, 0x16870)
+and back to the results. The results page offers "Replay" only to a lone
+human rider (0x3f260). "Save Replay" and "Watch Replay" are unused
+strings, and the main menu's replay loader (0x98870) is never reached.
+
+`Setup/CameraDirector.xml` (loaded at 0x6f120) holds three styles
+(`Realistic`, `Custom`, `AllCameras`; the default is `mDefaultStyle`). Each
+has a `PrimaryCamera` and secondaries with an `mCameraType` and
+`mSwapThreshold` (seconds). Only `mNumCameras - 1` secondaries are read,
+so AllCameras' last one (On Front) never loads, and the list is built
+backwards. The director (0x72be0, run by 0x72e50) cuts when the shot has
+run 3 s and longer than the threshold of the camera it started with (in
+practice always the primary's 8 s, since that pointer is never updated),
+with the rider on all four wheels and not thrown off. Cuts alternate
+between the primary and a secondary found by stepping 1 to 3 places along
+the list (0x6ede0). A replay always follows the player's rider.
+`mInactiveSwapThreshold` and `mPlayerSwapThreshold` are loaded but unused.
+
+The camera types (table 0x1d0990, set up by 0x72ab0) are: 0 Trackside, 1
+Follow High (offset 5, 15, 5 at stiffness 0.5), 2 Orbit Player (starts
+1.5 m behind and up, or where the last camera was if within 10 m; the
+pad's sticks turn it), 3 Follow Far Behind (`VehicleCameras.xml`
+FollowFar), 4 Two Rider (10 m beyond the rider and 2.5 m up, on the far
+side from the other rider), 5 Wheel (MountOnWheel), 6 Handlebars
+(MountOnHandlebars), 7 On Front (MountOnFront) and 8 Low Behind
+(MountLowBehind). The vehicle cameras are indexed by the name table at
+0x1d09f4 (Front, Back, Handlebars, Wheel, LowBehind, Near, Far, LeadBack
+Near/Far, VeryClose), not in the XML's order.
+
+Trackside cameras come from the track's `World/<Track>.xml`: objects with
+`ManipulatorType="Camera"` (`GUID`, `Position`, `CameraType`,
+`CameraZoom`) and `ManipulatorType="Camera Box"` (`Position`, a `Matrix`
+of rows, `Scale` as half-extents, and `NextGUID` naming the camera).
+Each frame the first box holding the rider (`|row_i . (p - centre)| <
+Scale_i`, 0x733f0) picks the camera (0x6b1b0). Outside every box the shot
+drops to the quad's last vehicle camera until the next cut. The cameras
+stand still and aim at the rider (0x73510): `CameraType` 0 as they are, 1
+zooming so that `zoom = max(1, tan(fov/2) / 0.7 x f x distance / rider
+size)`, with `f` picked in 0.4 to 0.75 at each camera, 2 the same with a
+hand-held wobble (an aim error of up to 0.1 pi / zoom springing back at k
+25, and a log-zoom kick of up to 0.2 at k 20), and 3 the wobble at
+`CameraZoom`. Zoom divides the view's tangents (0x6d720). Type 4 cameras
+(start and flyby paths) and `Camera Focus Point` objects are not
+trackside cameras. `HeatHaze` is forced on in Dunes and Swamp.
+
+`.cam` (`CAM v1.00`, a count, then 44-byte records ending in a position)
+is named by 0x7b8e0 but nothing reads it. `.viz` holds visibility zones
+for drawing (`u32 1, u32 0, u32 count`, then 64-byte `{id, centre, 3x3,
+half-extents}` and per-zone lists, read by 0xca430), not cameras.
+
 ## Still unknown
 
 the `.kdt` spatial tree, `.nin`, `.viz`, `.cuban` (compressed animation), the names of
