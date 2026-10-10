@@ -12,12 +12,18 @@
 //! computer riders: each player has their own trick session, and the most
 //! points when the time runs out wins.
 //!
+//! The Championship races one of the career championships' five tracks
+//! with the same players, computer riders from that championship making
+//! the field up to four, and scores each round with the career's position
+//! points.
+//!
 //! [`opponents::Racer::human`]: crate::opponents::Racer::human
 
 use bevy::camera::Viewport;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
+use crate::career::{self, Champ, Entrant, Run};
 use crate::freestyle::Session;
 use crate::frontend::Roster;
 use crate::hud::ordinal;
@@ -85,6 +91,47 @@ pub fn place(scores: &[(usize, u32)], n: usize) -> usize {
     1 + scores.iter().filter(|s| s.1 > mine).count()
 }
 
+/// A split-screen championship in progress (not saved). The field is the
+/// players in order (marked `player`), then the computer riders.
+#[derive(Resource, Default)]
+pub struct MpChamp {
+    pub run: Option<Run>,
+}
+
+impl MpChamp {
+    /// `players`: each player's (name, model); `pool`: the computer riders
+    /// to draw from.
+    pub fn start(&mut self, champ: Champ, players: &[(String, String)], quad: &str, pool: &[(String, String)], seed: u32) {
+        let mut seed = seed | 1;
+        let mut pool: Vec<&(String, String)> = pool.iter().filter(|(_, m)| !players.iter().any(|p| p.1.eq_ignore_ascii_case(m))).collect();
+        let mut field: Vec<Entrant> = players
+            .iter()
+            .enumerate()
+            .map(|(i, (name, model))| Entrant { name: format!("P{} {name}", i + 1), model: model.clone(), points: 0, player: true })
+            .collect();
+        while field.len() < FIELD && !pool.is_empty() {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let (name, model) = pool.swap_remove(seed as usize % pool.len());
+            field.push(Entrant { name: name.clone(), model: model.clone(), points: 0, player: false });
+        }
+        let rider = players.first().map_or(String::new(), |p| p.1.clone());
+        self.run = Some(Run { champ, round: 0, rider, quad: quad.to_string(), field });
+    }
+
+    /// Scores a finished round: `order` is field indices, winner first.
+    pub fn score(&mut self, rules: &career::Rules, order: &[usize]) {
+        let Some(run) = self.run.as_mut().filter(|r| !r.over()) else { return };
+        for (place, &i) in order.iter().enumerate() {
+            if let Some(e) = run.field.get_mut(i) {
+                e.points += rules.position_points.get(place).copied().unwrap_or(0);
+            }
+        }
+        run.round += 1;
+    }
+}
+
 /// Whether every player is home, or the others have had long enough.
 pub fn all_home(p1: &RaceProgress, opponents: Option<&Opponents>) -> bool {
     let Some(opp) = opponents else { return p1.over() };
@@ -101,7 +148,7 @@ pub struct MpPlugin;
 
 impl Plugin for MpPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (split_views, spawn_hud.run_if(resource_added::<Opponents>), update_hud).chain().run_if(in_state(AppState::Race)));
+        app.init_resource::<MpChamp>().add_systems(Update, (split_views, spawn_hud.run_if(resource_added::<Opponents>), update_hud).chain().run_if(in_state(AppState::Race)));
     }
 }
 
@@ -213,6 +260,23 @@ mod tests {
         assert_eq!(rect(1, 2), (0.0, 0.5, 1.0, 0.5));
         assert_eq!(rect(1, 3), (0.5, 0.0, 0.5, 0.5));
         assert_eq!(rect(3, 4), (0.5, 0.5, 0.5, 0.5));
+    }
+
+    #[test]
+    fn championship_scores_rounds() {
+        let rules = career::Rules::default();
+        let mut c = MpChamp::default();
+        let players = [("ANN".to_string(), "Female1".to_string()), ("BOB".to_string(), "Male1".to_string())];
+        let pool: Vec<(String, String)> = (2..8).map(|i| (format!("R{i}"), format!("Male{i}"))).collect();
+        c.start(Champ::Amateur, &players, "Bandit", &pool, 7);
+        let run = c.run.as_ref().unwrap();
+        assert_eq!(run.field.len(), FIELD);
+        assert_eq!(run.field[1].name, "P2 BOB");
+        assert!(run.field[1].player && !run.field[2].player);
+        c.score(&rules, &[1, 0, 2, 3]);
+        let run = c.run.as_ref().unwrap();
+        assert_eq!(run.round, 1);
+        assert!(run.field[1].points > run.field[0].points);
     }
 
     #[test]

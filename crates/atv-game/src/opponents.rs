@@ -181,10 +181,11 @@ pub fn spawn(
             quads = all_quads.clone();
         }
         let human = humans.get(i);
-        if human.is_none() && ((riders.is_empty() && set_field.len() <= i) || quads.is_empty()) {
+        if human.is_none() && ((riders.is_empty() && set_field.len() <= i - humans.len()) || quads.is_empty()) {
             break;
         }
-        let rider = match (human, set_field.get(i)) {
+        // A set field lists the computer riders only, after the players.
+        let rider = match (human, set_field.get(i.saturating_sub(humans.len()))) {
             (Some(h), _) => h.0,
             (None, Some(r)) => *r,
             (None, None) if !sel.field.is_empty() => break,

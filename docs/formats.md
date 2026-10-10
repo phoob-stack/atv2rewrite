@@ -342,6 +342,10 @@ with the original's addresses.
   players split the screen top and bottom, three or four take quarters.
   `WAITING_FOR_REST` ("Waiting For Other Competitors") shows on a finished
   player's view.
+  The multiplayer Championship has rider and ATV screens
+  (`Multiplayer_Career_Rider`/`_ATV`) but no setup data of its own; the
+  rewrite runs a career championship's `TrackOrder` with its position
+  points.
 
 ## Still unknown
 

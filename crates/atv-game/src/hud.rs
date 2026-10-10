@@ -408,18 +408,20 @@ fn update_meter(
 
 /// `1ST`, `2ND`, ...
 /// The career field's finishing order (indices into the run's field) from
-/// the running order: the player, then each computer rider by its place;
-/// anyone missing from the race comes last.
+/// the running order: the player, then each computer rider (or split-screen
+/// player) by its place; anyone missing from the race comes last.
 fn finishing_order(run: &Run, dnf: bool, (standings, opponents): (Option<&Standings>, Option<&Opponents>)) -> Vec<usize> {
     let mut placed: Vec<(usize, usize)> = run
         .field
         .iter()
         .enumerate()
         .map(|(i, e)| {
-            let place = if e.player && dnf {
+            // Player 1 is first in the field; other players race as racers.
+            let p1 = e.player && i == 0;
+            let place = if p1 && dnf {
                 // Didn't finish: last of those placed.
                 99
-            } else if e.player {
+            } else if p1 {
                 standings.map_or(1, |s| s.player)
             } else {
                 opponents
@@ -556,7 +558,7 @@ fn race_menus(
     mut finished_for: Local<f32>,
     field: (Option<Res<Standings>>, Option<Res<Opponents>>),
     (mut career, rules, mut fe): (ResMut<Career>, Res<career::Rules>, ResMut<FrontEnd>),
-    (defs, course, overlay): (Res<challenge::Defs>, Option<Res<challenge::Course>>, Query<Entity, With<mp::Overlay>>),
+    (defs, course, overlay, mut mp_champ): (Res<challenge::Defs>, Option<Res<challenge::Course>>, Query<Entity, With<mp::Overlay>>, ResMut<mp::MpChamp>),
 ) {
     let overlay = overlay.iter().next();
     let (Some(ui), Some(p)) = (ui, progress) else { return };
@@ -589,6 +591,12 @@ fn race_menus(
                 award
             });
             let award = award.flatten();
+            // A split-screen championship round.
+            let champ_round = selection.players > 1 && selection.mode == Mode::SingleRace && mp_champ.run.is_some();
+            if champ_round && let Some(run) = mp_champ.run.clone() {
+                let order = finishing_order(&run, p.dnf, field);
+                mp_champ.score(&rules, &order);
+            }
             // A finished challenge run: its medal and bonus.
             let outcome = (selection.mode == Mode::Challenge)
                 .then(|| {
@@ -599,7 +607,8 @@ fn race_menus(
                     Some(o)
                 })
                 .flatten();
-            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), career.run.as_ref(), outcome.as_ref()), overlay);
+            let run = if champ_round { mp_champ.run.as_ref() } else { career.run.as_ref() };
+            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref()), overlay);
         }
         return;
     };
@@ -627,7 +636,12 @@ fn race_menus(
                     next.set(AppState::Loading);
                 }
             }
-            "CHAMPIONSHIP STATUS" => next.set(AppState::FrontEnd),
+            "CHAMPIONSHIP STATUS" => {
+                if selection.mode != Mode::Career {
+                    fe.return_to = Some(Screen::MpChampStatus);
+                }
+                next.set(AppState::FrontEnd);
+            }
             "CHALLENGES" => {
                 fe.return_to = Some(Screen::Challenges);
                 next.set(AppState::FrontEnd);
@@ -692,6 +706,7 @@ fn spawn_race_menu(
         (true, Mode::Arcade) if last_round => ("ARCADE COMPLETED".into(), &["MAIN MENU"]),
         (true, Mode::Arcade) => (format!("ROUND {} COMPLETE", sel.round + 1), &["NEXT ROUND", "RACE AGAIN", "MAIN MENU"]),
         (true, Mode::Career) => (format!("ROUND {} COMPLETE", sel.round + 1), &["CHAMPIONSHIP STATUS", "MAIN MENU"]),
+        (true, Mode::SingleRace) if run.is_some() => (format!("ROUND {} COMPLETE", sel.round + 1), &["CHAMPIONSHIP STATUS", "MAIN MENU"]),
         (true, _) => ("RACE RESULTS".into(), &["RACE AGAIN", "MAIN MENU"]),
     };
     let list = MenuList::new(items, 220.0);
@@ -739,6 +754,7 @@ fn spawn_race_menu(
                         Mode::Freestyle => format!("{}  -  {}", track_title(&sel.track), limit_label(sel.time_limit)),
                         Mode::Arcade => format!("ROUND {}/{}  -  {}", sel.round + 1, roster.arcade.len(), track_title(&sel.track)),
                         Mode::Career => format!("ROUND {}/{}  -  {}", sel.round + 1, career::ROUNDS, track_title(&sel.track)),
+                        Mode::SingleRace if run.is_some() => format!("ROUND {}/{}  -  {}", sel.round + 1, career::ROUNDS, track_title(&sel.track)),
                         Mode::Challenge => format!("FREESTYLE CHALLENGE  -  {}", track_title(&sel.track)),
                         _ => format!("{}  -  {}", track_title(&sel.track), sel.quad.to_uppercase()),
                     };
@@ -808,7 +824,8 @@ fn spawn_race_menu(
                                 let gold = best == Some(*t);
                                 row(rows, &format!("LAP {}", i + 1), &fmt_time(*t), gold);
                             }
-                            let total = if p.dnf { "DNF".to_string() } else { fmt_time(p.finished.unwrap_or(p.clock)) };
+                            // In split screen, not home when the wait ran out is a DNF too.
+                            let total = if p.dnf || (!others.is_empty() && p.finished.is_none()) { "DNF".to_string() } else { fmt_time(p.finished.unwrap_or(p.clock)) };
                             row(rows, "TOTAL", &total, false);
                             if let Some(a) = p.arcade.as_ref().filter(|_| p.finished.is_some()) {
                                 row(rows, "TIME LEFT", &fmt_time(a.left), false);
