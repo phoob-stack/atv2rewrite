@@ -15,6 +15,7 @@ use crate::freestyle::{limit_label, Session, MEDALS};
 use crate::frontend::{FrontEnd, Roster, Screen};
 use crate::opponents::{Opponents, Standings};
 use crate::race::{fmt_time, RaceProgress};
+use crate::unlocks;
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets};
 use crate::{AppState, Mode, Player, Selection};
 
@@ -620,7 +621,7 @@ fn race_menus(
         // Escape or Start pauses (Backspace is the quick restart).
         if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start)) && !over {
             virt.pause();
-            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None), overlay);
+            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None, None), overlay);
         } else if *finished_for > 2.5 && menus.is_empty() {
             let award = (selection.mode == Mode::Career).then(|| {
                 let run = career.run.clone()?;
@@ -648,13 +649,19 @@ fn race_menus(
                     Some(o)
                 })
                 .flatten();
-            // An Arcade round won: the next is where Arcade carries on. Not
-            // won: one of the round's three attempts gone, and with the
-            // last of them Arcade starts again from the first round.
+            // An Arcade round won: the next is where Arcade carries on, and
+            // its track opens. Not won: one of the round's three attempts
+            // gone, and with the last of them Arcade starts again from the
+            // first round.
+            let mut new_track = None;
             if selection.mode == Mode::Arcade {
                 if arcade_won(&p, field.0) {
                     let next = selection.round + 1;
                     career.arcade = if next < roster.arcade.len() { next } else { 0 };
+                    if let Some(t) = roster.arcade.get(next).filter(|t| !unlocks::track_open(&career, &roster, &rules, t)) {
+                        career.reached.insert(t.clone());
+                        new_track = Some(t.clone());
+                    }
                 } else {
                     selection.failed += 1;
                     if selection.failed >= ARCADE_ATTEMPTS {
@@ -664,7 +671,7 @@ fn race_menus(
                 career.save();
             }
             let run = if champ_round { mp_champ.run.as_ref() } else { career.run.as_ref() };
-            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref()), overlay);
+            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref()), overlay);
         }
         return;
     };
@@ -733,7 +740,7 @@ fn spawn_race_menu(
     sel: &Selection,
     roster: &Roster,
     (standings, opponents): (Option<&Standings>, Option<&Opponents>),
-    (award, run, outcome): (Option<&Award>, Option<&Run>, Option<&Outcome>),
+    (award, run, outcome, new_track): (Option<&Award>, Option<&Run>, Option<&Outcome>, Option<&str>),
     overlay: Option<Entity>,
 ) {
     // Split screen: each other player's place and time.
@@ -793,6 +800,7 @@ fn spawn_race_menu(
             p.lap_times.len()
                 + 1
                 + usize::from(p.arcade.is_some() && p.finished.is_some())
+                + usize::from(new_track.is_some())
                 + if sel.mode == Mode::Arcade && !arcade_won(p, standings) { 1 + 3 * usize::from(!p.out_of_time()) } else { 0 }
                 + usize::from(place.is_some())
                 + usize::from(winner.is_some())
@@ -876,7 +884,7 @@ fn spawn_race_menu(
                                 row(rows, "SKILL LEVEL", &format!("UP TO {l}"), true);
                             }
                             if let Some(r) = &o.unlocked {
-                                row(rows, "UNLOCKED", &challenge::rider_label(r), true);
+                                row(rows, "NEW RIDER", &challenge::rider_label(r), true);
                             }
                         });
                     } else if results {
@@ -902,6 +910,9 @@ fn spawn_race_menu(
                             if let Some(a) = p.arcade.as_ref().filter(|_| p.finished.is_some()) {
                                 row(rows, "TIME LEFT", &fmt_time(a.left), false);
                             }
+                            if let Some(t) = new_track {
+                                row(rows, "NEW TRACK", &track_title(t), true);
+                            }
                             if sel.mode == Mode::Arcade && !arcade_won(p, standings) {
                                 if !p.out_of_time() {
                                     // The original's message, line for line.
@@ -925,7 +936,7 @@ fn spawn_race_menu(
                                     row(rows, "GOLD MEDAL", "", true);
                                 }
                                 for atv in &a.unlocked {
-                                    row(rows, "UNLOCKED", &atv.to_uppercase(), true);
+                                    row(rows, "NEW ATV", &atv.to_uppercase(), true);
                                 }
                             }
                         });

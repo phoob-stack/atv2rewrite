@@ -70,8 +70,8 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   `Setup/Career.xml`, five rounds each against seven computer riders, with
   race and trick points, skill points, gold medals and ATV unlocks; a top-3
   finish opens the next. Professional opens **Custom**, as in the original:
-  after rider and ATV, Choose Your Tracks lists the fifteen championship
-  tracks (A adds the highlighted one as the next round or takes it out,
+  after rider and ATV, Choose Your Tracks lists the championship tracks
+  you've opened (A adds the highlighted one as the next round or takes it out,
   Right then Up/Down sets its laps from 1 to 20, Y or Continue goes on),
   and Point Distribution shares each place's race and trick points out
   between the race and the trick ranking in 5% steps (Left/Right). Custom
@@ -139,6 +139,19 @@ equal, half if stronger. The kick that takes the last of it knocks them
 off and steals all their boost. Strength comes back in two seconds.
 Computer riders with an aggression of 3 or more kick anyone alongside.
 
+**Unlocks**, as in the original: Single Race and Time Trial start with
+Dunes 1, Forest 1 and Swamp 1 (and the Stadium); every other track opens
+once you race it in Arcade or Career, and winning an Arcade round opens
+the next round's track at once ("New Track"). Choose Your Tracks only
+lists open tracks. The ten pro riders open with freestyle challenge golds
+and the two secret riders only appear once won. Bullet, Challenger,
+Nitro, Skyline, Storm and the ATC come with career gold medals, in every
+mode, and computer riders never ride the ATC. Locked items show dimmed
+with the original's message saying how to open them. The original's
+cheats (typed as a profile name there) work with `--cheat NAME`, once,
+and stay in the save: `ALLOFEM` (everything), `ALLRIDERS`, `ALLBIKES`,
+`ALLTRACKS`, `ALLTRICKS` (top skill level), `ALLCHAMPS`, `ALLCHALS`.
+
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on
 track select.
@@ -153,7 +166,8 @@ front-end screen), `--mode race|timetrial|arcade|freestyle` with
 `--autodrive` (autopilot chases checkpoints and throws tricks), `--camera
 x,y,z,tx,ty,tz` (free-fly camera in game coordinates: WASD, Q/E, Shift, right
 mouse to look), `--screenshot out.png --after 8` (saves a frame and exits),
-`--resolution 1920x1080`, `--fullscreen` (borderless, desktop resolution).
+`--resolution 1920x1080`, `--fullscreen` (borderless, desktop resolution),
+`--cheat ALLOFEM` (enters one of the original's cheats into the save).
 
 Tracks: Dunes1-3, Forest1-3, Glacier1-3, Industrial1-3, Swamp1-3, Stadium1-2.
 Quads: ATC, Bandit, Blaze, Bullet, Challenger, Charger, Dimension, Nitro,

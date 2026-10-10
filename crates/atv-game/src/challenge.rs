@@ -14,7 +14,8 @@
 //!   once for each tier it climbs, as the original does (a first gold pays
 //!   the gold bonus three times).
 //! - Gold in challenge K+1 frees the rider of `UnlockableK`.
-//! - A challenge opens once every earlier one has a medal.
+//! - A challenge opens once every earlier one has a medal (or with the
+//!   ALLCHALS cheat).
 //!
 //! The disc gives no rules for the trick challenges beyond their text, so
 //! these are the rewrite's: in 5 and 7 each gate counts only when crossed
@@ -135,7 +136,7 @@ pub fn needs(n: usize) -> Option<Ground> {
 
 /// Whether challenge `n` can be picked: every earlier one has a medal.
 pub fn is_open(career: &Career, n: usize) -> bool {
-    (1..n).all(|k| career.challenges.get(&k).is_some_and(|c| c.1.is_some()))
+    career.cheats & crate::unlocks::CHALS != 0 || (1..n).all(|k| career.challenges.get(&k).is_some_and(|c| c.1.is_some()))
 }
 
 /// The gate a quad has to pass: the locator's box.

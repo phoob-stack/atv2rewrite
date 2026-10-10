@@ -25,7 +25,7 @@
 //!
 //! Progress is saved to `career.cfg` beside the options.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use bevy::prelude::*;
@@ -194,11 +194,6 @@ impl Rules {
         let bonus = total.map(|t| t * split / 100);
         (std::array::from_fn(|i| total[i] - bonus[i]), bonus)
     }
-
-    /// ATVs still locked with this many gold medals, and the golds each needs.
-    pub fn locked_atvs(&self, golds: u32) -> Vec<(String, u32)> {
-        self.unlockables.iter().filter(|(c, _)| *c > golds).map(|(c, atv)| (atv.clone(), *c)).collect()
-    }
 }
 
 /// One rider in a championship.
@@ -313,6 +308,11 @@ pub struct Career {
     /// The Arcade round to carry on from (0: start afresh), as the
     /// original's `mArcadeProgress`.
     pub arcade: usize,
+    /// Tracks raced in an Arcade or Career round, which opens them (see
+    /// [`crate::unlocks`]).
+    pub reached: BTreeSet<String>,
+    /// Cheats entered ([`crate::unlocks::CHEATS`] bits).
+    pub cheats: u32,
 }
 
 impl Career {
@@ -439,6 +439,10 @@ impl Career {
                 "professional" => c.open[2] = v == "true",
                 "custom" => c.open[3] = v == "true",
                 "arcade" => c.arcade = v.parse().unwrap_or(0),
+                "reached" => {
+                    c.reached.insert(v.to_string());
+                }
+                "cheat" => c.cheats |= crate::unlocks::cheat_bits(v).unwrap_or(0),
                 "best" => {
                     if let Some((t, p)) = v.rsplit_once(' ')
                         && let Ok(p) = p.parse()
@@ -515,6 +519,14 @@ impl Career {
         for (t, p) in &self.best {
             s += &format!("best = {t} {p}\n");
         }
+        for t in &self.reached {
+            s += &format!("reached = {t}\n");
+        }
+        for (name, bits) in crate::unlocks::CHEATS {
+            if bits.count_ones() == 1 && self.cheats & bits != 0 {
+                s += &format!("cheat = {name}\n");
+            }
+        }
         for (n, (t, m)) in &self.challenges {
             s += &format!("challenge = {n} {t:.2} {}\n", m.map_or("-".to_string(), |m| m.to_string()));
         }
@@ -586,6 +598,27 @@ impl CustomSetup {
     pub fn new(tracks: &[String]) -> Self {
         let rows = tracks.iter().map(|t| CustomRow { track: t.clone(), round: None, laps: 1 }).collect();
         Self { rows, cursor: 0, editing: false, laps: 1, split: 50 }
+    }
+
+    /// The same setup over a new list of tracks (more opened since): the
+    /// rounds chosen stay, in their order.
+    pub fn with_tracks(&self, tracks: &[String]) -> Self {
+        let rows: Vec<CustomRow> = tracks
+            .iter()
+            .map(|t| self.rows.iter().find(|r| &r.track == t).cloned().unwrap_or(CustomRow { track: t.clone(), round: None, laps: 1 }))
+            .collect();
+        let mut next = Self { rows, cursor: self.cursor, editing: false, ..*self };
+        let mut order: Vec<usize> = (0..next.rows.len()).filter(|&i| next.rows[i].round.is_some()).collect();
+        order.sort_by_key(|&i| next.rows[i].round);
+        for (k, i) in order.into_iter().enumerate() {
+            next.rows[i].round = Some(k);
+        }
+        // The cursor stays on its track, or on Continue.
+        next.cursor = match self.rows.get(self.cursor) {
+            Some(r) => next.rows.iter().position(|n| n.track == r.track).unwrap_or(0),
+            None => next.rows.len(),
+        };
+        next
     }
 
     /// Tracks in the championship so far.
@@ -757,6 +790,11 @@ mod tests {
         cs.cursor = 2;
         cs.toggle();
         assert_eq!(cs.plan().schedule, [("Dunes1".to_string(), 3), ("Forest1".to_string(), 3)]);
+        // A track opened since joins the list; the rounds stay.
+        let more: Vec<String> = ["Dunes1", "Dunes2", "Forest1", "Swamp1"].map(String::from).to_vec();
+        let wider = cs.with_tracks(&more);
+        assert_eq!(wider.plan().schedule, cs.plan().schedule);
+        assert_eq!((wider.rows[1].round, wider.rows[wider.cursor].track.as_str()), (None, "Swamp1"));
         for _ in 0..30 {
             cs.cursor = 0;
             cs.step_laps(true);

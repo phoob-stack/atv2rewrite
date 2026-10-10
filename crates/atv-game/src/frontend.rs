@@ -26,6 +26,7 @@ use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::ui::{fullscreen, placed, read_nav_from, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::mp::MpChamp;
 use crate::trickbook::{self, TrickDemo};
+use crate::unlocks;
 use crate::{AppState, Mode, Selection};
 
 pub struct FrontEndPlugin;
@@ -63,6 +64,8 @@ pub struct Roster {
     pub riders: Vec<RiderInfo>,
     pub quads: Vec<QuadInfo>,
     pub tracks: Vec<String>,
+    /// Tracks open from the start (`mAvailable="1"` in `Tracks.xml`).
+    pub open_tracks: Vec<String>,
     /// Arcade's rounds, in order (the ones on this disc).
     pub arcade: Vec<String>,
     /// Open Freestyle's Bronze/Silver/Gold scores per [`TIME_LIMITS`] entry.
@@ -103,6 +106,9 @@ pub struct RiderInfo {
     /// Whether computer opponents may ride as this rider (not the
     /// `LockedNeverAI` secret riders).
     pub ai: bool,
+    /// Locked for the player until unlocked (`mAvailability` `Locked...`):
+    /// the pros and the secret riders.
+    pub locked: bool,
     /// Skill level (1 to 7, `mSkillRating`): the tricks this rider pulls
     /// when another player rides them.
     pub skill: u8,
@@ -113,6 +119,11 @@ pub struct QuadInfo {
     pub name: String,
     /// Top speed, acceleration, stability, handling, air rating (1-5).
     pub stats: [f32; 5],
+    /// Locked for the player until unlocked (`mAvailability` other than
+    /// `Unlocked`).
+    pub locked: bool,
+    /// Whether computer riders may ride it (not `LockedBoth`).
+    pub ai: bool,
 }
 
 impl Roster {
@@ -129,6 +140,7 @@ impl Roster {
                     from: e.get("mResidence").unwrap_or("").trim().to_uppercase(),
                     stats: ["mAbility", "mTechnique", "mAggression", "mStrength"].map(|k| e.num(k).unwrap_or(0.0)),
                     ai: e.get("mAvailability") != Some("LockedNeverAI"),
+                    locked: e.get("mAvailability").is_some_and(|a| a.starts_with("Locked")),
                     skill: e.num("mSkillRating").map_or(1, |l| l.clamp(1.0, freestyle::MAX_LEVEL as f32) as u8),
                 })
             })
@@ -138,6 +150,8 @@ impl Roster {
             .filter(|e| game.exists(&format!("/Cars/{0}/{0}.params", e.name)))
             .map(|e| QuadInfo {
                 stats: ["mTopSpeed", "mAcceleration", "mStability", "mHandling", "mAirRating"].map(|k| e.num(k).unwrap_or(0.0)),
+                locked: e.get("mAvailability").is_some_and(|a| a != "Unlocked"),
+                ai: e.get("mAvailability") != Some("LockedBoth"),
                 name: e.name,
             })
             .collect();
@@ -156,6 +170,7 @@ impl Roster {
                 })
             })
             .collect();
+        let open_tracks = track_entries.iter().filter(|e| e.get("mAvailable") == Some("1")).map(|e| e.name.clone()).collect();
         let tracks: Vec<String> = track_entries.into_iter().map(|e| e.name).collect();
         let arcade = setup::entries(&read("/Setup/Arcade.xml"))
             .into_iter()
@@ -165,7 +180,7 @@ impl Roster {
         let freestyle_medals = TIME_LIMITS.iter().map(|&l| freestyle::medal_targets(game, l)).collect();
         let tricks = freestyle::load_tricks(game).0;
         let book = trickbook::book(&tricks);
-        Self { riders, quads, tracks, arcade, freestyle_medals, tricks, book, info, screens: setup::entries(&read("/Setup/Frontend.xml")) }
+        Self { riders, quads, tracks, open_tracks, arcade, freestyle_medals, tricks, book, info, screens: setup::entries(&read("/Setup/Frontend.xml")) }
     }
 
     pub fn info(&self, track: &str) -> TrackInfo {
@@ -276,6 +291,8 @@ enum Field {
     TrackName,
     Laps,
     Targets,
+    /// Why the highlighted rider, ATV or track is locked.
+    Locked,
 }
 #[derive(Component)]
 struct StatBar(usize);
@@ -292,7 +309,7 @@ const MUG_GAP: f32 = 64.0;
 const MUG_X: f32 = 64.0;
 const MUG_Y: f32 = 92.0;
 
-fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>, career: Res<Career>) {
+fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>, career: Res<Career>, defs: Res<challenge::Defs>) {
     // Back from a race: straight to the main menu, cursors on the last pick;
     // a career goes on to its championship's status.
     if let Some(screen) = fe.return_to.take() {
@@ -313,6 +330,9 @@ fn enter(mut fe: ResMut<FrontEnd>, sel: Res<Selection>, roster: Res<Roster>, car
     fe.mode = sel.mode;
     fe.limit = TIME_LIMITS.iter().position(|&l| l == sel.time_limit).unwrap_or(1);
     fe.rider = roster.riders.iter().position(|r| r.model.eq_ignore_ascii_case(&sel.rider)).unwrap_or(fe.rider);
+    if roster.riders.get(fe.rider).is_some_and(|r| !unlocks::rider_open(&career, &defs, r)) {
+        fe.rider = roster.riders.iter().position(|r| unlocks::rider_open(&career, &defs, r)).unwrap_or(0);
+    }
     fe.quad = roster.quads.iter().position(|q| q.name.eq_ignore_ascii_case(&sel.quad)).unwrap_or(fe.quad);
     fe.track = roster.tracks.iter().position(|t| t.eq_ignore_ascii_case(&sel.track)).unwrap_or(fe.track);
     fe.challenge = sel.challenge.clamp(1, challenge::COUNT);
@@ -436,15 +456,12 @@ fn navigate(
             _ => {}
         },
         Screen::Rider => {
-            let n = roster.riders.len().max(1);
+            let shown = |i: usize| roster.riders.get(i).is_some_and(|r| unlocks::rider_shown(&career, &defs, r));
             match nav {
-                Nav::Left => fe.rider = (fe.rider + n - 1) % n,
-                Nav::Right => fe.rider = (fe.rider + 1) % n,
-                Nav::Up => fe.rider = (fe.rider + n - 8 % n) % n,
-                Nav::Down => fe.rider = (fe.rider + 8) % n,
+                Nav::Left | Nav::Right | Nav::Up | Nav::Down => fe.rider = step_rider(fe.rider, nav, roster.riders.len(), shown),
                 Nav::Accept | Nav::Start => {
                     if let Some(r) = roster.riders.get(fe.rider) {
-                        if taken(&fe, &sel, &r.model) {
+                        if taken(&fe, &sel, &r.model) || !unlocks::rider_open(&career, &defs, r) {
                             return;
                         }
                         if fe.picking == 0 {
@@ -478,7 +495,7 @@ fn navigate(
                 }
             }
             Nav::Accept | Nav::Start => {
-                if list.as_ref().is_some_and(|l| l.disabled.get(l.selected) == Some(&true)) {
+                if list.as_ref().is_some_and(|l| l.blocked()) {
                     return;
                 }
                 if let Some(q) = roster.quads.get(fe.quad) {
@@ -491,15 +508,17 @@ fn navigate(
                     // The next player picks theirs, from the first rider free.
                     fe.picking += 1;
                     let n = roster.riders.len();
-                    if let Some(i) = (0..n).map(|i| (fe.rider + i) % n).find(|&i| !taken(&fe, &sel, &roster.riders[i].model)) {
+                    if let Some(i) = (0..n).map(|i| (fe.rider + i) % n).find(|&i| !taken(&fe, &sel, &roster.riders[i].model) && unlocks::rider_open(&career, &defs, &roster.riders[i])) {
                         fe.rider = i;
                     }
                     fe.screen = Screen::Rider;
                 } else if (fe.mp_champ && fe.players > 1) || (fe.mode == Mode::Career && fe.champ == Champ::Custom) {
                     // Custom and the split-screen championship pick their
-                    // tracks; they start out as last set (none at first).
-                    if fe.custom.rows.is_empty() {
-                        fe.custom = CustomSetup::new(&custom_tracks(&roster, &rules));
+                    // tracks; they start out as last set (none at first),
+                    // with any tracks opened since.
+                    let tracks = custom_tracks(&roster, &rules, &career);
+                    if fe.custom.rows.iter().map(|r| &r.track).ne(tracks.iter()) {
+                        fe.custom = fe.custom.with_tracks(&tracks);
                     }
                     fe.screen = Screen::CustomTracks;
                 } else if fe.mode == Mode::Career {
@@ -541,6 +560,9 @@ fn navigate(
             Nav::Left => sel.laps = (sel.laps + 8) % 9 + 1,
             Nav::Right => sel.laps = sel.laps % 9 + 1,
             Nav::Accept | Nav::Start => {
+                if list.as_ref().is_some_and(|l| l.blocked()) {
+                    return;
+                }
                 if let Some(t) = roster.tracks.get(fe.track) {
                     sel.track = t.clone();
                 }
@@ -864,10 +886,34 @@ fn start_mp_champ(mp_champ: &mut MpChamp, plan: Plan, roster: &Roster, rules: &c
     mp_champ.start(plan, &picks, &sel.quad, &career_pool(roster, rules, Champ::Custom), seed);
 }
 
-/// The tracks Choose Your Tracks lists: the championships' fifteen, in
-/// `Tracks.xml` order.
-fn custom_tracks(roster: &Roster, rules: &career::Rules) -> Vec<String> {
-    roster.tracks.iter().filter(|t| rules.tracks.iter().flatten().any(|c| c.eq_ignore_ascii_case(t))).cloned().collect()
+/// The tracks Choose Your Tracks lists: the championships' fifteen that
+/// are open, in `Tracks.xml` order.
+fn custom_tracks(roster: &Roster, rules: &career::Rules, career: &Career) -> Vec<String> {
+    roster
+        .tracks
+        .iter()
+        .filter(|t| rules.tracks.iter().flatten().any(|c| c.eq_ignore_ascii_case(t)) && unlocks::track_open(career, roster, rules, t))
+        .cloned()
+        .collect()
+}
+
+/// Moves the rider select cursor, over riders it doesn't show.
+fn step_rider(from: usize, nav: Nav, n: usize, shown: impl Fn(usize) -> bool) -> usize {
+    let n = n.max(1);
+    let mut i = match nav {
+        Nav::Left => (from + n - 1) % n,
+        Nav::Right => (from + 1) % n,
+        Nav::Up => (from + n - 8 % n) % n,
+        Nav::Down => (from + 8) % n,
+        _ => return from,
+    };
+    for _ in 0..n {
+        if shown(i) {
+            return i;
+        }
+        i = if nav == Nav::Right { (i + 1) % n } else { (i + n - 1) % n };
+    }
+    from
 }
 
 /// The riders a championship may draw its field from, as (name, model).
@@ -1030,13 +1076,16 @@ fn rebuild(
             n.position_type = PositionType::Absolute;
             kids.push(commands.spawn((n, img, MugCursor)).id());
             for (i, rider) in roster.riders.iter().enumerate().take(24) {
+                if !unlocks::rider_shown(&career, &defs, rider) {
+                    continue;
+                }
                 let (x, y) = mug_pos(i);
                 let rect = Rect::new((i % 8) as f32 * 64.0, (i / 8) as f32 * 64.0, (i % 8) as f32 * 64.0 + 64.0, (i / 8) as f32 * 64.0 + 64.0);
                 let scale = ui.mugs.size.x / 512.0;
                 let rect = Rect::from_corners(rect.min * scale, rect.max * scale);
                 let (mut n, mut img) = ui.mugs.region(rect, MUG / rect.width());
-                if taken(&fe, &sel, &rider.model) {
-                    // Another player has them.
+                if taken(&fe, &sel, &rider.model) || !unlocks::rider_open(&career, &defs, rider) {
+                    // Another player has them, or they're locked.
                     img.color = Color::srgb(0.25, 0.25, 0.25);
                 }
                 n.position_type = PositionType::Absolute;
@@ -1045,26 +1094,28 @@ fn rebuild(
                 kids.push(commands.spawn((n, img)).id());
             }
             kids.push(bio_panel(&mut commands, &ui, 64.0, 296.0, &["ABILITY", "TECHNIQUE", "AGGRESSION", "STRENGTH"], true));
+            kids.push(locked_line(&mut commands, 278.0));
         }
         Screen::Quad => {
             let names: Vec<String> = roster.quads.iter().map(|q| q.name.to_uppercase()).collect();
             let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            let mut list = MenuList::new(&refs, 200.0).with_row(26.0).select(fe.quad);
-            if fe.mode == Mode::Career {
-                // Career's unlockable ATVs come with gold medals.
-                let locked: Vec<String> = rules.locked_atvs(career.golds()).into_iter().map(|(a, _)| a.to_uppercase()).collect();
-                let locked: Vec<&str> = locked.iter().map(String::as_str).collect();
-                list = list.disable(&locked);
-                fe.quad = list.selected;
-            }
+            // Unlockable ATVs come with career gold medals.
+            let list = MenuList::new(&refs, 200.0).with_row(26.0).select(fe.quad).lock(|i| unlocks::atv_lock(&career, &rules, &roster.quads[i]).is_some());
             kids.push(menu(&mut commands, &ui, list, 40.0, 80.0));
             kids.push(bio_panel(&mut commands, &ui, 270.0, 250.0, &["TOP SPEED", "ACCELERATION", "STABILITY", "HANDLING", "AIR RATING"], false));
+            kids.push(locked_line(&mut commands, 418.0));
         }
         Screen::Track => {
             let names: Vec<String> = roster.tracks.iter().map(|t| track_title(t)).collect();
             let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            let list = MenuList::new(&refs, 200.0).with_row(20.0).select(fe.track);
+            // Races only go to open tracks; Open Freestyle roams any.
+            let race = fe.mode != Mode::Freestyle;
+            let list = MenuList::new(&refs, 200.0)
+                .with_row(20.0)
+                .select(fe.track)
+                .lock(|i| race && !unlocks::track_open(&career, &roster, &rules, &roster.tracks[i]));
             kids.push(menu(&mut commands, &ui, list, 40.0, 70.0));
+            kids.push(locked_line(&mut commands, 418.0));
             let side = 250.0;
             let preview = commands
                 .spawn((
@@ -1466,6 +1517,17 @@ fn round_head(run: &Run) -> String {
     format!("ROUND {} OF {}  -  {track}{laps}", run.round + 1, run.rounds())
 }
 
+/// A centred line saying why the highlighted item is locked
+/// ([`Field::Locked`], empty while it isn't).
+fn locked_line(commands: &mut Commands, top: f32) -> Entity {
+    commands
+        .spawn(Node { position_type: PositionType::Absolute, left: px(0), top: px(top), width: px(SCREEN_W), justify_content: JustifyContent::Center, ..default() })
+        .with_children(|r| {
+            r.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(1.0, 0.85, 0.3)), Field::Locked));
+        })
+        .id()
+}
+
 fn hint(commands: &mut Commands, ui: &UiAssets, text: &str, top: f32) -> Entity {
     let w = ui.font(FontId::Small).width(text, 8.0);
     commands.spawn((BitmapText::new(FontId::Small, 8.0, text).color(Color::srgb(0.75, 0.82, 0.95)), ui_at((SCREEN_W - w) / 2.0, top))).id()
@@ -1592,9 +1654,11 @@ fn bio_panel(commands: &mut Commands, ui: &UiAssets, left: f32, top: f32, stats:
         .id()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_rider_panel(
     fe: Res<FrontEnd>,
     roster: Res<Roster>,
+    (sel, career, defs): (Res<Selection>, Res<Career>, Res<challenge::Defs>),
     mut cursor: Query<&mut Node, (With<MugCursor>, Without<StatBar>)>,
     mut fields: Query<(&Field, &mut BitmapText)>,
     mut bars: Query<(&StatBar, &mut Node), Without<MugCursor>>,
@@ -1613,6 +1677,16 @@ fn update_rider_panel(
             Field::RiderName => set_text(&mut t, &r.name),
             Field::Born => set_text(&mut t, &format!("BORN  {}", r.born)),
             Field::From => set_text(&mut t, &format!("FROM  {}", r.from)),
+            Field::Locked => {
+                let why = if taken(&fe, &sel, &r.model) {
+                    unlocks::RIDER_TAKEN
+                } else if !unlocks::rider_open(&career, &defs, r) {
+                    unlocks::RIDER_LOCKED
+                } else {
+                    ""
+                };
+                set_text(&mut t, why);
+            }
             _ => {}
         }
     }
@@ -1621,14 +1695,22 @@ fn update_rider_panel(
     }
 }
 
-fn update_quad_panel(fe: Res<FrontEnd>, roster: Res<Roster>, mut fields: Query<(&Field, &mut BitmapText)>, mut bars: Query<(&StatBar, &mut Node)>) {
+fn update_quad_panel(
+    fe: Res<FrontEnd>,
+    roster: Res<Roster>,
+    (career, rules): (Res<Career>, Res<career::Rules>),
+    mut fields: Query<(&Field, &mut BitmapText)>,
+    mut bars: Query<(&StatBar, &mut Node)>,
+) {
     if fe.screen != Screen::Quad {
         return;
     }
     let Some(q) = roster.quads.get(fe.quad) else { return };
     for (f, mut t) in &mut fields {
-        if let Field::QuadName = f {
-            set_text(&mut t, &q.name.to_uppercase());
+        match f {
+            Field::QuadName => set_text(&mut t, &q.name.to_uppercase()),
+            Field::Locked => set_text(&mut t, &unlocks::atv_lock(&career, &rules, q).map_or(String::new(), unlocks::atv_locked_text)),
+            _ => {}
         }
     }
     for (b, mut n) in &mut bars {
@@ -1636,10 +1718,12 @@ fn update_quad_panel(fe: Res<FrontEnd>, roster: Res<Roster>, mut fields: Query<(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn update_track_panel(
     fe: Res<FrontEnd>,
     roster: Res<Roster>,
     sel: Res<Selection>,
+    (career, rules): (Res<Career>, Res<career::Rules>),
     ui: Option<Res<UiAssets>>,
     mut fields: Query<(&Field, &mut BitmapText)>,
     mut preview: Query<&mut ImageNode, With<TrackPreview>>,
@@ -1660,6 +1744,10 @@ fn update_track_panel(
                     None => String::new(),
                 };
                 set_text(&mut text, &s);
+            }
+            Field::Locked => {
+                let locked = fe.mode != Mode::Freestyle && !unlocks::track_open(&career, &roster, &rules, t);
+                set_text(&mut text, if locked { unlocks::TRACK_LOCKED } else { "" });
             }
             _ => {}
         }
