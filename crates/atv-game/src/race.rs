@@ -22,8 +22,11 @@ pub struct RaceProgress {
     /// Race time of the last checkpoint and of the last completed lap.
     pub last_checkpoint: Option<f32>,
     pub last_lap: Option<f32>,
-    /// Seconds spent driving away from the next checkpoint.
+    /// Seconds spent going the wrong way.
     pub wrong_way: f32,
+    /// "Return To Track", "Missed Checkpoint" or "Wrong Way", as the
+    /// original warns a racer (see [`crate::respot`]).
+    pub warning: Option<String>,
     /// How far round the current lap the quad is, 0..1.
     pub lap_fraction: f32,
     /// Arcade mode's checkpoint clock, if this race has one.
@@ -71,6 +74,7 @@ impl RaceProgress {
             last_checkpoint: None,
             last_lap: None,
             wrong_way: 0.0,
+            warning: None,
             lap_fraction: 0.0,
             arcade: None,
             cutoff: None,
@@ -268,6 +272,16 @@ pub fn gates(world: &atv_formats::row::World, number: impl Fn(&str) -> Option<u3
 /// A lap's gates, in the order of [`atv_sim::track::checkpoints`].
 pub fn lap_gates(world: &atv_formats::row::World) -> Vec<Gate> {
     gates(world, trk::checkpoint_number)
+}
+
+/// The middle of each lap gate locator's face with the index of its gate
+/// in [`lap_gates`], in the track's locator order (the order the original
+/// sets its gates up in, 0x65c50).
+pub fn lap_gate_faces(world: &atv_formats::row::World) -> Vec<(usize, Vec3)> {
+    let mut numbers: Vec<u32> = world.locators.iter().filter_map(|l| trk::checkpoint_number(&l.name)).collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    world.locators.iter().filter_map(|l| Some((numbers.binary_search(&trk::checkpoint_number(&l.name)?).ok()?, Face::of(l).center))).collect()
 }
 
 /// Points along the quad for its hull spheres.

@@ -98,11 +98,14 @@ pub struct TrackInfo {
     pub arcade_start: f32,
     /// Sand, snow or ordinary ground (`mTyreType`): tyres and dirt.
     pub ground: crate::convert::Ground,
+    /// Whether riders off the course are put back (`mAllowsForcedRespots`:
+    /// all but the Stadium).
+    pub forced_respots: bool,
 }
 
 impl Default for TrackInfo {
     fn default() -> Self {
-        Self { arcade_start: 40.0, ground: crate::convert::Ground::Road }
+        Self { arcade_start: 40.0, ground: crate::convert::Ground::Road, forced_respots: false }
     }
 }
 
@@ -178,6 +181,7 @@ impl Roster {
                 (e.name.clone(), TrackInfo {
                     arcade_start: e.num("mArcadeStartTime").filter(|v| *v > 0.0).unwrap_or(d.arcade_start),
                     ground: crate::convert::Ground::from_tyre_type(e.get("mTyreType").unwrap_or("")),
+                    forced_respots: e.get("mAllowsForcedRespots") == Some("1"),
                 })
             })
             .collect();

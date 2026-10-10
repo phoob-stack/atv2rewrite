@@ -197,7 +197,10 @@ track has a `Checkpoint 1`). Each is passed when the quad's hull touches
 the far (+Z) face of its box (0x64440, 0x64ac0), anywhere across it; a few
 numbers have two boxes (Swamp 1's 6 on two routes) and either counts. The
 rewrite also takes a checkpoint within 25 m of its middle, and computer
-riders only use that. A `waterbox` (matched case-insensitively, 0x101030) is deep water:
+riders only use that. A `Respot` box (any locator whose name starts
+`Respot`, any case, 0x65c50) is a zone a racer is put back from the moment
+they are in it (0x910f0, 0x652d0); Dunes, Forest and Glacier 2 and 3 have
+them (Forest 1 and 3 eleven each). A `waterbox` (matched case-insensitively, 0x101030) is deep water:
 its top, `pos.y + scale.y / 2`, is the surface, and anything over its
 footprint (`scale.x` by `scale.z` along the first and third rotation
 rows) counts, however far down. Forest's tops match its water meshes to
@@ -267,6 +270,38 @@ routes pass up to 150 m wide of a checkpoint locator (Swamp 1 misses
 checkpoint 4), so the rewrite lets a computer rider's lap skip one
 checkpoint. The driver that follows the lines is in `atv-sim/src/ai.rs`,
 with the original's addresses.
+
+The line also keeps watch over the racers (`atv-game/src/respot.rs`).
+Each checkpoint box takes the stretch of line nearest the middle of its
+face, and each node is given the checkpoint it leads to: walking back
+along first links from each checkpoint's stretch to another's, box by box
+in locator order, then nodes off those walks taking the checkpoint of the
+node they lead to (0x65230, 0x642b0). Every frame a racer's stretch is
+found near the last one (0x659c0), or over the whole line when they are
+three corridor widths out (0x64a40), by sideways distance alongside a
+stretch or distance to its nearer end (0x64310). Then, in races only (not
+freestyle or challenges, game types 4, 5, 8 and 9) and with the rider on
+the quad (0x910f0, 0x908f0):
+
+- More than 10 m outside the corridor for 5 s puts the racer back, with
+  "Return To Track - n" from the first second (n the seconds left, rounded
+  up; strings 0xe0, 0xdd, 0xe3, shown by 0x902f0). The original measures
+  from the corridor's middle but against its edges (0x8fba0), so a
+  lopsided corridor reaches further on its wide side.
+- A stretch whose ends lead to neither the next checkpoint nor the one
+  passed last, for 4 s, puts the racer back, with "Missed Checkpoint - n"
+  from half a second.
+- Facing back down the stretch for 2 s shows "Wrong Way" (no respot).
+
+The respots and the two countdowns need `mRespotsOn` (1 in the disc's
+`user.xml`) and the track's `mAllowsForcedRespots` (all but the Stadium).
+A respot puts the racer on the line at the furthest point they reached
+on a stretch inside one checkpoint's run whose two nodes allow a respot,
+not the next checkpoint's own stretch (0x90400, 0x8fd30), on the nearer
+ground over or under it, facing down the line. The original spreads
+racers respotted at the same place across the corridor; the rewrite only
+watches player 1, and its other respots (R, a crash, upside down) still
+use the last spot where the quad was upright on the ground.
 
 The original paces its computer riders (0x69950, 0x6a3f0, 0x6a970): "pace
 cars" lap the track at `mAIBestLapTime`..`mAIWorstLapTime` from
