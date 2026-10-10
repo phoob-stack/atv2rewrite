@@ -186,8 +186,8 @@ fn music(game: &GameSource, name: &str) -> Option<Arc<Pcm>> {
     }
 }
 
-/// The ground each environment mostly is, for the wheel noise (the track
-/// collision doesn't carry surface types yet).
+/// The ground each environment mostly is: the wheel noise of tyres off the
+/// track's own ground (on props).
 fn main_surface(env: &str) -> &'static str {
     match env {
         "Dunes" => "Sand",
@@ -224,6 +224,10 @@ struct WheelLoop {
     racer: Option<usize>,
     /// The water loop (its deep-water pitch), heard only while wading.
     water: Option<f32>,
+    /// A ground loop: volume and pitch of this sample on each surface (by
+    /// collision id; zero volume where another sample plays), and the
+    /// surface wheels off the track's own ground count as.
+    ground: Option<(Arc<[(f32, f32)]>, u8)>,
 }
 
 enum Role {
@@ -306,18 +310,39 @@ fn start_race_audio(
             }
         }
     }
-    // Each quad's wheels on the environment's ground, and in water.
+    // Each quad's wheels on the ground they're on (one loop per sample,
+    // mixed from the wheels on surfaces that use it), and in water.
+    let sample = |name: &str| VEHICLE_SAMPLES.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|&(_, i)| i);
+    let surface_vol = setup.mix_level("mSurfaceVol", 1.0);
+    let names = atv_sim::surface::NAMES;
+    let main = names.iter().position(|n| *n == main_surface(&env)).unwrap_or(0) as u8;
+    let mut loops: Vec<(usize, WheelLoop)> = Vec::new();
+    let mut by_sample: Vec<(usize, Vec<(f32, f32)>)> = Vec::new();
+    for (id, name) in names.iter().enumerate() {
+        let Some(s) = setup.surface(&env, name).filter(|s| s.volume > 0.0) else { continue };
+        let Some(index) = sample(&s.sample) else { continue };
+        let k = by_sample.iter().position(|(i, _)| *i == index).unwrap_or_else(|| {
+            by_sample.push((index, vec![(0.0, 1.0); names.len()]));
+            by_sample.len() - 1
+        });
+        by_sample[k].1[id] = (s.volume, s.pitch);
+    }
+    for (index, mix) in by_sample {
+        let ground = Some((Arc::from(mix), main));
+        loops.push((index, WheelLoop { volume: surface_vol, pitch: 1.0, racer: None, water: None, ground }));
+    }
     let deep_pitch = setup.surface(&env, "Deep_Water").map_or(1.0, |s| s.pitch);
-    for (surface, water) in [(main_surface(&env), None), ("Shallow_Water", Some(deep_pitch))] {
-        let Some(s) = setup.surface(&env, surface) else { continue };
-        let index = VEHICLE_SAMPLES.iter().find(|(n, _)| n.eq_ignore_ascii_case(&s.sample)).map(|&(_, i)| i);
-        if let Some(pcm) = index.and_then(|i| data.vehicles.get(i)) {
-            let volume = s.volume * setup.mix_level("mSurfaceVol", 1.0);
-            let wheel = WheelLoop { volume, pitch: s.pitch, racer: None, water };
-            play(Sound::looped(pcm.clone()), 0.0, Some(Role::Wheel(wheel.clone())));
-            for racer in 0..opponents.as_ref().map_or(0, |o| o.racers.len()) {
-                play(Sound::looped(pcm.clone()), 0.0, Some(Role::Wheel(WheelLoop { racer: Some(racer), ..wheel.clone() })));
-            }
+    if let Some(s) = setup.surface(&env, "Shallow_Water")
+        && let Some(index) = sample(&s.sample)
+    {
+        let water = WheelLoop { volume: s.volume * surface_vol, pitch: s.pitch, racer: None, water: Some(deep_pitch), ground: None };
+        loops.push((index, water));
+    }
+    for (index, wheel) in loops {
+        let Some(pcm) = data.vehicles.get(index) else { continue };
+        play(Sound::looped(pcm.clone()), 0.0, Some(Role::Wheel(wheel.clone())));
+        for racer in 0..opponents.as_ref().map_or(0, |o| o.racers.len()) {
+            play(Sound::looped(pcm.clone()), 0.0, Some(Role::Wheel(WheelLoop { racer: Some(racer), ..wheel.clone() })));
         }
     }
     commands.insert_resource(mix);
@@ -367,7 +392,19 @@ fn engine_and_wheels(
                         None => continue,
                     },
                 };
-                let contact = q.wheels.iter().filter(|w| w.contact).count() as f32 / q.wheels.len().max(1) as f32;
+                // This sample's share of the wheels on the ground, and its
+                // pitch on their surfaces.
+                let (mut contact, mut ground_pitch) = (0.0, 0.0);
+                if let Some((mix, main)) = &w.ground {
+                    for wheel in q.wheels.iter().filter(|w| w.contact) {
+                        let id = if wheel.surface == atv_sim::surface::UNKNOWN { *main } else { wheel.surface };
+                        let (vol, pitch) = mix.get(usize::from(id)).copied().unwrap_or((0.0, 1.0));
+                        contact += vol;
+                        ground_pitch += vol * pitch;
+                    }
+                }
+                let ground_pitch = if contact > 0.0 { ground_pitch / contact } else { 1.0 };
+                let contact = contact / q.wheels.len().max(1) as f32;
                 let pace = (q.velocity.length() / 20.0).clamp(0.0, 1.0);
                 let near = falloff(q.position.distance(v.position));
                 let depth = crate::water::depth(water.as_deref(), q.position);
@@ -376,7 +413,7 @@ fn engine_and_wheels(
                     Some(deep) if depth > 0.05 => (pace.max(0.3), if depth > crate::water::DEEP { deep } else { w.pitch }),
                     Some(_) => (0.0, w.pitch),
                     None if depth > 0.05 => (0.0, w.pitch),
-                    None => (pace * contact, w.pitch),
+                    None => (pace * contact, ground_pitch),
                 };
                 (w.volume * mix.engine * vol * near, pitch * (0.8 + 0.4 * pace))
             }
