@@ -270,7 +270,10 @@ times how well its travel lines up with the line (0x66380, 0x66460,
 times in a row without getting past the same spot is put past it (the
 frozen creeks on Glacier 2 and 3 catch riders that come up to the jumps
 too slow), and one that gets no further round the lap for 20 s is
-respotted. The rider skill setup (0x66200, applied
+respotted. It also lets a rider run at full pace for the last second
+(at least 10 m) before a jump node, so slowed riders still clear the
+jumps; with no such window Swamp 2 riders fall short often, with a 4 s
+one they lap Swamp 2 in 124-138 s against the original's 157-163. The rider skill setup (0x66200, applied
 at 0x681d0) makes an AI quad's brake (and handbrake) pedal instant, scales
 `SIDEFORCEMAX` by `1.15 (1 + Ability/10)`, sets `TORQUESLIDESCALE` to
 `0.75 / (1 + Ability/10)` and `FORCEPOINT` to 0; steering and engine are
