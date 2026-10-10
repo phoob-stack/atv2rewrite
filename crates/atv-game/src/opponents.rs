@@ -62,7 +62,7 @@ pub struct Racer {
     next_checkpoint: usize,
     input: Input,
     /// The quad's root entity.
-    body: Entity,
+    pub body: Entity,
     upside_down: f32,
 }
 

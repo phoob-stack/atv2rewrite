@@ -61,6 +61,8 @@ enum Look {
     Rider,
     /// Sky dome: unlit and unfogged.
     Sky,
+    /// Dirt over a vehicle or rider: lit, vertex alpha is how much shows.
+    Dirt,
 }
 
 impl Look {
@@ -82,14 +84,14 @@ impl Look {
     /// Whether vertex alpha is coverage for this look (otherwise it drives
     /// effects and is ignored).
     fn uses_vertex_alpha(self) -> bool {
-        matches!(self, Look::Water | Look::Foam | Look::Mist | Look::Shadow | Look::Overlay)
+        matches!(self, Look::Water | Look::Foam | Look::Mist | Look::Shadow | Look::Overlay | Look::Dirt)
     }
 
     /// Vertex colour for this look. Lit surfaces get their light from the
     /// scene, so the baked (doubled) value is capped at white.
     fn color(self, c: u32) -> [f32; 4] {
         let mut rgba = argb(c, self.uses_vertex_alpha());
-        if matches!(self, Look::Lit | Look::Rider) {
+        if matches!(self, Look::Lit | Look::Rider | Look::Dirt) {
             rgba[..3].iter_mut().for_each(|v| *v = v.min(1.0));
         }
         rgba
@@ -134,6 +136,70 @@ pub struct Loader<'a> {
     material_cache: HashMap<(String, Look), Handle<StandardMaterial>>,
     models: HashMap<String, Option<Model>>,
     model_paths: HashMap<String, Vec<String>>,
+    /// The race's ground: picks the tyres and, when set, gives vehicles
+    /// and riders a dirt layer that builds up (see [`Mud`]).
+    pub dirt: Option<Ground>,
+    /// The quad spawned last; its rider's dirt follows it.
+    last_quad: Option<Entity>,
+}
+
+/// What a track's ground does to the quads (`Tracks.xml` `mTyreType`,
+/// which also matches each track's `mVehicleDirtTexture`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Ground {
+    #[default]
+    Road,
+    Sand,
+    Snow,
+}
+
+impl Ground {
+    pub fn from_tyre_type(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "sand" => Ground::Sand,
+            "snow" => Ground::Snow,
+            _ => Ground::Road,
+        }
+    }
+
+    /// Wheel model prefix (`sand_wheel_front_left`).
+    fn wheels(self) -> &'static str {
+        match self {
+            Ground::Road => "road",
+            Ground::Sand => "sand",
+            Ground::Snow => "snow",
+        }
+    }
+
+    /// Dirt texture stem (`GEN_quadmud_01`, `CH_quadsand_01`).
+    fn dirt(self) -> &'static str {
+        match self {
+            Ground::Road => "mud",
+            Ground::Sand => "sand",
+            Ground::Snow => "snow",
+        }
+    }
+
+    /// Tyre dirt colour (`UNI_TyreOverlay_DustPalette`).
+    fn tyre_palette(self) -> &'static str {
+        match self {
+            Ground::Road => "Mud",
+            Ground::Sand => "Dust",
+            Ground::Snow => "Snow",
+        }
+    }
+}
+
+/// How dirty a quad and its rider are, 0 (clean) to 1.
+#[derive(Component, Default)]
+pub struct Mud(pub f32);
+
+/// A dirt layer mesh, faded in with its quad's [`Mud`].
+#[derive(Component)]
+pub struct MudLayer {
+    pub owner: Entity,
+    pub material: Handle<StandardMaterial>,
+    pub shown: f32,
 }
 
 /// Geometry gathered per material before upload.
@@ -198,14 +264,14 @@ impl Batch {
     /// Adds a rider node: its triangles follow one bone per vertex; patch
     /// vertices blend the bones of the control points by their Bezier
     /// weights, which is exact for rigidly skinned control points.
-    fn add_skinned(&mut self, node: &Node, look: Look) {
-        self.add_tris(&node.vertices, &node.indices, look, false);
+    fn add_skinned(&mut self, node: &Node, look: Look, overlay: bool) {
+        self.add_tris(&node.vertices, &node.indices, look, overlay);
         for v in &node.vertices {
             self.joints.push([v.bone as u16, 0, 0, 0]);
             self.weights.push([1.0, 0.0, 0.0, 0.0]);
         }
         for p in &node.patches {
-            self.add_patch(p, look, false);
+            self.add_patch(p, look, overlay);
             for j in 0..=PATCH_STEPS {
                 let bv = bernstein(j as f32 / PATCH_STEPS as f32);
                 for i in 0..=PATCH_STEPS {
@@ -350,6 +416,8 @@ impl<'a> Loader<'a> {
             material_cache: HashMap::new(),
             models: HashMap::new(),
             model_paths,
+            dirt: None,
+            last_quad: None,
         }
     }
 
@@ -461,7 +529,7 @@ impl<'a> Loader<'a> {
         let m = self.materials.add(StandardMaterial {
             base_color: if look == Look::Mist { Color::srgba(1.0, 1.0, 1.0, 0.3) } else { Color::WHITE },
             base_color_texture: tex.map(|t| t.0),
-            unlit: !matches!(look, Look::Lit | Look::Rider),
+            unlit: !matches!(look, Look::Lit | Look::Rider | Look::Dirt),
             fog_enabled: look != Look::Sky,
             cull_mode: None,
             double_sided: true,
@@ -482,6 +550,92 @@ impl<'a> Loader<'a> {
         });
         self.material_cache.insert(key, m.clone());
         m
+    }
+
+    /// Spawns a dirt layer mesh. The model names a generic dirt texture
+    /// (`GEN_quadmud_01`, `CH_quadmud_01`, `UNI_TyreOverlay`); the track's
+    /// ground picks the variant. Each layer gets its own material so its
+    /// quad's dirt can fade it in.
+    fn spawn_dirt(&mut self, commands: &mut Commands, batch: Batch, name: &str, parent: Entity, owner: Entity, skin: Option<SkinnedMesh>) {
+        if batch.idx.is_empty() {
+            return;
+        }
+        let ground = self.dirt.unwrap_or_default();
+        let lower = name.to_ascii_lowercase();
+        let tex = if lower.starts_with("gen_quad") {
+            self.texture(&format!("GEN_quad{}_01", ground.dirt()), false).map(|t| t.0)
+        } else if lower.starts_with("ch_quad") {
+            // The rider's snow has no alpha: borrow the mud's coverage.
+            self.composite(&format!("CH_quad{}_01", ground.dirt()), "CH_quadmud_01")
+        } else if lower.starts_with("uni_tyreoverlay") {
+            self.composite(&format!("UNI_TyreOverlay_{}Palette", ground.tyre_palette()), "UNI_TyreOverlay")
+        } else {
+            self.texture(name, false).map(|t| t.0)
+        };
+        let material = self.materials.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 1.0, 1.0, 0.0),
+            base_color_texture: tex,
+            alpha_mode: AlphaMode::Blend,
+            cull_mode: None,
+            double_sided: true,
+            depth_bias: 2.0,
+            perceptual_roughness: 1.0,
+            reflectance: 0.1,
+            ..default()
+        });
+        let mut mesh = batch.into_mesh();
+        if skin.is_some() {
+            mesh = match mesh.with_generated_skinned_mesh_bounds() {
+                Ok(m) => m,
+                Err(_) => return,
+            };
+        }
+        let layer = MudLayer { owner, material: material.clone(), shown: 0.0 };
+        let mut e = commands.spawn((Mesh3d(self.meshes.add(mesh)), MeshMaterial3d(material), layer));
+        if let Some(skin) = skin {
+            e.insert((skin, DynamicSkinnedMeshBounds));
+        }
+        let child = e.id();
+        commands.entity(parent).add_child(child);
+    }
+
+    /// A texture with the colour of one and the alpha of another: tyre
+    /// dirt is a palette colour under `UNI_TyreOverlay`'s alpha (how much
+    /// dirt sits where on the tread).
+    fn composite(&mut self, colour: &str, alpha: &str) -> Option<Handle<Image>> {
+        let key = format!("#{colour}#{alpha}").to_ascii_lowercase();
+        if let Some(t) = self.textures.get(&key) {
+            return t.clone().map(|t| t.0);
+        }
+        let load = |name: &str| {
+            let path = self.texture_paths.get(&name.to_ascii_lowercase())?;
+            let (tex, _) = crate::hd::texture(self.game, path).ok()?;
+            let rgba = tex.to_rgba8();
+            Some((tex.width, tex.height, rgba))
+        };
+        let made = load(alpha).zip(load(colour)).map(|(mask, colour)| {
+            let (w, h) = (mask.0, mask.1);
+            let mut out = vec![0u8; (w * h * 4) as usize];
+            for y in 0..h {
+                for x in 0..w {
+                    let i = ((y * w + x) * 4) as usize;
+                    let (cx, cy) = (x * colour.0 / w, y * colour.1 / h);
+                    let j = ((cy * colour.0 + cx) * 4) as usize;
+                    out[i..i + 3].copy_from_slice(&colour.2[j..j + 3]);
+                    out[i + 3] = mask.2[i + 3];
+                }
+            }
+            let size = Extent3d { width: w, height: h, depth_or_array_layers: 1 };
+            let mut img = Image::new(size, TextureDimension::D2, out, TextureFormat::Rgba8UnormSrgb, RenderAssetUsages::RENDER_WORLD);
+            img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::Repeat,
+                address_mode_v: ImageAddressMode::Repeat,
+                ..ImageSamplerDescriptor::linear()
+            });
+            (self.images.add(img), true)
+        });
+        self.textures.insert(key, made.clone());
+        made.map(|t| t.0)
     }
 
     fn model(&mut self, stem: &str, prefer_dir: &str) -> Option<Model> {
@@ -523,6 +677,21 @@ impl<'a> Loader<'a> {
         }
         let holder = commands.spawn((transform, Visibility::default())).id();
         commands.entity(parent).add_child(holder);
+        if let (Some(_), Some(owner)) = (self.dirt, self.last_quad.filter(|_| look == Look::Lit)) {
+            let mut dirt: HashMap<usize, Batch> = HashMap::new();
+            for node in &model.nodes {
+                let Ok(ov) = usize::try_from(node.header[2]) else { continue };
+                let b = dirt.entry(ov).or_default();
+                b.add_tris(&node.vertices, &node.indices, Look::Dirt, true);
+                for p in &node.patches {
+                    b.add_patch(p, Look::Dirt, true);
+                }
+            }
+            for (ov, batch) in dirt {
+                let Some(name) = model.materials.get(ov).map(|m| m.name.clone()) else { continue };
+                self.spawn_dirt(commands, batch, &name, holder, owner, None);
+            }
+        }
         for (mat, batch) in batches {
             if batch.idx.is_empty() {
                 continue;
@@ -631,6 +800,10 @@ impl<'a> Loader<'a> {
         commands.entity(root).add_child(model_root);
         let root_entity = root;
         let root = model_root;
+        if self.dirt.is_some() {
+            commands.entity(root_entity).insert(Mud::default());
+        }
+        self.last_quad = Some(root_entity);
         self.spawn_model(commands, &body, root, Transform::default(), Look::Lit);
         let parts = [
             ("Handlebars", "handlebarscentre"),
@@ -653,14 +826,17 @@ impl<'a> Loader<'a> {
         // Params wheel order: 0 FL, 1 FR, 2 RL, 3 RR. Wheel models are
         // centred on the tyre: height and length come from the body's
         // hard-points, the track width from WHEELOFFSET.
+        // Sand and snow tracks fit their own tyres.
         let wheels: [(&str, &str, f32, &[usize]); 4] = [
-            ("road_wheel_front_left", "flwheelcentre", 1.0, &[0]),
-            ("road_wheel_front_left", "frwheelcentre", -1.0, &[1]),
-            ("road_wheel_rear_left", "rwheelcentre", 1.0, &[2]),
-            ("road_wheel_rear_right", "rwheelcentre", 1.0, &[3]),
+            ("wheel_front_left", "flwheelcentre", 1.0, &[0]),
+            ("wheel_front_left", "frwheelcentre", -1.0, &[1]),
+            ("wheel_rear_left", "rwheelcentre", 1.0, &[2]),
+            ("wheel_rear_right", "rwheelcentre", 1.0, &[3]),
         ];
+        let tyres = self.dirt.unwrap_or_default().wheels();
         for (k, (w, pt, sx, idx)) in wheels.into_iter().enumerate() {
-            if let Some(model) = self.model(w, "Cars/Generic") {
+            let model = self.model(&format!("{tyres}_{w}"), "Cars/Generic").or_else(|| self.model(&format!("road_{w}"), "Cars/Generic"));
+            if let Some(model) = model {
                 let mut pos = point(pt).unwrap_or_default();
                 if let Some(x) = wheel_x.get(k) {
                     pos.x = *x;
@@ -699,7 +875,7 @@ impl<'a> Loader<'a> {
 
         let mut batches: HashMap<Option<usize>, Batch> = HashMap::new();
         for node in &model.nodes {
-            batches.entry(node.material()).or_default().add_skinned(node, Look::Rider);
+            batches.entry(node.material()).or_default().add_skinned(node, Look::Rider, false);
         }
         for (mat, batch) in batches {
             if batch.idx.is_empty() {
@@ -717,6 +893,21 @@ impl<'a> Loader<'a> {
                 ))
                 .id();
             commands.entity(parent).add_child(child);
+        }
+        if let (Some(_), Some(owner)) = (self.dirt, self.last_quad) {
+            let mut dirt: HashMap<usize, Batch> = HashMap::new();
+            for node in &model.nodes {
+                if let Ok(ov) = usize::try_from(node.header[2]) {
+                    dirt.entry(ov).or_default().add_skinned(node, Look::Dirt, true);
+                }
+            }
+            for (ov, mut batch) in dirt {
+                let Some(name) = model.materials.get(ov).map(|m| m.name.clone()) else { continue };
+                // Rider vertex alpha is all zero: the mask is in the texture.
+                batch.color.iter_mut().for_each(|c| c[3] = 1.0);
+                let skin = SkinnedMesh { inverse_bindposes: inverse.clone(), joints: joints.clone() };
+                self.spawn_dirt(commands, batch, &name, parent, owner, Some(skin));
+            }
         }
         Ok(RiderRig { joints, offsets })
     }
