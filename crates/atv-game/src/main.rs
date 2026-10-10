@@ -734,6 +734,7 @@ fn drive(
     mut controls: Option<ResMut<Controls>>,
     mut wreck: Option<ResMut<Wreck>>,
     crash_clips: Option<Res<CrashClips>>,
+    mut restart: ResMut<NextState<AppState>>,
 ) {
     let (Some(mut race), Some(mut player), Some(mut progress), Some(mut session)) = (race, player, progress, session) else { return };
     let dt = time.delta_secs();
@@ -838,16 +839,9 @@ fn drive(
         race.upside_down = 0.0;
     }
     if keys.just_pressed(KeyCode::Backspace) {
-        if let Some(w) = wreck.as_mut() {
-            w.fall = None;
-        }
-        let (p, r) = race.start;
-        v.reset(p, r);
-        let on_line = race.checkpoints.first().is_some_and(|&c| (c - p).with_y(0.0).length() < 25.0);
-        race.next_checkpoint = usize::from(on_line && n > 1);
-        let arcade = progress.arcade.take();
-        *progress = RaceProgress::new(progress.laps, on_line);
-        progress.arcade = arcade;
+        // The quick restart: as Restart on the pause menu, so the computer
+        // riders, the score and the clocks start over too.
+        restart.set(AppState::Loading);
     }
 }
 
