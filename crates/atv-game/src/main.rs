@@ -4,7 +4,7 @@
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
 //!             [--rider Male1]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
-//!             [--camera x,y,z,tx,ty,tz]
+//!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
 
 mod convert;
 mod rider;
@@ -37,6 +37,9 @@ struct Args {
     screenshot: Option<PathBuf>,
     screenshot_after: f32,
     camera: Option<[f32; 6]>,
+    /// Fixed close-up of the quad on the grid: degrees around it (0 = in
+    /// front), degrees above it, metres away.
+    orbit: Option<[f32; 3]>,
     autodrive: bool,
 }
 
@@ -89,6 +92,7 @@ fn parse_args() -> anyhow::Result<Args> {
         screenshot: None,
         screenshot_after: 8.0,
         camera: None,
+        orbit: None,
         autodrive: false,
     };
     let mut it = std::env::args().skip(1);
@@ -105,6 +109,10 @@ fn parse_args() -> anyhow::Result<Args> {
             "--camera" => {
                 let v: Vec<f32> = val().split(',').filter_map(|s| s.trim().parse().ok()).collect();
                 a.camera = v.try_into().ok();
+            }
+            "--orbit" => {
+                let v: Vec<f32> = val().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                a.orbit = v.try_into().ok();
             }
             other => anyhow::bail!("unknown argument {other}"),
         }
@@ -232,9 +240,18 @@ fn setup(
     );
     let eye = start.0 - (start.1 * Vec3::NEG_Z) * 6.0 + Vec3::Y * 2.5;
     let cam = Transform::from_translation(eye).looking_at(start.0, Vec3::Y);
-    match args.camera {
-        Some([x, y, z, tx, ty, tz]) => {
-            let t = Transform::from_xyz(x, y, -z).looking_at(Vec3::new(tx, ty, -tz), Vec3::Y);
+    let fixed = match (args.camera, args.orbit) {
+        (Some([x, y, z, tx, ty, tz]), _) => Some(Transform::from_xyz(x, y, -z).looking_at(Vec3::new(tx, ty, -tz), Vec3::Y)),
+        (None, Some([yaw, pitch, dist])) => {
+            let (yaw, pitch) = (yaw.to_radians(), pitch.to_radians());
+            let dir = start.1 * Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos());
+            let target = start.0 + Vec3::Y * 0.2;
+            Some(Transform::from_translation(target + dir * dist).looking_at(target, Vec3::Y))
+        }
+        _ => None,
+    };
+    match fixed {
+        Some(t) => {
             let (yaw, pitch, _) = t.rotation.to_euler(EulerRot::YXZ);
             commands.spawn((view, t, FlyCam { yaw, pitch }));
         }

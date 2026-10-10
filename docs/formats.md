@@ -104,11 +104,16 @@ Levels 856, shaders 75, other 116).
                 i32 -1 x3, u32 idx[tris*3], vertex[verts], patch[patches]
 vertex (56 B): pos3, normal3, uv2, 4 floats (overlay uv2 + 2 unused),
      u32 ARGB, u32 bone (riders; 0 elsewhere)
-patch (672 B): u32 mode,0,0; X[16], Y[16], Z[16] (4x4 Bezier control
-     points, SoA); uv[16] pairs (mode 1) or 4 corner pairs (mode 0); an
-     overlay-layer UV block; u32 colour[4] at word 148; i32 bone[16] at
-     word 152 (one per control point in riders, -1 elsewhere).
+patch (672 B): u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16]
+     (4x4 Bezier control points, SoA); u32 0; uv, uv2, uv3 nets at words
+     52, 84, 116 (16 pairs, corners-first like track patches; only the 4
+     corners are valid when the flag is 0); u32 colour[4] at word 148;
+     i32 bone[16] at word 152 (one per control point in riders, -1
+     elsewhere).
 ```
+Quad paint atlases (`Tpage*`) and `GEN_Tyre` keep a gloss mask in alpha
+(shiny plastic opaque, seat and rubber clear; the tyre tread pattern);
+it is not coverage. `GEN_components` alpha is real cut-out coverage.
 Node header[1] is the base material, header[2] the overlay material (mud,
 tyre dirt), header[0] probably a render group. Vertex colours are baked
 light with 0x80 = 1.0 (Xbox MODULATE2X); vertex alpha drives effects, not

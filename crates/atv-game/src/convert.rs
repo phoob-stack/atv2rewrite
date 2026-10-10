@@ -124,6 +124,7 @@ pub struct Loader<'a> {
     /// Lower-case texture stem -> archive path, for name-based lookup.
     texture_paths: HashMap<String, String>,
     textures: HashMap<String, Option<(Handle<Image>, bool)>>,
+    gloss_maps: HashMap<String, Option<Handle<Image>>>,
     material_cache: HashMap<(String, Look), Handle<StandardMaterial>>,
     models: HashMap<String, Option<Model>>,
     model_paths: HashMap<String, Vec<String>>,
@@ -247,6 +248,26 @@ fn bernstein(t: f32) -> [f32; 4] {
     [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t]
 }
 
+/// Vehicle textures whose alpha is a gloss mask rather than coverage: each
+/// quad's own paint atlas (`Tpage*`: shiny plastic opaque, matte seat and
+/// rubber clear) and the tyre (alpha holds the tread pattern). Cutting
+/// them out at alpha 0.5 punched holes through the seat, panels and tyres.
+/// `GEN_components` alpha really is coverage (holed plates, cables, chain).
+fn alpha_is_gloss(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.starts_with("tpage") || n == "gen_tyre"
+}
+
+/// Metallic-roughness map (roughness in green) from a gloss mask in alpha.
+fn gloss_rgba(tex: &Texture) -> Vec<u8> {
+    let mut rgba = tex.to_rgba8();
+    for p in rgba.chunks_exact_mut(4) {
+        let rough = 0.8 - 0.55 * (p[3] as f32 / 255.0);
+        p.copy_from_slice(&[255, (rough * 255.0) as u8, 0, 255]);
+    }
+    rgba
+}
+
 /// Baked shadow decals mark shadow as bright texels on black (or, in a few,
 /// as alpha). Turns one into black with the shadow strength as alpha.
 fn shadow_rgba(tex: &Texture) -> Vec<u8> {
@@ -319,6 +340,7 @@ impl<'a> Loader<'a> {
             images,
             texture_paths,
             textures: HashMap::new(),
+            gloss_maps: HashMap::new(),
             material_cache: HashMap::new(),
             models: HashMap::new(),
             model_paths,
@@ -388,13 +410,42 @@ impl<'a> Loader<'a> {
         loaded
     }
 
+    /// Roughness map from a texture's gloss-mask alpha (see [`alpha_is_gloss`]).
+    fn gloss_map(&mut self, name: &str) -> Option<Handle<Image>> {
+        let key = name.to_ascii_lowercase();
+        if let Some(t) = self.gloss_maps.get(&key) {
+            return t.clone();
+        }
+        let loaded = self.texture_paths.get(&key).cloned().and_then(|path| {
+            let tex = Texture::parse(&self.game.read(&path).ok()?).ok()?;
+            let size = Extent3d { width: tex.width, height: tex.height, depth_or_array_layers: 1 };
+            let mut img = Image::new(
+                size,
+                TextureDimension::D2,
+                gloss_rgba(&tex),
+                TextureFormat::Rgba8Unorm,
+                RenderAssetUsages::RENDER_WORLD,
+            );
+            img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+                address_mode_u: ImageAddressMode::Repeat,
+                address_mode_v: ImageAddressMode::Repeat,
+                ..ImageSamplerDescriptor::linear()
+            });
+            Some(self.images.add(img))
+        });
+        self.gloss_maps.insert(key, loaded.clone());
+        loaded
+    }
+
     fn material(&mut self, name: Option<&str>, look: Look) -> Handle<StandardMaterial> {
         let key = (name.unwrap_or("").to_ascii_lowercase(), look);
         if let Some(m) = self.material_cache.get(&key) {
             return m.clone();
         }
         let tex = name.and_then(|n| self.texture(n, look == Look::Shadow));
-        let has_alpha = tex.as_ref().is_some_and(|t| t.1);
+        let gloss = look == Look::Lit && name.is_some_and(alpha_is_gloss);
+        let gloss_map = if gloss { name.and_then(|n| self.gloss_map(n)) } else { None };
+        let has_alpha = tex.as_ref().is_some_and(|t| t.1) && !gloss;
         let alpha_mode = match look {
             Look::Water | Look::Foam | Look::Mist | Look::Shadow | Look::Overlay => AlphaMode::Blend,
             Look::Cutout => AlphaMode::Mask(0.5),
@@ -416,8 +467,9 @@ impl<'a> Loader<'a> {
                 Look::Shadow => 8.0,
                 _ => 0.0,
             },
-            perceptual_roughness: 0.7,
-            reflectance: 0.15,
+            perceptual_roughness: if gloss_map.is_some() { 1.0 } else { 0.7 },
+            reflectance: if gloss_map.is_some() { 0.4 } else { 0.15 },
+            metallic_roughness_texture: gloss_map,
             ..default()
         });
         self.material_cache.insert(key, m.clone());

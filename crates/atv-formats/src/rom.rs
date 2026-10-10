@@ -15,10 +15,15 @@
 //! node: i32 x5 header, u32 tri_count, u32 patch_count, u32 0, u32 vertex_count,
 //!       i32 -1 x3, u32 indices[tri_count*3], Vertex[vertex_count],
 //!       Patch[patch_count]
-//! vertex (56 B): pos, normal, uv, 4 floats, u32 ARGB, u32 bone
-//! patch (672 B): u32 mode, 0, 0; X[16], Y[16], Z[16]; UVs; u32 ARGB[4]
-//!       at word 148; i32 bone[16] at word 152 (-1 when unskinned)
+//! vertex (56 B): pos, normal, uv, overlay uv, 2 floats, u32 ARGB, u32 bone
+//! patch (672 B): u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16];
+//!       u32 0; uv, uv2, uv3 nets (16 pairs each, see `NET_ORDER`; only the
+//!       4 corners are valid when the flag is 0); u32 ARGB[4] at word 148;
+//!       i32 bone[16] at word 152 (-1 when unskinned)
 //! ```
+//! Node header: [kind, material, overlay material, -1, ?]. The overlay
+//! (quad mud, tyre dust) uses the second UV set: vertex `extra[0..2]` and
+//! the patch uv2 net.
 
 use crate::bin::Reader;
 use crate::{Error, Result};
@@ -45,10 +50,11 @@ pub struct Patch {
     pub control: [[f32; 3]; 16],
     /// Texture coordinate per control point (row-major). Patches with
     /// header[0] == 1 store all 16; others store only the four corners,
-    /// which are spread bilinearly here.
+    /// which are spread bilinearly here. See `NET_ORDER` for the stored
+    /// order.
     pub uv: [[f32; 2]; 16],
-    /// Second (overlay) layer texture coordinates, laid out like `uv`.
-    /// Only track patches have one; models leave it zero.
+    /// Second (overlay) layer texture coordinates, laid out like `uv`
+    /// (full when header[1] == 1).
     pub uv2: [[f32; 2]; 16],
     /// Corner colours (0xAARRGGBB) at control points 0, 3, 15 and 12, i.e.
     /// (u,v) = (0,0), (1,0), (1,1), (0,1) on the tessellated grid.
@@ -68,8 +74,9 @@ pub struct Tessellation {
 
 #[derive(Debug, Clone)]
 pub struct Node {
-    /// Five header ints. Field 1 looks like the main material index (-1 for
-    /// none); fields 0 and 2..4 are not yet understood.
+    /// Five header ints. Field 1 is the material index (-1 for none) and
+    /// field 2 the overlay material drawn with the second UV set; field 0
+    /// is 0/2 for triangles and 1/3 for patches; field 4 is not understood.
     pub header: [i32; 5],
     pub indices: Vec<u32>,
     pub vertices: Vec<Vertex>,
@@ -196,16 +203,26 @@ impl Model {
                 let xs = r.f32s::<16>()?;
                 let ys = r.f32s::<16>()?;
                 let zs = r.f32s::<16>()?;
+                // One word (always 0 so far) that track patches don't have.
+                r.skip(4)?;
                 let uv = r.f32s::<32>()?;
+                let uv2 = r.f32s::<32>()?;
                 r.seek(start + 148 * 4);
-                let corner_color = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
+                let c = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
                 let mut bones = [-1i32; 16];
                 for b in &mut bones {
                     *b = r.i32()?;
                 }
                 r.seek(start + PATCH_SIZE);
-                let control = std::array::from_fn(|i| [xs[i], ys[i], zs[i]]);
-                patches.push(Patch { header, control, uv: Patch::uvs(header[0], &uv), uv2: [[0.0; 2]; 16], corner_color, bones });
+                patches.push(Patch {
+                    header,
+                    control: std::array::from_fn(|i| [xs[i], ys[i], zs[i]]),
+                    uv: patch_uvs(header[0] == 1, &uv),
+                    uv2: patch_uvs(header[1] == 1, &uv2),
+                    // Stored in the same corner order as the UV nets.
+                    corner_color: [c[0], c[3], c[2], c[1]],
+                    bones,
+                });
             }
             nodes.push(Node { header, indices, vertices, patches });
         }
@@ -216,20 +233,30 @@ impl Model {
     }
 }
 
-impl Patch {
-    pub(crate) fn uvs(mode: u32, raw: &[f32; 32]) -> [[f32; 2]; 16] {
-        if mode == 1 {
-            return std::array::from_fn(|i| [raw[i * 2], raw[i * 2 + 1]]);
-        }
-        let c = |i: usize| [raw[i * 2], raw[i * 2 + 1]];
-        let (a, b, cc, d) = (c(0), c(1), c(2), c(3));
-        std::array::from_fn(|i| {
-            let (u, v) = ((i % 4) as f32 / 3.0, (i / 4) as f32 / 3.0);
-            let lerp = |k: usize| (a[k] * (1.0 - u) + b[k] * u) * (1.0 - v) + (d[k] * (1.0 - u) + cc[k] * u) * v;
-            [lerp(0), lerp(1)]
-        })
-    }
+/// Control-point index (row-major) -> position in a stored UV net. Nets
+/// list the four corners first (control points 0, 12, 15, 3), then the
+/// inner points of the 0-12 edge, the two inner columns, and the inner
+/// points of the 3-15 edge.
+pub(crate) const NET_ORDER: [usize; 16] = [0, 6, 10, 3, 4, 7, 11, 14, 5, 8, 12, 15, 1, 9, 13, 2];
 
+/// One layer of patch texture coordinates: a full 16-point net, or only the
+/// four corners (the rest of the record is then stale memory) spread
+/// bilinearly.
+pub(crate) fn patch_uvs(full: bool, raw: &[f32; 32]) -> [[f32; 2]; 16] {
+    let at = |i: usize| [raw[i * 2], raw[i * 2 + 1]];
+    if full {
+        return std::array::from_fn(|k| at(NET_ORDER[k]));
+    }
+    let (c0, c1, c2, c3) = (at(0), at(1), at(2), at(3));
+    std::array::from_fn(|k| {
+        let (s, t) = ((k / 4) as f32 / 3.0, (k % 4) as f32 / 3.0);
+        std::array::from_fn(|d| {
+            c0[d] * (1.0 - s) * (1.0 - t) + c1[d] * s * (1.0 - t) + c2[d] * s * t + c3[d] * (1.0 - s) * t
+        })
+    })
+}
+
+impl Patch {
     /// Evaluates the patch on an (n+1) x (n+1) grid (u along control-point
     /// columns, v along rows).
     pub fn tessellate(&self, n: usize) -> Tessellation {

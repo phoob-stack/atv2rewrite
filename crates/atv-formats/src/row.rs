@@ -22,7 +22,7 @@
 //!             Patch[patch_count] (604 bytes)
 //! vertex:     pos, normal, uv, uv2 (overlay layer), 2 floats, u32 ARGB
 //! patch:      u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16];
-//!             uv net, uv2 net, uv3 net (16 pairs each, see `NET_ORDER`;
+//!             uv net, uv2 net, uv3 net (16 pairs each, see `rom::NET_ORDER`;
 //!             only the 4 corners are valid when the flag is 0);
 //!             u32 ARGB[4] at word 147
 //! ```
@@ -37,7 +37,7 @@
 //! (95-99% of each file is accounted for) is 48-byte tree nodes.
 
 use crate::bin::Reader;
-use crate::rom::{Locator, Patch, Sprite, Vertex};
+use crate::rom::{patch_uvs, Locator, Patch, Sprite, Vertex};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone)]
@@ -141,29 +141,6 @@ impl World {
         let meshes = scan_meshes(bytes, r.pos(), nmat as i32)?;
         Ok(World { fog_color, materials, locators, lights, instances, sprites, meshes })
     }
-}
-
-/// Control-point index (row-major) -> position in a stored UV net. Nets
-/// list the four corners first (control points 0, 12, 15, 3), then the
-/// inner points of the 0-12 edge, the two inner columns, and the inner
-/// points of the 3-15 edge.
-const NET_ORDER: [usize; 16] = [0, 6, 10, 3, 4, 7, 11, 14, 5, 8, 12, 15, 1, 9, 13, 2];
-
-/// One layer of patch texture coordinates: a full 16-point net, or only the
-/// four corners (the rest of the record is then stale memory) spread
-/// bilinearly.
-fn patch_uvs(full: bool, raw: &[f32; 32]) -> [[f32; 2]; 16] {
-    let at = |i: usize| [raw[i * 2], raw[i * 2 + 1]];
-    if full {
-        return std::array::from_fn(|k| at(NET_ORDER[k]));
-    }
-    let (c0, c1, c2, c3) = (at(0), at(1), at(2), at(3));
-    std::array::from_fn(|k| {
-        let (s, t) = ((k / 4) as f32 / 3.0, (k % 4) as f32 / 3.0);
-        std::array::from_fn(|d| {
-            c0[d] * (1.0 - s) * (1.0 - t) + c1[d] * s * (1.0 - t) + c2[d] * s * t + c3[d] * (1.0 - s) * t
-        })
-    })
 }
 
 fn scan_meshes(b: &[u8], start: usize, nmat: i32) -> Result<Vec<Mesh>> {
