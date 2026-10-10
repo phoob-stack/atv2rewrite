@@ -177,7 +177,7 @@ patch:      u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16];
             three 16-pair UV nets at words 51, 83 and 115; ARGB[4] at 147
 ```
 Mesh flags: 0x1 has patches, 0x2 alpha-tested (foliage, fences), 0x2000
-water, 0x4000 foam/wake, 0x8000 baked shadow decal. Material -1 is
+water (and some shadow decals, with 0x400), 0x4000 foam/wake, 0x8000 baked shadow decal. Material -1 is
 invisible collision-only geometry. `material2` is an overlay layer (grass
 strips, tyre tracks, the checker on inflatable arches) drawn over the base
 with the second UV set, weighted by vertex alpha.
@@ -397,3 +397,10 @@ the ROW spatial tree and effect records, and the material record fields.
 - Other quads' engines and wheels: how (and how loud) the original plays computer
   riders' engines and wheel noise isn't decoded; the rewrite gives them the player's mix
   scaled by `(8 / (d + 8))²`, d being the metres from player 1.
+- Water: the track's water meshes (materials named `*water*`: `FO_water`,
+  `DU_water`, `Water_24bit`...) aren't solid; the quad drives on the bed
+  below. The rewrite keeps their level triangles as a separate surface to
+  measure wading depth against: wheels under it play the `Shallow_Water`
+  surface sound (`Deep_Water`'s pitch past 0.4 m) instead of the ground's,
+  and wash the dirt off. Mesh flag 0x2000 is not a water flag on its own:
+  Forest's shadow decals carry it too.

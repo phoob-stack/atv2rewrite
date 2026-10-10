@@ -6,7 +6,7 @@
 //! in by dirt texture alpha × vertex alpha × the lighting alpha, which the
 //! game feeds with the vehicle's dirt level; dirt also dulls the shine.
 //! Here each quad's level grows with distance driven on the ground, and
-//! the layers fade in with it.
+//! the layers fade in with it. Wading through water washes it off.
 
 use bevy::prelude::*;
 
@@ -14,6 +14,7 @@ use atv_sim::Vehicle;
 
 use crate::convert::{Mud, MudLayer};
 use crate::opponents::Opponents;
+use crate::water::{depth, Water};
 use crate::{AppState, Player, QuadBody};
 
 pub struct MudPlugin;
@@ -27,8 +28,13 @@ impl Plugin for MudPlugin {
 /// Metres on the ground to get fully dirty.
 const FULL_AFTER: f32 = 1500.0;
 
-/// How much dirtier a quad gets over `dt`.
-pub fn dirtier(level: f32, v: &Vehicle, dt: f32) -> f32 {
+/// How much dirtier a quad gets over `dt`, wading `depth` metres deep
+/// (water washes it off instead: a few seconds splashing through cleans it).
+pub fn dirtier(level: f32, v: &Vehicle, dt: f32, depth: f32) -> f32 {
+    if depth > 0.05 {
+        let wash = 0.15 + depth * 0.5 + v.velocity.length() * 0.01;
+        return (level - wash * dt).max(0.0);
+    }
     let on_ground = v.wheels.iter().filter(|w| w.contact).count() as f32 / v.wheels.len().max(1) as f32;
     (level + v.velocity.length() * on_ground * dt / FULL_AFTER).min(1.0)
 }
@@ -37,16 +43,17 @@ fn get_dirty(
     time: Res<Time>,
     player: Option<Res<Player>>,
     opponents: Option<Res<Opponents>>,
+    water: Option<Res<Water>>,
     mut player_mud: Query<&mut Mud, With<QuadBody>>,
     mut muds: Query<&mut Mud, Without<QuadBody>>,
 ) {
     let dt = time.delta_secs();
     if let (Some(p), Ok(mut mud)) = (player, player_mud.single_mut()) {
-        mud.0 = dirtier(mud.0, &p.0, dt);
+        mud.0 = dirtier(mud.0, &p.0, dt, depth(water.as_deref(), p.0.position));
     }
     for r in opponents.iter().flat_map(|o| &o.racers) {
         if let Ok(mut mud) = muds.get_mut(r.body) {
-            mud.0 = dirtier(mud.0, &r.vehicle, dt);
+            mud.0 = dirtier(mud.0, &r.vehicle, dt, depth(water.as_deref(), r.vehicle.position));
         }
     }
 }
@@ -75,9 +82,20 @@ mod tests {
         let mut v = Vehicle::new(params, Vec3::ZERO, Quat::IDENTITY);
         v.wheels = vec![Default::default(); 4];
         v.velocity = Vec3::new(0.0, 0.0, -15.0);
-        assert_eq!(dirtier(0.0, &v, 1.0), 0.0);
+        assert_eq!(dirtier(0.0, &v, 1.0, 0.0), 0.0);
         v.wheels.iter_mut().for_each(|w| w.contact = true);
-        assert!((dirtier(0.0, &v, 1.0) - 0.01).abs() < 1e-6);
-        assert_eq!(dirtier(0.999, &v, 1.0), 1.0);
+        assert!((dirtier(0.0, &v, 1.0, 0.0) - 0.01).abs() < 1e-6);
+        assert_eq!(dirtier(0.999, &v, 1.0, 0.0), 1.0);
+    }
+
+    #[test]
+    fn washes_off_in_water() {
+        let params = atv_sim::VehicleParams::from_files("", None);
+        let mut v = Vehicle::new(params, Vec3::ZERO, Quat::IDENTITY);
+        v.wheels = vec![atv_sim::vehicle::WheelState { contact: true, ..Default::default() }; 4];
+        v.velocity = Vec3::new(0.0, 0.0, -10.0);
+        let after = dirtier(1.0, &v, 1.0, 0.3);
+        assert!((after - 0.6).abs() < 1e-5);
+        assert_eq!(dirtier(0.1, &v, 1.0, 0.3), 0.0);
     }
 }
