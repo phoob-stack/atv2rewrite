@@ -2032,7 +2032,7 @@ fn locked_line(commands: &mut Commands, top: f32) -> Entity {
 
 /// A message box over the screen, as the original's (`ID_PROFILE_MSGBOX`,
 /// `ID_CHEAT_PAGE`).
-fn popup(commands: &mut Commands, ui: &UiAssets, head: &str, text: &str) -> Entity {
+pub(crate) fn popup(commands: &mut Commands, ui: &UiAssets, head: &str, text: &str) -> Entity {
     let panel = ui.bio.get("BIOPANEL").rect;
     commands
         .spawn((

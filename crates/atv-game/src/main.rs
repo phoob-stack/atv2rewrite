@@ -108,7 +108,8 @@ struct Args {
     players: usize,
     /// Cheats to enter (see [`unlocks::CHEATS`]).
     cheats: Vec<String>,
-    /// Skip the race intro's camera flights (see [`intro`]).
+    /// Skip the race intro's camera flights (see [`intro`]) and a
+    /// challenge's intro page.
     no_intro: bool,
 }
 

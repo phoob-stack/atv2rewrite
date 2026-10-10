@@ -209,7 +209,9 @@ or button, the first rider home or five minutes brings back Press Start.
 cameras fly over it one after another, each along its own path, with
 the HUD hidden (and in split screen, player 1's view
 filling the screen). Swamp 3 and Stadium 2 have none and go straight to
-the countdown. `--no-intro` skips it.
+the countdown. A Freestyle Challenge shows its own intro page instead:
+the challenge's name and task over the waiting quad, and the countdown
+starts when you press Start (or A, Enter). `--no-intro` skips both.
 
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on
@@ -228,7 +230,7 @@ front-end screen; also `profiles`, and `arcade` with `--mode arcade`), `--mode r
 `--autodrive` (autopilot chases checkpoints and throws tricks), `--camera
 x,y,z,tx,ty,tz` (free-fly camera in game coordinates: WASD, Q/E, Shift, right
 mouse to look), `--screenshot out.png --after 8` (saves a frame and exits),
-`--no-intro` (no camera flight before the countdown),
+`--no-intro` (no camera flight or challenge page before the countdown),
 `--resolution 1920x1080`, `--fullscreen` (borderless, desktop resolution),
 `--cheat ALLOFEM` (enters one of the original's cheats into the profile
 loaded).

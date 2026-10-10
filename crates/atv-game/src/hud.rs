@@ -28,13 +28,15 @@ impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
         // The attract demo shows its own page, and has no menus.
         let no_demo = not(resource_exists::<crate::demo::Demo>);
-        // Nor can the race be paused while the intro flies.
+        // Nor can the race be paused while the intro flies or a
+        // challenge's intro page is up.
         let no_intro = not(resource_exists::<crate::intro::Intro>);
+        let no_briefing = not(resource_exists::<crate::challenge::Briefing>);
         app.add_systems(OnEnter(AppState::Race), spawn_hud.run_if(no_demo.clone()))
             .add_systems(OnExit(AppState::Race), unpause)
             .add_systems(
                 Update,
-                (update_gauge, update_readouts, update_meter, update_banners, race_menus.run_if(no_demo).run_if(no_intro)).run_if(in_state(AppState::Race)),
+                (update_gauge, update_readouts, update_meter, update_banners, race_menus.run_if(no_demo).run_if(no_intro).run_if(no_briefing)).run_if(in_state(AppState::Race)),
             );
     }
 }
