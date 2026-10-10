@@ -254,6 +254,18 @@ checkpoint 4), so the rewrite lets a computer rider's lap skip one
 checkpoint. The driver that follows the lines is in `atv-sim/src/ai.rs`,
 with the original's addresses.
 
+The original paces its computer riders (0x69950, 0x6a3f0, 0x6a970): "pace
+cars" lap the track at `mAIBestLapTime`..`mAIWorstLapTime` from
+`Setup/Tracks.xml` (one car per three racers, plus one), the riders ranked
+by ability, technique and their quad's top speed, acceleration and
+handling (0x25ab0) follow the cars best first, and a rider's target speeds
+scale by `1 - lead / 100 m`, kept to 0.5-1.5. A car with a player near it
+is pulled up to 600 m towards them. The rider skill setup (0x66200, applied
+at 0x681d0) makes an AI quad's brake (and handbrake) pedal instant, scales
+`SIDEFORCEMAX` by `1.15 (1 + Ability/10)`, sets `TORQUESLIDESCALE` to
+`0.75 / (1 + Ability/10)` and `FORCEPOINT` to 0; steering and engine are
+left alone.
+
 ## Game-mode rules (Setup/*.xml)
 
 - `Arcade.xml`: `RoundN TrackName=` in order (16 rounds, Dunes 1 twice).
