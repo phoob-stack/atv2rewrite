@@ -4,7 +4,8 @@
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
 //!             [--rider Male1] [--laps 3] [--frontend [--screen rider]]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
-//!             [--camera x,y,z,tx,ty,tz]
+//!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
+//!             [--resolution 1280x720] [--fullscreen]
 //!
 //! Without `--track` the game opens on its front end; with it, it goes
 //! straight into a race (`--frontend` shows the menus anyway, preselected).
@@ -27,6 +28,7 @@ use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{save_to_disk, Screenshot};
+use bevy::window::{MonitorSelection, WindowMode};
 
 use atv_formats::GameSource;
 use atv_sim::track as trk;
@@ -47,7 +49,12 @@ struct Args {
     screenshot: Option<PathBuf>,
     screenshot_after: f32,
     camera: Option<[f32; 6]>,
+    /// Fixed close-up of the quad on the grid: degrees around it (0 = in
+    /// front), degrees above it, metres away.
+    orbit: Option<[f32; 3]>,
     autodrive: bool,
+    resolution: (u32, u32),
+    fullscreen: bool,
     laps: u32,
     /// Go straight into a race (a track was given) instead of the menus.
     direct: bool,
@@ -121,7 +128,10 @@ fn parse_args() -> anyhow::Result<Args> {
         screenshot: None,
         screenshot_after: 8.0,
         camera: None,
+        orbit: None,
         autodrive: false,
+        resolution: (1280, 720),
+        fullscreen: false,
         laps: 3,
         direct: false,
         screen: None,
@@ -154,9 +164,19 @@ fn parse_args() -> anyhow::Result<Args> {
             "--screenshot" => a.screenshot = Some(PathBuf::from(val())),
             "--after" => a.screenshot_after = val().parse()?,
             "--autodrive" => a.autodrive = true,
+            "--fullscreen" => a.fullscreen = true,
+            "--resolution" => {
+                let v = val();
+                let (w, h) = v.split_once('x').ok_or_else(|| anyhow::anyhow!("--resolution wants WIDTHxHEIGHT, got {v}"))?;
+                a.resolution = (w.parse()?, h.parse()?);
+            }
             "--camera" => {
                 let v: Vec<f32> = val().split(',').filter_map(|s| s.trim().parse().ok()).collect();
                 a.camera = v.try_into().ok();
+            }
+            "--orbit" => {
+                let v: Vec<f32> = val().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+                a.orbit = v.try_into().ok();
             }
             other => anyhow::bail!("unknown argument {other}"),
         }
@@ -181,7 +201,12 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "ATV Quad Power Racing 2".into(),
-                resolution: (1280, 720).into(),
+                resolution: args.resolution.into(),
+                mode: if args.fullscreen {
+                    WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+                } else {
+                    WindowMode::Windowed
+                },
                 ..default()
             }),
             ..default()
@@ -347,9 +372,18 @@ fn setup(
     );
     let eye = start.0 - (start.1 * Vec3::NEG_Z) * 6.0 + Vec3::Y * 2.5;
     let cam = Transform::from_translation(eye).looking_at(start.0, Vec3::Y);
-    match args.camera {
-        Some([x, y, z, tx, ty, tz]) => {
-            let t = Transform::from_xyz(x, y, -z).looking_at(Vec3::new(tx, ty, -tz), Vec3::Y);
+    let fixed = match (args.camera, args.orbit) {
+        (Some([x, y, z, tx, ty, tz]), _) => Some(Transform::from_xyz(x, y, -z).looking_at(Vec3::new(tx, ty, -tz), Vec3::Y)),
+        (None, Some([yaw, pitch, dist])) => {
+            let (yaw, pitch) = (yaw.to_radians(), pitch.to_radians());
+            let dir = start.1 * Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos());
+            let target = start.0 + Vec3::Y * 0.2;
+            Some(Transform::from_translation(target + dir * dist).looking_at(target, Vec3::Y))
+        }
+        _ => None,
+    };
+    match fixed {
+        Some(t) => {
             let (yaw, pitch, _) = t.rotation.to_euler(EulerRot::YXZ);
             commands.spawn((view, t, FlyCam { yaw, pitch }, IsDefaultUiCamera, scoped.clone()));
         }
@@ -482,17 +516,16 @@ fn sync_quad(
     }
     for (w, mut t) in &mut wheels {
         let n = w.wheels.len() as f32;
-        let (mut comp, mut spin, mut steer) = (0.0, 0.0, 0.0);
+        let (mut height, mut spin, mut steer) = (0.0, 0.0, 0.0);
         for &i in &w.wheels {
             let (Some(ws), Some(wp)) = (v.wheels.get(i), v.params.wheels.get(i)) else { continue };
-            // Hanging fully = min_pos; compressed moves the wheel up.
-            comp += wp.min_pos + ws.compression;
+            // Wheel centre = attachment + travel along the strut.
+            height += wp.offset[1] + wp.min_pos + ws.compression;
             spin += ws.spin;
             steer += ws.steer;
         }
-        let (comp, spin, steer) = (comp / n, spin / n, steer / n);
-        // The model's wheel centre sits at rest-ish compression; offset from there.
-        t.translation = w.base + Vec3::Y * (comp + 0.07);
+        let (height, spin, steer) = (height / n, spin / n, steer / n);
+        t.translation = w.base.with_y(height + convert::COM_HEIGHT);
         let spin = if w.mirror { spin } else { -spin };
         t.rotation = Quat::from_rotation_y(steer) * Quat::from_rotation_x(spin);
     }
