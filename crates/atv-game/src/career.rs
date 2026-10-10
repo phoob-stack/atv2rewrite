@@ -234,6 +234,9 @@ pub struct Career {
     /// (0 bronze to 2 gold). The challenges' bonuses go to the same skill
     /// points.
     pub challenges: BTreeMap<usize, (f32, Option<usize>)>,
+    /// The Arcade round to carry on from (0: start afresh), as the
+    /// original's `mArcadeProgress`.
+    pub arcade: usize,
 }
 
 impl Career {
@@ -346,6 +349,7 @@ impl Career {
                 "skill_points" => c.skill_points = v.parse().unwrap_or(0),
                 "qualifying" => c.open[1] = v == "true",
                 "professional" => c.open[2] = v == "true",
+                "arcade" => c.arcade = v.parse().unwrap_or(0),
                 "best" => {
                     if let Some((t, p)) = v.rsplit_once(' ')
                         && let Ok(p) = p.parse()
@@ -396,6 +400,9 @@ impl Career {
 
     pub fn to_text(&self) -> String {
         let mut s = format!("skill_points = {}\nqualifying = {}\nprofessional = {}\n", self.skill_points, self.open[1], self.open[2]);
+        if self.arcade > 0 {
+            s += &format!("arcade = {}\n", self.arcade);
+        }
         for (t, p) in &self.best {
             s += &format!("best = {t} {p}\n");
         }
@@ -539,6 +546,7 @@ mod tests {
         c.open[1] = true;
         c.challenges.insert(3, (14.25, Some(1)));
         c.challenges.insert(12, (99.5, None));
+        c.arcade = 6;
         assert_eq!(Career::parse(&c.to_text()), c);
         assert_eq!(Career::parse("junk"), Career::new());
     }

@@ -74,6 +74,9 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
   checkpoints and the line add more; run out and it's over. Finish a round
   for the next one. Seven computer riders race each round, as in the
   original (its arcade mode seats 1 player and 7 AI).
+  The next round is saved after each one (`arcade` in career.cfg, the
+  original's `mArcadeProgress`); choosing Arcade then offers to continue
+  from it or start a new game.
 - **Open Freestyle**: roam any track for points against a time limit (1, 3,
   5, 10, 15 or 30 minutes, or unlimited) with the disc's Bronze, Silver and
   Gold targets. Points come from tricks, multi-trick combos, flips and spins,

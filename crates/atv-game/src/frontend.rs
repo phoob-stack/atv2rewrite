@@ -180,6 +180,8 @@ pub enum Screen {
     /// The split-screen championship: which one, then its standings.
     MpChamp,
     MpChampStatus,
+    /// Arcade with a saved round: carry on from it or start again.
+    ArcadeNew,
 }
 
 /// The Options menu's rows, and the page each opens.
@@ -215,6 +217,8 @@ pub struct FrontEnd {
     picking: usize,
     /// A split-screen championship is being set up.
     mp_champ: bool,
+    /// The Arcade round to start on.
+    arcade_round: usize,
 }
 
 impl FrontEnd {
@@ -334,7 +338,9 @@ fn navigate(
                                 _ => Mode::SingleRace,
                             };
                             sel.mode = fe.mode;
-                            fe.screen = Screen::Rider;
+                            fe.arcade_round = 0;
+                            let saved = career.arcade > 0 && career.arcade < roster.arcade.len();
+                            fe.screen = if fe.mode == Mode::Arcade && saved { Screen::ArcadeNew } else { Screen::Rider };
                         }
                         Some("CAREER") => {
                             fe.mode = Mode::Career;
@@ -380,6 +386,7 @@ fn navigate(
                 }
                 Nav::Back if fe.players > 1 => fe.screen = Screen::MpPlayers,
                 Nav::Back if fe.mode == Mode::Career => fe.screen = Screen::CareerChamp,
+                Nav::Back if fe.mode == Mode::Arcade && career.arcade > 0 && career.arcade < roster.arcade.len() => fe.screen = Screen::ArcadeNew,
                 Nav::Back if fe.mode == Mode::Freestyle => fe.screen = Screen::FreestyleType,
                 Nav::Back if fe.mode == Mode::Challenge => fe.screen = Screen::Challenges,
                 Nav::Back => fe.screen = Screen::Main,
@@ -425,9 +432,9 @@ fn navigate(
                     sel.challenge = fe.challenge;
                     next.set(AppState::Loading);
                 } else if fe.mode == Mode::Arcade {
-                    // Arcade starts on its first round.
-                    if let Some(t) = roster.arcade.first() {
-                        sel.round = 0;
+                    // Arcade starts on its first round, or the saved one.
+                    if let Some(t) = roster.arcade.get(fe.arcade_round) {
+                        sel.round = fe.arcade_round;
                         sel.track = t.clone();
                         sel.laps = 3;
                         next.set(AppState::Loading);
@@ -536,6 +543,20 @@ fn navigate(
                     }
                     _ => {}
                 }
+            }
+            Nav::Back => fe.screen = Screen::Main,
+            _ => {}
+        },
+        Screen::ArcadeNew => match nav {
+            Nav::Up | Nav::Down => {
+                if let Some(l) = list.as_mut() {
+                    l.step(nav);
+                }
+            }
+            Nav::Accept | Nav::Start => {
+                // The saved round first, then a new game.
+                fe.arcade_round = if list.as_ref().is_some_and(|l| l.selected == 0) { career.arcade } else { 0 };
+                fe.screen = Screen::Rider;
             }
             Nav::Back => fe.screen = Screen::Main,
             _ => {}
@@ -762,6 +783,7 @@ fn rebuild(
         Screen::MpPlayers => ("Multiplayer_Num_Players", label),
         Screen::MpChamp => ("Career_Newgame", "CHAMPIONSHIP"),
         Screen::MpChampStatus => (mp_champ.run.as_ref().map_or("Career_Status_Amateur", |r| r.champ.status_screen()), "CHAMPIONSHIP"),
+        Screen::ArcadeNew => ("Arcade_Newgame", "ARCADE"),
     };
     let (bg, title) = roster.screen(key);
 
@@ -951,6 +973,14 @@ fn rebuild(
             }
             if !locked.is_empty() {
                 kids.push(hint(&mut commands, &ui, "FINISH IN THE TOP 3 OF A CHAMPIONSHIP TO OPEN THE NEXT", 370.0));
+            }
+        }
+        Screen::ArcadeNew => {
+            let cont = format!("CONTINUE FROM ROUND {}", career.arcade + 1);
+            let list = MenuList::new(&[cont.as_str(), "NEW GAME"], 360.0).with_row(36.0);
+            kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 360.0) / 2.0, 170.0));
+            if let Some(t) = roster.arcade.get(career.arcade) {
+                kids.push(hint(&mut commands, &ui, &format!("ROUND {} OF {}  -  {}", career.arcade + 1, roster.arcade.len(), track_title(t)), 330.0));
             }
         }
         Screen::MpPlayers => {

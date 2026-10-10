@@ -607,6 +607,12 @@ fn race_menus(
                     Some(o)
                 })
                 .flatten();
+            // A finished Arcade round: the next is where Arcade carries on.
+            if selection.mode == Mode::Arcade && p.finished.is_some() && !p.out_of_time() {
+                let next = selection.round + 1;
+                career.arcade = if next < roster.arcade.len() { next } else { 0 };
+                career.save();
+            }
             let run = if champ_round { mp_champ.run.as_ref() } else { career.run.as_ref() };
             spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref()), overlay);
         }
