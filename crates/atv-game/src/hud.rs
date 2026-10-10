@@ -672,7 +672,6 @@ fn race_menus(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Tries at an Arcade round (the original's "Attempts: %d/3").
 const ARCADE_ATTEMPTS: usize = 3;
 
