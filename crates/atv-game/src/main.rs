@@ -3,14 +3,19 @@
 //!
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
 //!             [--rider Male1] [--laps 3] [--frontend [--screen rider]]
+//!             [--mode race|timetrial|arcade|freestyle] [--minutes N]
+//!             [--round N]
 //!             [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
 //!             [--resolution 1280x720] [--fullscreen]
 //!
 //! Without `--track` the game opens on its front end; with it, it goes
 //! straight into a race (`--frontend` shows the menus anyway, preselected).
+//! `--mode` picks the mode (`--minutes` is Open Freestyle's limit, 0 for
+//! none; arcade races its rounds' tracks, `--round` starts on one).
 
 mod convert;
+mod freestyle;
 mod frontend;
 mod hud;
 mod race;
@@ -36,8 +41,9 @@ use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
 use convert::{SkyDome, WheelVisual};
+use freestyle::{Session, StuntClips};
 use frontend::{FrontEnd, Roster, Screen};
-use race::RaceProgress;
+use race::{ArcadeClock, RaceProgress};
 use rider::Rider;
 use ui::UiAssets;
 
@@ -61,6 +67,36 @@ struct Args {
     direct: bool,
     /// Front-end screen to open on.
     screen: Option<Screen>,
+    mode: Mode,
+    /// Open Freestyle's limit in minutes (None = unlimited).
+    minutes: Option<u32>,
+    /// Arcade round to start on (0-based).
+    round: usize,
+}
+
+/// The game modes on the main menu.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum Mode {
+    #[default]
+    SingleRace,
+    TimeTrial,
+    /// The rounds of `Setup/Arcade.xml` in a row, against a checkpoint
+    /// clock.
+    Arcade,
+    /// Open Freestyle: roam a track scoring tricks, trick boxes and spots.
+    Freestyle,
+}
+
+impl Mode {
+    /// Watermark shown on the select screens.
+    fn label(self) -> &'static str {
+        match self {
+            Mode::SingleRace => "SINGLE RACE",
+            Mode::TimeTrial => "TIME TRIAL",
+            Mode::Arcade => "ARCADE",
+            Mode::Freestyle => "FREESTYLE",
+        }
+    }
 }
 
 #[derive(States, Default, Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -81,6 +117,11 @@ struct Selection {
     /// Rider model folder under `Characters`.
     rider: String,
     laps: u32,
+    mode: Mode,
+    /// Arcade round being raced (index into the roster's rounds).
+    round: usize,
+    /// Open Freestyle's time limit in minutes (None = unlimited).
+    time_limit: Option<u32>,
 }
 
 #[derive(Resource, Clone)]
@@ -136,6 +177,9 @@ fn parse_args() -> anyhow::Result<Args> {
         laps: 3,
         direct: false,
         screen: None,
+        mode: Mode::SingleRace,
+        minutes: Some(3),
+        round: 0,
     };
     let mut frontend = false;
     let mut it = std::env::args().skip(1);
@@ -159,6 +203,20 @@ fn parse_args() -> anyhow::Result<Args> {
                     "track" => Screen::Track,
                     other => anyhow::bail!("unknown screen {other} (title, main, rider, atv, track)"),
                 });
+            }
+            "--mode" => {
+                a.mode = match val().to_ascii_lowercase().as_str() {
+                    "race" | "single" => Mode::SingleRace,
+                    "timetrial" | "time" => Mode::TimeTrial,
+                    "arcade" => Mode::Arcade,
+                    "freestyle" => Mode::Freestyle,
+                    other => anyhow::bail!("unknown mode {other} (race, timetrial, arcade, freestyle)"),
+                }
+            }
+            "--minutes" => a.minutes = Some(val().parse::<u32>()?).filter(|&m| m > 0),
+            "--round" => {
+                a.round = val().parse()?;
+                a.direct = true;
             }
             "--quad" => a.quad = val(),
             "--rider" => a.rider = val(),
@@ -195,7 +253,21 @@ fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
     let game = Game(Arc::new(GameSource::open(&args.game)?));
     let roster = Roster::load(&game.0);
-    let selection = Selection { track: args.track.clone(), quad: args.quad.clone(), rider: args.rider.clone(), laps: args.laps.clamp(1, 9) };
+    let mut selection = Selection {
+        track: args.track.clone(),
+        quad: args.quad.clone(),
+        rider: args.rider.clone(),
+        laps: args.laps.clamp(1, 9),
+        mode: args.mode,
+        round: args.round,
+        time_limit: args.minutes,
+    };
+    // Arcade races its rounds' tracks (`--round N` starts on one).
+    if args.mode == Mode::Arcade
+        && let Some(t) = roster.arcade.get(args.round)
+    {
+        selection.track = t.clone();
+    }
     let first = if args.direct { AppState::Loading } else { AppState::FrontEnd };
     let front_end = FrontEnd::at(args.screen.unwrap_or_default());
     App::new()
@@ -219,7 +291,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(roster)
         .insert_resource(selection)
         .insert_resource(front_end)
-        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin))
+        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin))
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
@@ -227,7 +299,7 @@ fn main() -> anyhow::Result<()> {
         .add_systems(FixedUpdate, drive.run_if(in_state(AppState::Race)))
         .add_systems(
             Update,
-            (sync_quad, animate_rider, rider::pose_riders, chase_camera, fly_camera, follow_sky).chain().run_if(in_state(AppState::Race)),
+            (sync_quad, animate_rider, stunts, rider::pose_riders, chase_camera, fly_camera, follow_sky).chain().run_if(in_state(AppState::Race)),
         )
         .add_systems(Update, auto_screenshot)
         .run();
@@ -266,6 +338,8 @@ fn teardown(mut commands: Commands, mut cams: Query<(Entity, &mut Camera), With<
     commands.remove_resource::<Player>();
     commands.remove_resource::<Controls>();
     commands.remove_resource::<RaceProgress>();
+    commands.remove_resource::<Session>();
+    commands.remove_resource::<StuntClips>();
     set_ui_camera(&mut commands, &mut cams, true);
 }
 
@@ -274,6 +348,7 @@ fn setup(
     mut commands: Commands,
     args: Res<Args>,
     sel: Res<Selection>,
+    roster: Res<Roster>,
     mut ui_cams: Query<(Entity, &mut Camera), With<UiCamera>>,
     game: Res<Game>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -410,7 +485,15 @@ fn setup(
     }
     // Whether the grid is on the start/finish line or still has to cross it.
     let on_line = checkpoints.first().is_some_and(|&c| (c - start.0).with_y(0.0).length() < 25.0);
-    commands.insert_resource(RaceProgress::new(sel.laps, on_line));
+    let mut progress = RaceProgress::new(sel.laps, on_line);
+    if sel.mode == Mode::Arcade {
+        let info = roster.info(&sel.track);
+        progress = progress.with_arcade(ArcadeClock::new(info.arcade_start, info.worst_lap, checkpoints.len(), &race::arcade_gates(&scene.world)));
+    }
+    commands.insert_resource(progress);
+    let session = Session::new(&game.0, &sel, &scene.world);
+    commands.insert_resource(StuntClips::load(&game.0, &session.tricks));
+    commands.insert_resource(session);
     commands.insert_resource(Race {
         collision,
         next_checkpoint: usize::from(on_line && checkpoints.len() > 1),
@@ -444,7 +527,9 @@ fn baked_level(world: &atv_formats::row::World, at: Vec3) -> f32 {
     if n == 0.0 { 1.0 } else { (sum / n).clamp(0.35, 1.2) }
 }
 
-fn read_input(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> Input {
+/// `airborne`: the pad's X and RB are trick buttons in the air, so they
+/// don't brake or pre-load there.
+fn read_input(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, airborne: bool) -> Input {
     let key = |k: KeyCode| -> f32 { if keys.pressed(k) { 1.0 } else { 0.0 } };
     let mut i = Input {
         throttle: key(KeyCode::ArrowUp).max(key(KeyCode::KeyW)),
@@ -462,8 +547,11 @@ fn read_input(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> Input {
         i.throttle = i.throttle.max(pad.get(GamepadButton::RightTrigger2).unwrap_or(0.0));
         i.throttle = i.throttle.max(if pad.pressed(GamepadButton::South) { 1.0 } else { 0.0 });
         i.brake = i.brake.max(pad.get(GamepadButton::LeftTrigger2).unwrap_or(0.0));
-        i.brake = i.brake.max(if pad.pressed(GamepadButton::West) { 1.0 } else { 0.0 });
-        i.jump |= pad.pressed(GamepadButton::RightTrigger) || pad.pressed(GamepadButton::East);
+        if !airborne {
+            i.brake = i.brake.max(if pad.pressed(GamepadButton::West) { 1.0 } else { 0.0 });
+            i.jump |= pad.pressed(GamepadButton::RightTrigger);
+        }
+        i.jump |= pad.pressed(GamepadButton::East);
     }
     i
 }
@@ -477,25 +565,37 @@ fn drive(
     race: Option<ResMut<Race>>,
     player: Option<ResMut<Player>>,
     progress: Option<ResMut<RaceProgress>>,
+    session: Option<ResMut<Session>>,
     mut controls: Option<ResMut<Controls>>,
 ) {
-    let (Some(mut race), Some(mut player), Some(mut progress)) = (race, player, progress) else { return };
+    let (Some(mut race), Some(mut player), Some(mut progress), Some(mut session)) = (race, player, progress, session) else { return };
     let dt = time.delta_secs();
     let v = &mut player.0;
     progress.tick(dt);
+    let freestyle = session.freestyle;
 
     let n = race.checkpoints.len();
     let next = race.next_checkpoint % n.max(1);
     // Held on the grid for the countdown; after the flag the autopilot
-    // brings the quad home.
-    let input = if !progress.started() {
-        Input::default()
+    // brings the quad home; out of time, it rolls to a stop.
+    let over = if freestyle { session.over(progress.clock) } else { progress.over() };
+    let input = if !progress.started() || (over && (freestyle || progress.out_of_time())) {
+        // Brake to a stop (braking at a standstill would reverse).
+        Input { brake: if over && v.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
+    } else if let Some(spot) = session.next_spot(v.position).filter(|_| args.autodrive && freestyle) {
+        // Freestyle's autopilot goes exploring.
+        trk::steer_towards(v, spot)
     } else if (args.autodrive || progress.finished.is_some()) && n > 0 {
         trk::steer_towards(v, race.checkpoints[next])
     } else {
-        read_input(&keys, &pads)
+        read_input(&keys, &pads, !v.grounded())
     };
-    if let Some(&cp) = race.checkpoints.get(next) {
+    if let Some(&cp) = race.checkpoints.get(next).filter(|_| freestyle) {
+        // No laps in freestyle; the checkpoints only lead the autopilot.
+        if (cp - v.position).with_y(0.0).length() < 25.0 {
+            race.next_checkpoint = (next + 1) % n;
+        }
+    } else if let Some(&cp) = race.checkpoints.get(next) {
         let to_cp = (cp - v.position).with_y(0.0);
         if to_cp.length() < 25.0 {
             progress.reach(next);
@@ -516,6 +616,15 @@ fn drive(
     if let Some(c) = controls.as_mut() {
         c.0 = input;
     }
+    let (mut buttons, mut dir) = freestyle::read_tricks(&keys, &pads);
+    if args.autodrive && session.active.is_none() && !v.grounded() {
+        // The autopilot shows off a different trick every so often.
+        let k = (session.time * 0.7) as usize;
+        buttons = 1 << (k % 4);
+        dir = Some([freestyle::Dir::Up, freestyle::Dir::Right, freestyle::Dir::Down, freestyle::Dir::Left][k / 4 % 4]);
+    }
+    let live = progress.started() && !over;
+    session.step(v, buttons, dir, dt, live);
 
     // Remember a safe spot; respot there on R, when stuck upside down, or
     // after falling out of the world.
@@ -536,7 +645,9 @@ fn drive(
         v.reset(p, r);
         let on_line = race.checkpoints.first().is_some_and(|&c| (c - p).with_y(0.0).length() < 25.0);
         race.next_checkpoint = usize::from(on_line && n > 1);
+        let arcade = progress.arcade.take();
         *progress = RaceProgress::new(progress.laps, on_line);
+        progress.arcade = arcade;
     }
 }
 
@@ -578,6 +689,18 @@ fn animate_rider(
     let v = &player.0;
     for mut r in &mut riders {
         r.update_controls(v.steer, controls.0.lean, v.preload, time.delta_secs());
+    }
+}
+
+/// The rider performs the trick in progress.
+fn stunts(time: Res<Time>, session: Option<Res<Session>>, clips: Option<Res<StuntClips>>, mut riders: Query<&mut Rider>) {
+    let (Some(s), Some(clips)) = (session, clips) else { return };
+    let stunt = s.active.as_ref().and_then(|a| {
+        let clip = clips.0.get(a.def)?.clone()?;
+        Some((clip, a.t / s.tricks[a.def].total))
+    });
+    for mut r in &mut riders {
+        r.set_stunt(stunt.clone(), time.delta_secs());
     }
 }
 

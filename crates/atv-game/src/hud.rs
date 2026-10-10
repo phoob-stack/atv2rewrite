@@ -1,14 +1,17 @@
 //! The in-race HUD, drawn with the original art: the rev gauge with its
 //! needle, preload meter, speed and gear; lap, time and best-lap readouts;
 //! the lap progress meter; the 3-2-1-GO countdown, checkpoint banner and
-//! wrong-way warning; and the pause and results menus.
+//! wrong-way warning; arcade's checkpoint clock; and the pause and results
+//! menus for every mode. Freestyle's score readouts are in `freestyle`.
 
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
 
+use crate::freestyle::{limit_label, Session, MEDALS};
+use crate::frontend::Roster;
 use crate::race::{fmt_time, RaceProgress};
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets};
-use crate::{AppState, Player, Selection};
+use crate::{AppState, Mode, Player, Selection};
 
 pub struct HudPlugin;
 
@@ -42,7 +45,12 @@ enum Readout {
     Time,
     LapTime,
     Best,
+    /// Arcade: seconds left, and the round.
+    TimeLeft,
+    Round,
 }
+#[derive(Component)]
+struct BonusText;
 #[derive(Component)]
 struct MeterPin {
     top: f32,
@@ -63,8 +71,10 @@ struct RaceMenu {
     results: bool,
 }
 
-fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>) {
+fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Selection>, roster: Res<Roster>) {
     let Some(ui) = assets else { return };
+    let racing = sel.mode != Mode::Freestyle;
+    let rounds = roster.arcade.len();
     let hud = &ui.hud;
     let dial = hud.get("DIAL");
     let origin = dial.rect.min;
@@ -130,12 +140,40 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>) {
                 g.spawn((n, img));
             });
 
-            // Lap, top left.
-            root.spawn(Node { position_type: PositionType::Absolute, left: px(24), top: px(18), align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() })
-                .with_children(|r| {
-                    r.spawn(BitmapText::new(FontId::Small, 9.0, "LAP"));
-                    r.spawn((BitmapText::new(FontId::Chrome, 22.0, "1/3"), Readout::Lap));
+            if !racing {
+                // Freestyle has its own readouts and no laps.
+                spawn_messages(root, &ui);
+                return;
+            }
+            // Lap, top left (and arcade's round under it).
+            root.spawn(Node { position_type: PositionType::Absolute, left: px(24), top: px(18), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() })
+                .with_children(|c| {
+                    c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
+                        r.spawn(BitmapText::new(FontId::Small, 9.0, "LAP"));
+                        r.spawn((BitmapText::new(FontId::Chrome, 22.0, "1/3"), Readout::Lap));
+                    });
+                    if sel.mode == Mode::Arcade {
+                        c.spawn((BitmapText::new(FontId::Small, 8.0, format!("ROUND {}/{rounds}", sel.round + 1)).color(Color::srgb(0.75, 0.85, 1.0)), Readout::Round));
+                    }
                 });
+
+            // Arcade's clock, top centre.
+            if sel.mode == Mode::Arcade {
+                root.spawn(Node {
+                    position_type: PositionType::Absolute,
+                    width: percent(100),
+                    top: px(14),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    row_gap: px(2),
+                    ..default()
+                })
+                .with_children(|c| {
+                    c.spawn(BitmapText::new(FontId::Small, 8.0, "TIME LEFT"));
+                    c.spawn((BitmapText::new(FontId::Chrome, 26.0, "0:00.00"), Readout::TimeLeft));
+                    c.spawn((BitmapText::new(FontId::Chrome, 13.0, "").color(Color::srgb(0.5, 1.0, 0.45)), BonusText));
+                });
+            }
 
             // Times, top right.
             root.spawn(Node {
@@ -171,28 +209,33 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>) {
                     c.spawn((placed(ui.positions.node("P1", 0.24), 15.0 - p.x / 2.0, length - p.y / 2.0), MeterPin { top: -p.y / 2.0, length }));
                 });
 
-            // Centre-screen messages.
-            root.spawn((Node { position_type: PositionType::Absolute, width: percent(100), top: px(150), justify_content: JustifyContent::Center, ..default() },))
-                .with_children(|c| {
-                    let (n, img) = ui.countdown.node("three", 1.0);
-                    c.spawn((n, img, Countdown, UiTransform::default(), Visibility::Hidden));
-                });
-            root.spawn(Node {
-                position_type: PositionType::Absolute,
-                width: percent(100),
-                top: px(92),
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                row_gap: px(6),
-                ..default()
-            })
-            .with_children(|c| {
-                c.spawn((ui.meter.node("checkpoint", 1.25), CheckpointBanner, Visibility::Hidden));
-                c.spawn((BitmapText::new(FontId::Chrome, 14.0, ""), SplitText));
-                c.spawn((BitmapText::new(FontId::Menu, 20.0, ""), LapBanner));
-                c.spawn((BitmapText::new(FontId::Menu, 24.0, "WRONG WAY").color(Color::srgb(1.0, 0.25, 0.1)), WrongWay, Visibility::Hidden));
-            });
+            spawn_messages(root, &ui);
         });
+}
+
+/// Centre-screen messages: the countdown, checkpoint banner, lap and
+/// finish banners and the wrong-way warning.
+fn spawn_messages(root: &mut ChildSpawnerCommands, ui: &UiAssets) {
+    root.spawn((Node { position_type: PositionType::Absolute, width: percent(100), top: px(150), justify_content: JustifyContent::Center, ..default() },))
+        .with_children(|c| {
+            let (n, img) = ui.countdown.node("three", 1.0);
+            c.spawn((n, img, Countdown, UiTransform::default(), Visibility::Hidden));
+        });
+    root.spawn(Node {
+        position_type: PositionType::Absolute,
+        width: percent(100),
+        top: px(92),
+        flex_direction: FlexDirection::Column,
+        align_items: AlignItems::Center,
+        row_gap: px(6),
+        ..default()
+    })
+    .with_children(|c| {
+        c.spawn((ui.meter.node("checkpoint", 1.25), CheckpointBanner, Visibility::Hidden));
+        c.spawn((BitmapText::new(FontId::Chrome, 14.0, ""), SplitText));
+        c.spawn((BitmapText::new(FontId::Menu, 20.0, ""), LapBanner));
+        c.spawn((BitmapText::new(FontId::Menu, 24.0, "WRONG WAY").color(Color::srgb(1.0, 0.25, 0.1)), WrongWay, Visibility::Hidden));
+    });
 }
 
 /// A node centred on (x, y), `w` units wide.
@@ -226,8 +269,20 @@ fn update_gauge(
     }
 }
 
-fn update_readouts(player: Option<Res<Player>>, progress: Option<Res<RaceProgress>>, mut q: Query<(&Readout, &mut BitmapText)>) {
+fn update_readouts(
+    player: Option<Res<Player>>,
+    progress: Option<Res<RaceProgress>>,
+    mut q: Query<(&Readout, &mut BitmapText), Without<BonusText>>,
+    mut bonus: Query<&mut BitmapText, With<BonusText>>,
+) {
     let (Some(player), Some(p)) = (player, progress) else { return };
+    if let (Ok(mut t), Some(a)) = (bonus.single_mut(), p.arcade.as_ref()) {
+        let s = match a.last_bonus {
+            Some((at, secs)) if p.clock - at < 2.0 => format!("+{}", fmt_time(secs)),
+            _ => String::new(),
+        };
+        set_text(&mut t, &s);
+    }
     let v = &player.0;
     for (r, mut t) in &mut q {
         let s = match r {
@@ -241,6 +296,16 @@ fn update_readouts(player: Option<Res<Player>>, progress: Option<Res<RaceProgres
             Readout::Time => fmt_time(p.finished.unwrap_or(p.clock)),
             Readout::LapTime => fmt_time(if p.started() { p.lap_time() } else { 0.0 }),
             Readout::Best => p.best_lap().map_or("-:--.--".into(), fmt_time),
+            Readout::TimeLeft => {
+                let left = p.arcade.as_ref().map_or(0.0, |a| a.left);
+                // Red in the last ten seconds.
+                let c = if left < 10.0 && p.started() { Color::srgb(1.0, 0.3, 0.2) } else { Color::WHITE };
+                if t.color != c {
+                    t.color = c;
+                }
+                fmt_time(left)
+            }
+            Readout::Round => continue,
         };
         set_text(&mut t, &s);
     }
@@ -257,6 +322,7 @@ fn update_meter(progress: Option<Res<RaceProgress>>, mut pins: Query<(&MeterPin,
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_banners(
     progress: Option<Res<RaceProgress>>,
+    session: Option<Res<Session>>,
     ui: Option<Res<UiAssets>>,
     time: Res<Time<Real>>,
     mut countdown: Query<(&mut ImageNode, &mut Node, &mut UiTransform, &mut Visibility), With<Countdown>>,
@@ -277,7 +343,7 @@ fn update_banners(
             (Some("two"), 2.0 - c)
         } else if c > 0.0 {
             (Some("one"), 1.0 - c)
-        } else if p.clock < 1.0 && p.finished.is_none() {
+        } else if p.clock < 1.0 && !p.over() {
             (Some("go"), p.clock)
         } else {
             (None, 0.0)
@@ -318,9 +384,14 @@ fn update_banners(
         };
         set_text(&mut t, &s);
     }
+    let time_up = session.as_ref().is_some_and(|s| s.freestyle && s.over(p.clock));
     if let Ok(mut t) = lap.single_mut() {
         let s = if quiet {
             String::new()
+        } else if time_up {
+            "TIME UP".to_string()
+        } else if p.out_of_time() {
+            "OUT OF TIME".to_string()
         } else if p.finished.is_some() {
             "FINISHED".to_string()
         } else if lap_done && p.lap() == p.laps {
@@ -347,7 +418,9 @@ fn race_menus(
     pads: Query<&Gamepad>,
     ui: Option<Res<UiAssets>>,
     progress: Option<Res<RaceProgress>>,
-    selection: Res<Selection>,
+    mut session: Option<ResMut<Session>>,
+    mut selection: ResMut<Selection>,
+    roster: Res<Roster>,
     mut virt: ResMut<Time<Virtual>>,
     menus: Query<(Entity, &RaceMenu)>,
     mut lists: Query<&mut MenuList>,
@@ -356,16 +429,20 @@ fn race_menus(
 ) {
     let (Some(ui), Some(p)) = (ui, progress) else { return };
     let nav = read_nav(&keys, &pads);
-    // Results come up a moment after the line.
-    *finished_for = if p.finished.is_some() { *finished_for + virt.delta_secs() } else { 0.0 };
+    // Results come up a moment after the line (or the clock running out).
+    let over = match session.as_deref() {
+        Some(s) if s.freestyle => s.over(p.clock),
+        _ => p.over(),
+    };
+    *finished_for = if over { *finished_for + virt.delta_secs() } else { 0.0 };
 
     let (Ok((e, menu)), Ok(mut list)) = (menus.single(), lists.single_mut()) else {
         // Escape or Start pauses (Backspace is the quick restart).
-        if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start)) && p.finished.is_none() {
+        if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start)) && !over {
             virt.pause();
-            spawn_race_menu(&mut commands, &ui, false, &p, &selection);
+            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster);
         } else if *finished_for > 2.5 && menus.is_empty() {
-            spawn_race_menu(&mut commands, &ui, true, &p, &selection);
+            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster);
         }
         return;
     };
@@ -379,19 +456,49 @@ fn race_menus(
         Nav::Start | Nav::Back if !menu.results => close(&mut commands, &mut virt),
         Nav::Accept => match list.current() {
             "CONTINUE" => close(&mut commands, &mut virt),
-            "RESTART" | "RACE AGAIN" => next.set(AppState::Loading),
-            "QUIT RACE" | "MAIN MENU" => next.set(AppState::FrontEnd),
+            "END SESSION" => {
+                if let Some(s) = session.as_mut() {
+                    s.ended = true;
+                }
+                close(&mut commands, &mut virt);
+            }
+            "RESTART" | "RACE AGAIN" | "TRY AGAIN" | "PLAY AGAIN" => next.set(AppState::Loading),
+            "NEXT ROUND" => {
+                if let Some(t) = roster.arcade.get(selection.round + 1) {
+                    selection.round += 1;
+                    selection.track = t.clone();
+                    next.set(AppState::Loading);
+                }
+            }
+            "QUIT RACE" | "QUIT" | "MAIN MENU" => next.set(AppState::FrontEnd),
             _ => {}
         },
         _ => {}
     }
 }
 
-fn spawn_race_menu(commands: &mut Commands, ui: &UiAssets, results: bool, p: &RaceProgress, sel: &Selection) {
-    let items: &[&str] = if results { &["RACE AGAIN", "MAIN MENU"] } else { &["CONTINUE", "RESTART", "QUIT RACE"] };
+fn spawn_race_menu(commands: &mut Commands, ui: &UiAssets, results: bool, p: &RaceProgress, session: Option<&Session>, sel: &Selection, roster: &Roster) {
+    let freestyle = session.filter(|s| s.freestyle);
+    let last_round = sel.round + 1 >= roster.arcade.len();
+    let (title, items): (String, &[&str]) = match (results, sel.mode) {
+        (false, Mode::Freestyle) if freestyle.is_some_and(|s| s.limit.is_none()) => ("PAUSED".into(), &["CONTINUE", "END SESSION", "RESTART", "QUIT"]),
+        (false, Mode::Freestyle) => ("PAUSED".into(), &["CONTINUE", "RESTART", "QUIT"]),
+        (false, _) => ("RACE PAUSED".into(), &["CONTINUE", "RESTART", "QUIT RACE"]),
+        (true, Mode::Freestyle) => ("FREESTYLE RESULTS".into(), &["PLAY AGAIN", "MAIN MENU"]),
+        (true, Mode::Arcade) if p.out_of_time() => ("OUT OF TIME".into(), &["TRY AGAIN", "MAIN MENU"]),
+        (true, Mode::Arcade) if last_round => ("ARCADE COMPLETED".into(), &["MAIN MENU"]),
+        (true, Mode::Arcade) => (format!("ROUND {} COMPLETE", sel.round + 1), &["NEXT ROUND", "RACE AGAIN", "MAIN MENU"]),
+        (true, _) => ("RACE RESULTS".into(), &["RACE AGAIN", "MAIN MENU"]),
+    };
     let list = MenuList::new(items, 220.0);
     let panel = ui.bio.get("BIOPANEL").rect;
-    let (pw, ph) = (340.0, if results { 270.0 } else { 220.0 });
+    let rows = match (results, freestyle.is_some()) {
+        (false, _) => 0,
+        (true, true) => 7,
+        (true, false) => p.lap_times.len() + 1 + usize::from(p.arcade.is_some() && p.finished.is_some()),
+    };
+    let ph = 120.0 + 18.0 * rows as f32 + 34.0 * items.len() as f32;
+    let pw = 340.0;
     let menu = commands.spawn_empty().id();
     commands
         .spawn((
@@ -410,10 +517,31 @@ fn spawn_race_menu(commands: &mut Commands, ui: &UiAssets, results: bool, p: &Ra
                     n.width = percent(100);
                     n.height = percent(100);
                     box_.spawn((n, img));
-                    let title = if results { "RACE RESULTS" } else { "RACE PAUSED" };
                     box_.spawn(BitmapText::new(FontId::Menu, 17.0, title));
-                    box_.spawn(BitmapText::new(FontId::Small, 9.0, format!("{}  -  {}", track_title(&sel.track), sel.quad.to_uppercase())).color(Color::srgb(0.75, 0.85, 1.0)));
-                    if results {
+                    let sub = match sel.mode {
+                        Mode::Freestyle => format!("{}  -  {}", track_title(&sel.track), limit_label(sel.time_limit)),
+                        Mode::Arcade => format!("ROUND {}/{}  -  {}", sel.round + 1, roster.arcade.len(), track_title(&sel.track)),
+                        _ => format!("{}  -  {}", track_title(&sel.track), sel.quad.to_uppercase()),
+                    };
+                    box_.spawn(BitmapText::new(FontId::Small, 9.0, sub).color(Color::srgb(0.75, 0.85, 1.0)));
+                    if let (true, Some(s)) = (results, freestyle) {
+                        box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), margin: UiRect::vertical(px(6)), ..default() }).with_children(|rows| {
+                            let medal = s.medal();
+                            row(rows, "SCORE", &s.score.to_string(), medal.is_some());
+                            let m = match (medal, s.medals) {
+                                (Some(i), _) => format!("{} MEDAL", MEDALS[i]),
+                                (None, Some(m)) => format!("BRONZE AT {}", m[0]),
+                                (None, None) => "-".into(),
+                            };
+                            row(rows, "MEDAL", &m, medal.is_some());
+                            let best = s.best_trick.as_ref().map_or("-".to_string(), |(n, pts)| format!("{n} {pts}"));
+                            row(rows, "BEST TRICK", &best, false);
+                            row(rows, "BEST JUMP", &s.best_jump.to_string(), false);
+                            row(rows, "TRICKS LANDED", &s.landed.to_string(), false);
+                            row(rows, "SPOTS FOUND", &format!("{}/{}", s.spots_found(), s.spots.len()), false);
+                            row(rows, "LONGEST AIR", &format!("{:.1}S", s.longest_air), false);
+                        });
+                    } else if results {
                         box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), margin: UiRect::vertical(px(6)), ..default() }).with_children(|rows| {
                             let best = p.best_lap();
                             for (i, t) in p.lap_times.iter().enumerate() {
@@ -421,6 +549,9 @@ fn spawn_race_menu(commands: &mut Commands, ui: &UiAssets, results: bool, p: &Ra
                                 row(rows, &format!("LAP {}", i + 1), &fmt_time(*t), gold);
                             }
                             row(rows, "TOTAL", &fmt_time(p.finished.unwrap_or(p.clock)), false);
+                            if let Some(a) = p.arcade.as_ref().filter(|_| p.finished.is_some()) {
+                                row(rows, "TIME LEFT", &fmt_time(a.left), false);
+                            }
                         });
                     }
                     box_.spawn(Node { margin: UiRect::top(px(8)), ..default() }).add_child(menu);
