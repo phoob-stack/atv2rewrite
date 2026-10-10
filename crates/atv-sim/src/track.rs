@@ -49,6 +49,34 @@ pub fn collision(world: &World, game: &GameSource, track: &str) -> TrackCollisio
     TrackCollision::new(tris, 8.0)
 }
 
+/// The track's water surfaces (meshes with a water material; the 0x2000
+/// flag also marks shadow decals), level parts only, for finding how deep
+/// a quad is wading.
+pub fn water_surface(world: &World) -> TrackCollision {
+    let mut tris = Vec::new();
+    for m in &world.meshes {
+        let named = usize::try_from(m.material)
+            .ok()
+            .and_then(|i| world.materials.get(i))
+            .is_some_and(|n| n.to_ascii_lowercase().contains("water"));
+        if !named {
+            continue;
+        }
+        for t in m.indices.as_chunks::<3>().0 {
+            tris.push([0, 1, 2].map(|k| to_sim(m.vertices[t[k] as usize].pos)));
+        }
+        for p in &m.patches {
+            let t = p.tessellate(PATCH_STEPS);
+            for tri in t.indices.as_chunks::<3>().0 {
+                tris.push([0, 1, 2].map(|k| to_sim(t.pos[tri[k] as usize])));
+            }
+        }
+    }
+    // Falls and spray sheets stand up; only the level surface is water to wade in.
+    tris.retain(|[a, b, c]| (*b - *a).cross(*c - *a).normalize_or_zero().y.abs() > 0.7);
+    TrackCollision::new(tris, 8.0)
+}
+
 /// Where a prop's model-space point (game frame) ends up in the sim frame,
 /// placed the same way the renderer places the model.
 pub fn instance_point(inst: &Instance, p: [f32; 3]) -> Vec3 {

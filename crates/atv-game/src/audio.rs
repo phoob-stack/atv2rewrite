@@ -222,6 +222,8 @@ struct WheelLoop {
     volume: f32,
     pitch: f32,
     racer: Option<usize>,
+    /// The water loop (its deep-water pitch), heard only while wading.
+    water: Option<f32>,
 }
 
 enum Role {
@@ -304,11 +306,14 @@ fn start_race_audio(
             }
         }
     }
-    if let Some(s) = setup.surface(&env, main_surface(&env)) {
+    // Each quad's wheels on the environment's ground, and in water.
+    let deep_pitch = setup.surface(&env, "Deep_Water").map_or(1.0, |s| s.pitch);
+    for (surface, water) in [(main_surface(&env), None), ("Shallow_Water", Some(deep_pitch))] {
+        let Some(s) = setup.surface(&env, surface) else { continue };
         let index = VEHICLE_SAMPLES.iter().find(|(n, _)| n.eq_ignore_ascii_case(&s.sample)).map(|&(_, i)| i);
         if let Some(pcm) = index.and_then(|i| data.vehicles.get(i)) {
             let volume = s.volume * setup.mix_level("mSurfaceVol", 1.0);
-            let wheel = WheelLoop { volume, pitch: s.pitch, racer: None };
+            let wheel = WheelLoop { volume, pitch: s.pitch, racer: None, water };
             play(Sound::looped(pcm.clone()), 0.0, Some(Role::Wheel(wheel.clone())));
             for racer in 0..opponents.as_ref().map_or(0, |o| o.racers.len()) {
                 play(Sound::looped(pcm.clone()), 0.0, Some(Role::Wheel(WheelLoop { racer: Some(racer), ..wheel.clone() })));
@@ -333,6 +338,7 @@ fn engine_and_wheels(
     mix: Option<Res<QuadMix>>,
     settings: Res<Settings>,
     virt: Res<Time<Virtual>>,
+    water: Option<Res<crate::water::Water>>,
     mut sinks: Query<(&mut AudioSink, Option<&EngineLoop>, Option<&WheelLoop>, Option<&OtherEngine>), With<PausesWithGame>>,
 ) {
     let paused = virt.is_paused();
@@ -364,7 +370,15 @@ fn engine_and_wheels(
                 let contact = q.wheels.iter().filter(|w| w.contact).count() as f32 / q.wheels.len().max(1) as f32;
                 let pace = (q.velocity.length() / 20.0).clamp(0.0, 1.0);
                 let near = falloff(q.position.distance(v.position));
-                (w.volume * mix.engine * pace * contact * near, w.pitch * (0.8 + 0.4 * pace))
+                let depth = crate::water::depth(water.as_deref(), q.position);
+                let (vol, pitch) = match w.water {
+                    // Splashing: churns even when slow, lower when deep.
+                    Some(deep) if depth > 0.05 => (pace.max(0.3), if depth > crate::water::DEEP { deep } else { w.pitch }),
+                    Some(_) => (0.0, w.pitch),
+                    None if depth > 0.05 => (0.0, w.pitch),
+                    None => (pace * contact, w.pitch),
+                };
+                (w.volume * mix.engine * vol * near, pitch * (0.8 + 0.4 * pace))
             }
             (.., Some(o)) => {
                 let Some(q) = opponents.as_ref().and_then(|opp| opp.racers.get(o.racer)).map(|r| &r.vehicle) else { continue };

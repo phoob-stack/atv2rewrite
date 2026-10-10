@@ -26,6 +26,7 @@ mod hd;
 mod mud;
 mod hud;
 mod knock;
+mod water;
 mod mp;
 mod opponents;
 mod race;
@@ -397,7 +398,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(career_rules)
         .insert_resource(career)
         .insert_resource(challenges)
-        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin, mp::MpPlugin, knock::KnockPlugin))
+        .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin, mp::MpPlugin, knock::KnockPlugin, water::WaterPlugin))
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
@@ -638,6 +639,7 @@ fn setup(
     commands.insert_resource(StuntClips::load(&game.0, &session.tricks));
     commands.insert_resource(Wreck::default());
     commands.insert_resource(session);
+    commands.insert_resource(water::Water(trk::water_surface(&scene.world)));
     commands.insert_resource(Race {
         collision,
         next_checkpoint: if in_challenge { 0 } else { usize::from(on_line && checkpoints.len() > 1) },
