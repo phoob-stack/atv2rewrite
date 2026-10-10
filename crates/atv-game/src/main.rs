@@ -1000,36 +1000,49 @@ fn cycle_camera(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, virt: Re
 }
 
 /// Vibration (when it's on in Options): a hard knock when the rider is
-/// thrown off and a thump on landing from a big jump.
+/// thrown off and a thump on landing from a big jump. In split screen each
+/// player's own pad shakes (the pad order `read_input` uses); otherwise
+/// every pad does, since any of them drives.
+#[allow(clippy::too_many_arguments)]
 fn rumble(
     settings: Res<Settings>,
     player: Option<Res<Player>>,
     wreck: Option<Res<Wreck>>,
+    sel: Res<Selection>,
+    opponents: Option<Res<opponents::Opponents>>,
     pads: Query<Entity, With<Gamepad>>,
     mut requests: MessageWriter<GamepadRumbleRequest>,
-    mut last: Local<(bool, f32)>,
+    mut last: Local<[(bool, f32); mp::MAX_PLAYERS]>,
 ) {
     let (Some(player), Some(wreck)) = (player, wreck) else { return };
-    let crashed = wreck.fall.is_some();
-    let air = player.0.air_time;
-    let (was_crashed, was_air) = *last;
-    *last = (crashed, air);
+    // Crashed and air time for each player; only player 1 crashes.
+    let mut now = [(false, 0.0); mp::MAX_PLAYERS];
+    now[0] = (wreck.fall.is_some(), player.0.air_time);
+    for r in opponents.iter().flat_map(|o| &o.racers) {
+        // Player numbers count from 1.
+        if let Some(slot) = r.human.map(|n| n - 1).filter(|s| *s < mp::MAX_PLAYERS) {
+            now[slot] = (false, r.vehicle.air_time);
+        }
+    }
+    let before = std::mem::replace(&mut *last, now);
     if !settings.vibration {
         return;
     }
-    let (strength, secs) = if crashed && !was_crashed {
-        (1.0, 0.45)
-    } else if !crashed && was_air > 0.5 && air == 0.0 {
-        ((was_air / 2.0).clamp(0.25, 0.8), 0.2)
-    } else {
-        return;
-    };
-    for gamepad in &pads {
-        requests.write(GamepadRumbleRequest::Add {
-            gamepad,
-            duration: std::time::Duration::from_secs_f32(secs),
-            intensity: GamepadRumbleIntensity { strong_motor: strength, weak_motor: strength * 0.6 },
-        });
+    for (slot, (&(crashed, air), &(was_crashed, was_air))) in now.iter().zip(&before).enumerate() {
+        let (strength, secs) = if crashed && !was_crashed {
+            (1.0, 0.45)
+        } else if !crashed && was_air > 0.5 && air == 0.0 {
+            ((was_air / 2.0).clamp(0.25, 0.8), 0.2)
+        } else {
+            continue;
+        };
+        for (_, gamepad) in pads.iter().enumerate().filter(|(n, _)| sel.players <= 1 || *n == slot) {
+            requests.write(GamepadRumbleRequest::Add {
+                gamepad,
+                duration: std::time::Duration::from_secs_f32(secs),
+                intensity: GamepadRumbleIntensity { strong_motor: strength, weak_motor: strength * 0.6 },
+            });
+        }
     }
 }
 
