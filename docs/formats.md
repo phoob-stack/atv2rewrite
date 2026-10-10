@@ -394,6 +394,6 @@ the ROW spatial tree and effect records, and the material record fields.
   `/ 14`) `+ 0.7` capped at 1, halved for some hit directions; pitch
   `1 + rand(0.5)`. The rewrite uses the chassis' closing speed over 2 m/s
   for the impact.
-- Other quads' engines: how (and how loud) the original plays computer
-  riders' engines isn't decoded; the rewrite gives them the player's mix
+- Other quads' engines and wheels: how (and how loud) the original plays computer
+  riders' engines and wheel noise isn't decoded; the rewrite gives them the player's mix
   scaled by `(8 / (d + 8))²`, d being the metres from player 1.
