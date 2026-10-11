@@ -23,6 +23,8 @@
 //! its time limit, with the bests' box but for the best lap; it carries on
 //! to "Try Again?" (0x34bc0), the same page under another title.
 //!
+//! An Arcade round's (0x3f7a0) is a race's without the points.
+//!
 //! A challenge's (0x55900, filled by 0x55780) has no bands: under
 //! "Freestyle", whether it was passed and the medal won, and the skill
 //! points it paid; "Try Again?" follows.
@@ -74,6 +76,7 @@ const POSITION_X: f32 = 30.0;
 const NAME_X: f32 = 25.0;
 const TIME_X: f32 = 403.0;
 const POINTS_X: f32 = 550.0;
+const ARCADE_TIME_X: f32 = 460.0;
 const BOX_TOP: f32 = 301.0;
 const BOX_H: f32 = 60.0;
 const AGAIN_Y: f32 = 156.0;
@@ -392,22 +395,43 @@ fn small_text(f: &mut ChildSpawnerCommands, ui: &UiAssets, (x, y, align): (f32, 
 
 /// The results page for `finishers`, in finishing order.
 pub fn spawn_page(commands: &mut Commands, ui: &UiAssets, finishers: &[Finisher], replay: bool, overlay: Option<Entity>) {
-    let first = FIRST_ROW_Y + 10.0 * (8.0 - finishers.len().min(8) as f32);
     let page = ResultsPage::new(bests(finishers), replay);
     spawn_frame(commands, ui, Some(&ui.results_overlay), ("RACE RESULTS", NAVY), page, overlay, |f| {
-        for (text, x, align) in [("POSITION", POSITION_X, 0), ("TIME", TIME_X, 1), ("POINTS", POINTS_X, 1)] {
-            small_text(f, ui, (x, HEAD_Y, align), HEAD, text, GREY);
-        }
-        for (i, r) in finishers.iter().enumerate() {
-            let y = first + ROW_GAP * i as f32;
-            let colour = row_colour(i, r.human);
-            let cells = [(format!("({}) {}", i + 1, r.name.to_uppercase()), NAME_X, 0), (clock(r.time), TIME_X, 1), (r.points.to_string(), POINTS_X, 1)];
-            for (text, x, align) in cells {
-                small_text(f, ui, (x, y, align), ROW, text, colour);
-            }
-        }
+        finisher_list(f, ui, finishers, ("POSITION", POSITION_X), TIME_X, Some(POINTS_X));
         bests_box(f, ui);
     });
+}
+
+/// An Arcade round's results (0x3f7a0, filled by 0x3ed10): a race's page
+/// with no points, "Competitors" over the names and the times on x 460.
+/// Continue reveals the round's summary menu, already up under it.
+pub fn spawn_arcade(commands: &mut Commands, ui: &UiAssets, finishers: &[Finisher], replay: bool, overlay: Option<Entity>) {
+    let mut page = ResultsPage::new(bests(finishers), replay);
+    page.then = Then::Menu;
+    spawn_frame(commands, ui, Some(&ui.results_overlay), ("RACE RESULTS", TT_BLUE), page, overlay, |f| {
+        finisher_list(f, ui, finishers, ("COMPETITORS", POSITION_X), ARCADE_TIME_X, None);
+        bests_box(f, ui);
+    });
+}
+
+/// The heads and a row per finisher: "(n) Name", the time centred on
+/// `time_x` and the trick points on `points_x`, if any.
+fn finisher_list(f: &mut ChildSpawnerCommands, ui: &UiAssets, finishers: &[Finisher], (who, who_x): (&str, f32), time_x: f32, points_x: Option<f32>) {
+    let first = FIRST_ROW_Y + 10.0 * (8.0 - finishers.len().min(8) as f32);
+    small_text(f, ui, (who_x, HEAD_Y, 0), HEAD, who, GREY);
+    small_text(f, ui, (time_x, HEAD_Y, 1), HEAD, "TIME", GREY);
+    if let Some(x) = points_x {
+        small_text(f, ui, (x, HEAD_Y, 1), HEAD, "POINTS", GREY);
+    }
+    for (i, r) in finishers.iter().enumerate() {
+        let y = first + ROW_GAP * i as f32;
+        let colour = row_colour(i, r.human);
+        small_text(f, ui, (NAME_X, y, 0), ROW, format!("({}) {}", i + 1, r.name.to_uppercase()), colour);
+        small_text(f, ui, (time_x, y, 1), ROW, clock(r.time), colour);
+        if let Some(x) = points_x {
+            small_text(f, ui, (x, y, 1), ROW, r.points.to_string(), colour);
+        }
+    }
 }
 
 /// The race bests' box under a page's list, a line at a time: the face, the
