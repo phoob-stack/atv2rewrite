@@ -976,6 +976,8 @@ fn drive(
 
     let before = (v.velocity, v.angular_velocity);
     let air = v.air_time;
+    // The Air Gravity option; the attract demo's computer rider keeps the original's.
+    v.air_gravity = if demo.is_some() { 1.0 } else { settings.air_gravity_scale() };
     v.step(&input, dt, &race.collision);
     let surface = water.as_deref().and_then(|w| w.surface(v.position));
     if let Some(w) = wreck.as_mut() {
