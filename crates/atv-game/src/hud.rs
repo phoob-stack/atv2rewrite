@@ -12,7 +12,7 @@ use crate::boost::Boost;
 use crate::career::{self, Award, Career, Run};
 use crate::challenge::{self, Outcome};
 use crate::mp;
-use crate::freestyle::{limit_label, Session, MEDALS};
+use crate::freestyle::{limit_label, Session, MEDALS, TIME_LIMITS};
 use crate::frontend::{self, FrontEnd, Roster, Screen};
 use crate::opponents::{Opponents, Standings};
 use crate::race::{fmt_time, RaceProgress};
@@ -548,6 +548,7 @@ fn record_entries(
             highest_jump: jumps.highest,
             wheelie: s.map_or(0.0, |s| s.longest_wheelie),
             bicycle: s.map_or(0.0, |s| s.longest_bicycle),
+            score: s.map_or(0, |s| s.score),
         }
     };
     let mut out = vec![entry(1, name, &sel.rider, &sel.quad, p, session)];
@@ -780,10 +781,17 @@ fn race_menus(
                 career.save();
             }
             // The track records broken, except in a challenge or by the
-            // demo's computer rider (0x8006e).
+            // demo's computer rider (0x8006e), then Open Freestyle's medal
+            // records taken (0x7ff60).
             let broken = match records.as_mut() {
                 Some(r) if selection.mode != Mode::Challenge && demo.is_none() => {
-                    let b = r.check(&selection.track, &record_entries(&p, session.as_deref(), &feats, &selection, &roster, &career, field.1));
+                    let entries = record_entries(&p, session.as_deref(), &feats, &selection, &roster, &career, field.1);
+                    let mut b = r.check(&selection.track, &entries);
+                    if selection.mode == Mode::Freestyle
+                        && let Some(limit) = TIME_LIMITS.iter().position(|&l| l == selection.time_limit)
+                    {
+                        b.extend(r.check_medals(limit, &entries));
+                    }
                     if !b.is_empty() {
                         r.save();
                     }

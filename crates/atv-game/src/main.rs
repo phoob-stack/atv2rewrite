@@ -577,6 +577,7 @@ fn setup(
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
     (career, rules, demo): (Res<career::Career>, Res<career::Rules>, Option<Res<demo::Demo>>),
+    records: Option<Res<records::TrackRecords>>,
 ) {
     set_ui_camera(&mut commands, &mut ui_cams, false);
     let scoped = DespawnOnExit(AppState::Race);
@@ -654,7 +655,9 @@ fn setup(
         _ => 0,
     };
     // Tricks and freestyle scoring; split-screen players get one each.
-    let mut session = Session::new(&game.0, &sel, &scene.world);
+    let limit = freestyle::TIME_LIMITS.iter().position(|&l| l == sel.time_limit);
+    let medals = records.as_deref().zip(limit).and_then(|(r, l)| r.medal_targets(l));
+    let mut session = Session::new(&game.0, &sel, &scene.world, medals);
     // Player 1's tricks are the profile's: its skill level from career and
     // challenge skill points.
     session.level = rules.skill_level(career.skill_points) as u8;

@@ -158,21 +158,13 @@ fn stunt_clip(main: &str, stems: &[String]) -> Option<String> {
     stems.iter().find(|s| squash(s) == key).cloned()
 }
 
-/// Bronze, silver and gold scores for an Open Freestyle time limit.
-pub fn medal_targets(game: &GameSource, limit: Option<u32>) -> Option<[u32; 3]> {
-    let xml = game.read("/Setup/Freestyle.xml").map(|b| String::from_utf8_lossy(&b).into_owned()).ok()?;
-    let tag = match limit {
+/// A time limit's element in `Setup/Freestyle.xml`'s `OpenFSRecords`.
+pub fn limit_tag(limit: Option<u32>) -> String {
+    match limit {
         Some(1) => "Time1Minute".to_string(),
         Some(m) => format!("Time{m}Minutes"),
         None => "TimeUnlimited".to_string(),
-    };
-    let block = xml.split(&format!("<{tag}>")).nth(1)?.split(&format!("</{tag}>")).next()?;
-    let mut out = [0; 3];
-    for (i, medal) in ["Bronze", "Silver", "Gold"].iter().enumerate() {
-        let rec = block.split(&format!("<{medal}Record")).nth(1)?;
-        out[i] = rec.split("Record=\"").nth(1)?.split('"').next()?.trim().parse().ok()?;
     }
-    Some(out)
 }
 
 pub const MEDALS: [&str; 3] = ["BRONZE", "SILVER", "GOLD"];
@@ -339,7 +331,9 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(game: &GameSource, sel: &Selection, world: &World) -> Self {
+    /// `medals`: Open Freestyle's Bronze, Silver and Gold targets, the
+    /// time limit's medal records (see [`crate::records`]).
+    pub fn new(game: &GameSource, sel: &Selection, world: &World, medals: Option<[u32; 3]>) -> Self {
         let (tricks, ground_points) = load_tricks(game);
         // ATV Academy scores like unlimited Open Freestyle, without medals
         // (0xa0e60 leaves its targets unset for game type 9).
@@ -348,9 +342,8 @@ impl Session {
         let mut s = Self::with(tricks, ground_points, if freestyle { load_boxes(game, &sel.track, world) } else { Vec::new() });
         s.freestyle = freestyle;
         if freestyle {
-            let limit = sel.time_limit.filter(|_| !training);
-            s.limit = limit.map(|m| m as f32 * 60.0);
-            s.medals = if training { None } else { medal_targets(game, limit) };
+            s.limit = sel.time_limit.filter(|_| !training).map(|m| m as f32 * 60.0);
+            s.medals = medals.filter(|_| !training);
             s.spots = load_spots(world).into_iter().map(|p| (p, false)).collect();
         }
         s
@@ -411,10 +404,11 @@ impl Session {
         self.spots.iter().filter(|s| s.1).count()
     }
 
-    /// The medal the score has earned (0 = bronze).
+    /// The medal the score has earned (0 = bronze): more than its record
+    /// (0x18090).
     pub fn medal(&self) -> Option<usize> {
         let m = self.medals?;
-        (0..3).rev().find(|&i| self.score >= m[i])
+        (0..3).rev().find(|&i| self.score > m[i])
     }
 
     pub fn popup(&mut self, text: impl Into<String>, kind: PopupKind) {
@@ -813,7 +807,7 @@ fn update_hud(
             FsReadout::Time => fmt_time(s.time_left(p.clock).unwrap_or(p.clock)),
             FsReadout::Spots => format!("SPOTS {}/{}", s.spots_found(), s.spots.len()),
             FsReadout::Target => match s.medals {
-                Some(m) => match (0..3).find(|&i| s.score < m[i]) {
+                Some(m) => match (0..3).find(|&i| s.score <= m[i]) {
                     Some(i) => format!("{} {}", MEDALS[i], m[i]),
                     None => "GOLD MEDAL!".into(),
                 },

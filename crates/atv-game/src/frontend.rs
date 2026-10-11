@@ -83,8 +83,6 @@ pub struct Roster {
     /// Arcade's rounds, in order (the ones on this disc, up to the
     /// original's fifteen).
     pub arcade: Vec<String>,
-    /// Open Freestyle's Bronze/Silver/Gold scores per [`TIME_LIMITS`] entry.
-    pub freestyle_medals: Vec<Option<[u32; 3]>>,
     /// `Tricks.xml`, and its order in the Trick Book.
     pub tricks: Vec<TrickDef>,
     book: Vec<usize>,
@@ -195,10 +193,9 @@ impl Roster {
             .filter(|t| tracks.iter().any(|k| k.eq_ignore_ascii_case(t)))
             .take(arcade::ROUNDS)
             .collect();
-        let freestyle_medals = TIME_LIMITS.iter().map(|&l| freestyle::medal_targets(game, l)).collect();
         let tricks = freestyle::load_tricks(game).0;
         let book = trickbook::book(&tricks);
-        Self { riders, quads, tracks, open_tracks, demo_tracks, arcade, freestyle_medals, tricks, book, info, screens: setup::entries(&read("/Setup/Frontend.xml")) }
+        Self { riders, quads, tracks, open_tracks, demo_tracks, arcade, tricks, book, info, screens: setup::entries(&read("/Setup/Frontend.xml")) }
     }
 
     pub fn info(&self, track: &str) -> TrackInfo {
@@ -346,7 +343,8 @@ enum Field {
     QuadName,
     TrackName,
     Laps,
-    Targets,
+    /// Open Freestyle's medal record line: 0 Gold, 1 Silver, 2 Bronze.
+    Medal(usize),
     /// Why the highlighted rider, ATV or track is locked.
     Locked,
 }
@@ -1617,7 +1615,12 @@ fn rebuild(
                 .id();
             kids.push(laps);
             if freestyle {
-                kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(1.0, 0.85, 0.3)), ui_at(left, 354.0), Field::Targets)).id());
+                // The time limit's medal records, as the original's Open
+                // Freestyle page lists them (0x56ca0, 0x560c0).
+                for (slot, color) in [(1.0, 0.85, 0.3), (0.82, 0.85, 0.9), (0.85, 0.55, 0.3)].into_iter().enumerate() {
+                    let text = BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(color.0, color.1, color.2));
+                    kids.push(commands.spawn((text, ui_at(left, 350.0 + slot as f32 * 13.0), Field::Medal(slot))).id());
+                }
             }
         }
         Screen::Options => {
@@ -2391,7 +2394,7 @@ fn update_track_panel(
     fe: Res<FrontEnd>,
     roster: Res<Roster>,
     sel: Res<Selection>,
-    (career, rules): (Res<Career>, Res<career::Rules>),
+    (career, rules, records): (Res<Career>, Res<career::Rules>, Option<Res<TrackRecords>>),
     ui: Option<Res<UiAssets>>,
     mut fields: Query<(&Field, &mut BitmapText)>,
     mut preview: Query<&mut ImageNode, With<TrackPreview>>,
@@ -2406,12 +2409,12 @@ fn update_track_panel(
             Field::TrackName => set_text(&mut text, &track_title(t)),
             Field::Laps if fe.mode == Mode::Freestyle => set_text(&mut text, &limit_label(TIME_LIMITS[fe.limit])),
             Field::Laps => set_text(&mut text, &sel.laps.to_string()),
-            Field::Targets => {
-                let s = match roster.freestyle_medals.get(fe.limit).copied().flatten() {
-                    Some(m) => (0..3).rev().map(|i| format!("{} {}", MEDALS[i], m[i])).collect::<Vec<_>>().join("   "),
-                    None => String::new(),
-                };
-                set_text(&mut text, &s);
+            &Field::Medal(slot) => {
+                let line = records.as_deref().and_then(|r| r.medals(fe.limit)).map_or(String::new(), |m| {
+                    let r = &m[slot];
+                    format!("{}  {:.0} POINTS  {}", MEDALS[2 - slot], r.value, r.name.to_uppercase())
+                });
+                set_text(&mut text, &line);
             }
             Field::Locked => {
                 let locked = fe.mode != Mode::Freestyle && !unlocks::track_open(&career, &roster, &rules, t);
