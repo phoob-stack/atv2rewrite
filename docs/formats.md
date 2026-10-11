@@ -835,6 +835,27 @@ name entry: the holder is the profile's name, or the rider's when there's no
 profile or in split screen. It also leaves out a jump that ends in a crash
 or a respot.
 
+Open Freestyle's medal targets are records as well. The system save's
+records hold, for each of the seven time limits, three entries of the same
+0x18-byte shape, best first (0x17e70: +4, 0x18 each, 0x48 a limit):
+Gold, Silver and Bronze. They start from `Freestyle.xml`'s `OpenFSRecords`
+(`Time1Minute` to `Time30Minutes` and `TimeUnlimited`, each with a
+`GoldRecord`, `SilverRecord` and `BronzeRecord` like the track records';
+the defaults are the same people on every limit). A session's HUD shows
+them as its targets (0xa0e60, 0xa1230: "Gold", "Silver", "Bronze"; none for
+training). At the results of Open Freestyle and Freestyle Battle (game
+types 4 and 8, 0x7ff60), 0x18090 gives each human the first entry their
+score is more than, the best score first and a second human on the same
+entry put on the next (off the end past Bronze); 0x182d0 then moves the
+entries below down one, dropping the last, and writes the human in
+(0x14450). Each goes on the record page as "Gold Medal Score", "Silver
+Medal Score" or "Bronze Medal Score" (strings 199, 0x1c6 and 0x36, kinds
+1 to 3, 0x4d8d0) with the score. The Open Freestyle page lists the time
+limit's three with the medal, "%d Points" (0x178) and the holder's name
+(0x56ca0, 0x560c0). The rewrite saves them in `records.cfg` too, as
+`freestyle <minutes or unlimited> <gold|silver|bronze> = ...` lines once a
+limit's have changed.
+
 ## Time Trial's ghost
 
 Only Time Trial (game type 1) makes the ghost object (0x9dd60, 0x110 bytes,

@@ -202,6 +202,11 @@ are saved in `records.cfg` in the config folder under your profile's name.
 The track select shows the highlighted track's records on three panels
 with the holders' faces, each turning to the next record every few
 seconds.
+Open Freestyle's Bronze, Silver and Gold targets are records too, one set
+per time limit, starting as `Setup/Freestyle.xml` has them: a score above
+one takes its place (the lower ones move down and Bronze drops out), so the
+targets rise as you beat them. Freestyle's track select lists the time
+limit's three with their holders.
 
 **Replays**, as in the original: the results of a one-player race or
 session offer Replay, which plays it back with the original's TV
