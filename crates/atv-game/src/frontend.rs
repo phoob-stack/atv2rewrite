@@ -64,7 +64,6 @@ impl Plugin for FrontEndPlugin {
                     .chain()
                     .run_if(in_state(AppState::FrontEnd)),
             )
-            .add_systems(OnEnter(AppState::Loading), show_loading)
             .add_systems(Update, finish_loading.run_if(in_state(AppState::Loading)));
     }
 }
@@ -2352,39 +2351,6 @@ pub(crate) fn blink(time: Res<Time>, mut q: Query<&mut Visibility, With<Blink>>)
     for mut v in &mut q {
         v.set_if_neq(if (time.elapsed_secs() * 1.5).fract() < 0.65 { Visibility::Inherited } else { Visibility::Hidden });
     }
-}
-
-#[derive(Component)]
-struct LoadingScreen;
-
-/// The loading screen is drawn for a couple of frames before the race
-/// loads, since loading blocks.
-fn show_loading(mut commands: Commands, ui: Option<Res<UiAssets>>, sel: Res<Selection>) {
-    let Some(ui) = ui else { return };
-    commands
-        .spawn((fullscreen(), BackgroundColor(Color::BLACK), DespawnOnExit(AppState::Loading), LoadingScreen))
-        .with_children(|r| {
-            r.spawn(Node {
-                position_type: PositionType::Absolute,
-                left: Val::Percent(50.0),
-                margin: UiRect::left(px(-SCREEN_W / 2.0)),
-                width: px(SCREEN_W),
-                height: px(SCREEN_H),
-                ..default()
-            })
-            .with_children(|f| {
-                let (mut n, img) = ui.loading.node(SCREEN_W, SCREEN_H);
-                n.position_type = PositionType::Absolute;
-                f.spawn((n, img));
-                let t = match sel.mode {
-                    Mode::Arcade | Mode::Career => format!("ROUND {}  LOADING {}", sel.round + 1, track_title(&sel.track)),
-                    Mode::Challenge => format!("CHALLENGE {}  LOADING", sel.challenge),
-                    _ => format!("LOADING {}", track_title(&sel.track)),
-                };
-                let w = ui.font(FontId::Menu).width(&t, 14.0);
-                f.spawn((BitmapText::new(FontId::Menu, 14.0, t), ui_at(SCREEN_W - 32.0 - w, 440.0)));
-            });
-        });
 }
 
 fn finish_loading(mut frames: Local<u32>, mut next: ResMut<NextState<AppState>>) {

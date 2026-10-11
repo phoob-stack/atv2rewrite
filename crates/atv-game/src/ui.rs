@@ -158,6 +158,10 @@ pub enum FontId {
     Small,
     /// Chrome mixed-case font (`kim36`): HUD figures.
     Chrome,
+    /// The fill and the outline of `Menu`'s capitals (`MgrammeInside`,
+    /// `MgrammeOutline`), for text in two colours (see [`two_tone`]).
+    Inside,
+    Outline,
 }
 
 /// A line of text in one of the game's fonts. The node's size follows the
@@ -180,6 +184,20 @@ impl BitmapText {
         self.color = c;
         self
     }
+}
+
+/// Text drawn as the original draws its big text (0x47910): the outline
+/// font in one colour, then the fill font over it in another. The fonts
+/// share their layout, so the fill sits on the outline.
+pub fn two_tone(size: f32, text: impl Into<String>, fill: Color, outline: Color) -> impl Bundle {
+    let text = text.into();
+    (
+        Node::default(),
+        children![
+            BitmapText::new(FontId::Outline, size, text.clone()).color(outline),
+            (BitmapText::new(FontId::Inside, size, text).color(fill), Node { position_type: PositionType::Absolute, left: px(0), top: px(0), ..default() }),
+        ],
+    )
 }
 
 /// Changes a text only when it differs, so unchanged text is not laid out
@@ -264,11 +282,15 @@ pub struct UiAssets {
     pub logo: UiTex,
     pub mugs: UiTex,
     pub loading: UiTex,
+    /// The race loading screen's bands, an 8x256 strip stretched over the
+    /// track's picture: navy at the top and bottom, see-through between,
+    /// then light and dark grey ones for the racing tip.
+    pub loading_overlay: UiTex,
     pub backgrounds: HashMap<String, UiTex>,
     pub tracks: HashMap<String, UiTex>,
     /// The Freestyle Challenges' pictures, by number.
     pub challenges: HashMap<usize, UiTex>,
-    fonts: [Font; 3],
+    fonts: [Font; 5],
 }
 
 impl UiAssets {
@@ -335,10 +357,17 @@ impl UiAssets {
             logo: l.tex("FrontEnd/ATVLogoBIG")?,
             mugs: l.tex("FrontEnd/RiderMugs")?,
             loading: l.tex("FrontEnd/FELoading1")?,
+            loading_overlay: l.tex("FrontEnd/LoadingOverlay")?,
             backgrounds,
             tracks,
             challenges,
-            fonts: [l.font("Fonts/MgrammeCombined")?, l.font("Fonts/MgrammeSmall")?, l.font("Fonts/kim36")?],
+            fonts: [
+                l.font("Fonts/MgrammeCombined")?,
+                l.font("Fonts/MgrammeSmall")?,
+                l.font("Fonts/kim36")?,
+                l.font("Fonts/MgrammeInside")?,
+                l.font("Fonts/Mgrammeoutline")?,
+            ],
             hud,
         })
     }

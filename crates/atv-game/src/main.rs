@@ -33,6 +33,7 @@ mod mud;
 mod hud;
 mod intro;
 mod knock;
+mod loading;
 mod water;
 mod mp;
 mod opponents;
@@ -482,6 +483,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(demo::DemoPlugin)
         .add_plugins(intro::IntroPlugin)
         .add_plugins(effects::EffectsPlugin)
+        .add_plugins(loading::LoadingPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)

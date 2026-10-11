@@ -234,14 +234,17 @@ What the UI uses:
 | `Sprites/HUDTPAGE` | Rev gauge: `DIAL` (pivot = hub), `NEEDLE` (pivot = its hub end), `PRELOAD` arc drawn into the `DIAL_PRELOAD` slot, `BOOST` pie into `DIAL_BOOST` (filled clockwise from 12 o'clock by the boost meter, its alpha throbbing as the sine of a phase that runs at 2 rad/s and wraps at pi; 0xa2a00 / 0xa2ee0), `WEIRD_DOT` hub cap. Dial face reads 1-8 (x1000 rpm) from -134 deg to +21 deg, and KPH. `HUDTPAGE_b` is a larger, unused gauge with no sheet. |
 | `Sprites/321go`, `Sprites/positions` | Countdown digits and GO; position balls. The sheet names P1-P8 but only P1-P4 have art; the P5-P8 cells are empty. |
 | `Sprites/Position_meter` | Lap progress line, chequered flag, markers and the CHECKPOINT banner. No sheet; regions measured from the page (see `ui.rs`). |
-| `Fonts/*` | Bitmap fonts: `MgrammeCombined` (outlined capitals, menus), `MgrammeSmall`, `kim36` (chrome mixed case), and outline/inner variants. `Fonts/blimey.ttf` on the disc is a TrueType font. |
+| `Fonts/*` | Bitmap fonts: `MgrammeCombined` (outlined capitals, menus), `MgrammeSmall`, `kim36` (chrome mixed case), and `MgrammeInside` / `MgrammeOutline`, the fill and the outline of `MgrammeCombined` as white masks with the same layout. The executable's font table (0x1ced6c) holds `Font32`, `MgrammeInside`, `MgrammeOutline` and `MgrammeSmall`; text at a scale above 1 is drawn as the outline in one colour under the fill in another (0x44170, 0x47910). `Fonts/blimey.ttf` on the disc is a TrueType font. |
 | `FrontEnd/NewDesign` | Menu selection bar, attribute bars, selection square, arrows, medals, panels. |
 | `FrontEnd/BG/*` | Full-screen backgrounds; `Setup/Frontend.xml` names each screen's (`BACKGROUND0`) and its title (`mTitleText`). |
 | `FrontEnd/RiderMugs` | 24 portraits, 8 per row of 64 px, in `Setup/Riders.xml` order. |
-| `FrontEnd/Track_*_LARGE` | Track previews; `FELoading1` is the loading screen. |
+| `FrontEnd/Track_*_LARGE` | Track previews, also the race loading screen's picture. `LoadingOverlay` (an 8x256 strip) is that screen's bands; `FELoading1` is a plain loading screen. |
 
-`Strings/Strings_ENG.txt` is one string per line with no keys (the keys are
-in the executable), so the UI uses the same English labels directly.
+`Strings/Strings_ENG.txt` is one string per line with no keys: the keys are
+in the executable (575 of them from 0x1cf9a8), and a string's id there is
+its 0-based line in the file (0x9f is `Dunes1`, "Lagoon"). The UI mostly
+uses the same English labels directly; the loading screen and the
+challenges read lines from the file.
 
 ## AID 1.02 racing lines
 
@@ -747,6 +750,30 @@ and could follow paths of their own (0x6cfd0), but none on the disc have
 one. Every track has intro cameras except Swamp 3 and Stadium 2; the
 whole intro runs from about 5 s (Glacier 3, Forest 2) to about 22 s
 (Dunes 2, Industrial 1).
+
+## The race loading screen
+
+0x57d40 builds it. Its picture is the track's `Track_<track>_LARGE` over the
+whole screen with `LoadingOverlay` stretched on top: a navy band to 73 (in
+640x480 screen units), see-through to 238, a light grey band to 276, a dark
+grey one to 390 and navy again from 403. On it go "%s : %s" with the area's
+and the track's names (`Industrial` reads "Works"), centred on y 50 at scale
+0.65; a racing tip's title on 258 at 0.6, black outlined in grey 0.7; the
+tip's text in grey 0.7 outlined in black, wrapped in a box from x 32 to 608
+whose top is 276, at 0.4 (0.3 for the `LONGTIP`s); and "Loading %s Game"
+(0x108) with the game type's name (0x86410) on 430 at 0.4. The caption and
+the mode line are blue (0.2, 0.4, 0.8) outlined in white. The tip (0x57bf0)
+is one of the first 13 of a table of 14: `TIP_1` to `TIP_9` under `TIP`,
+`LONGTIP_1` to `_3` under `LONGTIP` and `HINT_1` and `_2` under `HINT`, so
+`HINT_2` never shows. A text's cap cell is 0.1035 of the font page times its
+scale times 1.385 (0x479a0) in units where the screen is 2 tall, about 24.8
+screen units per unit of scale; its glyphs are 0.9 times that wide across a
+screen 2 wide (+0x38), so 1.2 times wider than their texels on a 4:3 screen.
+The screen also lists the field: "Competitors" and "ATV" headers at x 150
+and 330 on y 100, then a row per racer from 118, 15 apart, computer riders
+in yellow and players in orange. The rewrite leaves the list out, since
+outside Career and Arcade it picks the computer riders only as the race
+spawns them.
 
 ## Still unknown
 
