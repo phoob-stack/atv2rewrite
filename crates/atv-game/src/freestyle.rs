@@ -322,6 +322,13 @@ pub struct Session {
     /// records (the stunt manager's +0xbc and +0xc0, 0x614f0).
     pub longest_wheelie: f32,
     pub longest_bicycle: f32,
+    /// The longest endo, seconds (+0xc4), for the freestyle results.
+    pub longest_endo: f32,
+    /// The most tricks and bonuses landed in one jump, repeats and all, and
+    /// what that jump scored: the results' Best Trick Combo and Best Trick
+    /// (+0xc8 and +0xcc, kept at each landing by 0x62040, where every trick,
+    /// flip and trick box of the jump counts one, 0x61ae0-0x61dd0).
+    pub best_combo: (u32, u32),
     /// Ended from the pause menu (unlimited sessions).
     pub ended: bool,
     mask: u8,
@@ -373,6 +380,8 @@ impl Session {
             longest_air: 0.0,
             longest_wheelie: 0.0,
             longest_bicycle: 0.0,
+            longest_endo: 0.0,
+            best_combo: (0, 0),
             ended: false,
             mask: 0,
             steady: 0.0,
@@ -605,6 +614,10 @@ impl Session {
                 self.popup(format!("LANDED  {total}"), PopupKind::Total);
             }
             self.best_jump = self.best_jump.max(total);
+            let count = (jump.tricks.len() + bonuses.len()) as u32;
+            if count > self.best_combo.0 {
+                self.best_combo = (count, total);
+            }
             self.award(total);
         }
     }
@@ -646,7 +659,7 @@ impl Session {
                     match g {
                         Ground::Wheelie => self.longest_wheelie = self.longest_wheelie.max(secs),
                         Ground::Bicycle => self.longest_bicycle = self.longest_bicycle.max(secs),
-                        Ground::Endo => {}
+                        Ground::Endo => self.longest_endo = self.longest_endo.max(secs),
                     }
                     self.popup(format!("{name} {secs:.1}S  {pts}"), PopupKind::Bonus);
                     self.award(pts);
@@ -1015,10 +1028,17 @@ mod tests {
         // (100 + 340 + 300) x 2 different tricks, the gap once, the hoop.
         assert_eq!(s.score, 740 * 2 + 1000 + 500);
         assert_eq!(s.best_trick, Some(("B".into(), 340)));
+        // Three tricks, the gap and the hoop: a five-trick combo.
+        assert_eq!(s.best_combo, (5, 740 * 2 + 1500));
         // Half a gap pays nothing.
         s.jump.boxes = vec![1];
         s.land(1.0, Vec3::ZERO);
         assert_eq!(s.score, 740 * 2 + 1500);
+        // A smaller combo, however well it pays, leaves the best one.
+        s.jump.tricks = vec![(1, 0), (1, 0)];
+        s.jump.boxes = vec![2];
+        s.land(1.0, Vec3::ZERO);
+        assert_eq!(s.best_combo, (5, 740 * 2 + 1500));
     }
 
     #[test]
