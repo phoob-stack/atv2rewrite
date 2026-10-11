@@ -907,14 +907,41 @@ points). The bests box follows as on a race's page, without the best lap
 (0x3e560 skips it in types 4, 5, 8 and 9). The hints are a race's; Continue
 leads to "Try Again?".
 
+Career and Multiplayer Championship rounds (game types 3 and 7) have
+0x3a900 (filled by 0x3a160): "Race Results" (0x191) outlined in dark blue
+over `ResultsOverlay`, with nine columns (0x39cc0) in three views of three.
+Up and Down (events 2 and 3, 0x3a040) step through them, and 0x39ba0 shows
+only the current view's columns. The heads are grey at 0.9 on y 120, and
+the rows are at 0.7, coloured and placed as on a race's page. The name
+columns are left-aligned from x 25 under "Position" (0x17b). The others are
+centred:
+- View 0 is sorted by time (0x3e080 mode 0). "Time" (0x1f1) on x 305 shows
+  the time, or "DNF" past the cutoff. "Points" (0x178) on x 450 shows the
+  career table's race points for the place (+0x134).
+- View 1 is sorted by trick score (mode 1). "Trick Score" (0x20d) on x 300
+  shows the stunt score. "Bonuses" (0x33) on x 506 shows the trick
+  ranking's points for that place (+0x154).
+- View 2 is sorted by championship points (mode 2) after 0x11fb0 has added
+  the round. "Total" (0x1ff) on x 300 shows the round's points plus bonus.
+  "Career Total" (0x44) on x 506 shows the championship points (table
+  +0x10 + 0x14 an entrant).
+
+The bests box follows, with all five kinds, and the hints are a race's. The
+hint bar's d-pad arrows (0x45f50: dark and light `DARKUDARROW`, set by
+0x43bb0 as up, down, left, right) get lit for the views, but stay hidden
+because the bar's +0x198 is only set during its own set-up.
+
 The rewrite builds the race page and Race Again for Single Race, the Time
-Trial page, and the freestyle page with Try Again for a lone player's Open
-Freestyle (`results.rs`). A rider who never reached the start line shows
+Trial page, the freestyle page with Try Again for a lone player's Open
+Freestyle, and the championship round page for Career and split-screen
+championship rounds (`results.rs`). After the round page the rewrite keeps
+its round summary (skill points, level, gold, ATV unlocks), where the
+original has its unlockables page (0x35d60) still to port. A rider who never reached the start line shows
 dashes for a time, where the original would divide by nothing; with five
 laps listed, Time Trial's record moves down a row. The rewrite's freestyle
 scoring adds bonuses after multiplying the tricks, so its Best Trick is that
-jump's whole score. Freestyle Battle and the other modes keep the rewrite's
-results menu for now.
+jump's whole score. Freestyle Battle, Arcade and challenges keep the rewrite's results menu for
+now.
 
 ## Track records
 

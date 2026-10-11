@@ -147,15 +147,9 @@ impl MpChamp {
     /// first, finishing order breaking ties, as a career round).
     pub fn score(&mut self, rules: &career::Rules, order: &[usize], tricks: &[u32]) {
         let Some(run) = self.run.as_mut().filter(|r| !r.over()) else { return };
-        let (race, trick) = run.points(rules);
-        let mut by_tricks = order.to_vec();
-        by_tricks.sort_by_key(|&i| std::cmp::Reverse(tricks.get(i).copied().unwrap_or(0)));
-        for (table, ranking) in [(race, order), (trick, by_tricks.as_slice())] {
-            for (place, &i) in ranking.iter().enumerate() {
-                if let Some(e) = run.field.get_mut(i) {
-                    e.points += table.get(place).copied().unwrap_or(0);
-                }
-            }
+        let points = run.round_points(rules, order, tricks);
+        for (e, &(race, trick)) in run.field.iter_mut().zip(&points) {
+            e.points += race + trick;
         }
         run.round += 1;
     }

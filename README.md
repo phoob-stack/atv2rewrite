@@ -96,7 +96,12 @@ Race, Restart and Quit Race.
   Right then Up/Down sets its laps from 1 to 20, Y or Continue goes on),
   and Point Distribution shares each place's race and trick points out
   between the race and the trick ranking in 5% steps (Left/Right). Custom
-  rounds earn skill points but no medals.
+  rounds earn skill points but no medals. After each round the original's
+  results page lists the field three ways, Up and Down turning between
+  them: by finishing order with times and race points, by trick score with
+  the trick ranking's bonuses, and by championship points with the round's
+  total and the career total. A round summary with skill points and unlocks
+  follows.
 - **Arcade**: the 15 rounds of the disc's `Setup/Arcade.xml` back to back
   (the disc lists a sixteenth, Dunes 1 again, which the original never races).
   Each round is one lap, as in the original. The clock starts at the
