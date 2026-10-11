@@ -524,7 +524,9 @@ left alone.
   player (`Multiplayer_SingleRace_Rider`/`_ATV`/`_Track`, and `_Freestyle_`
   and `_Career_` variants) with a `PLAYER n` banner;
   `RIDER_LOCKED_MULTIPLAYER` refuses a rider another player has. Two
-  players split the screen top and bottom, three or four take quarters.
+  players split the screen top and bottom, or left and right when the
+  console is set to widescreen (see the race's views below); three or four
+  take quarters.
   `WAITING_FOR_REST` ("Waiting For Other Competitors") shows on a finished
   player's view.
   The multiplayer Championship has rider and ATV screens
@@ -730,12 +732,15 @@ the front end comes back.
 
 The race (0x86530) gives each rider with `mHasCamera` a view of its own
 (0x83460): two split top and bottom (left and right when 0x1dbc60, set
-from the console's widescreen video flags, is 1) and four take a quarter
+at 0x190e0 from the console's video flags & 0x11, widescreen or
+letterbox, is 1) and four take a quarter
 each, as in split screen. The demo page's enter (0x80ba0) turns the
 director on for the first view only; the others keep their riders' race
 cameras. The rewrite gives the extra views to the computer riders after
-player 1's seat on the grid, always top and bottom for two, and hears
-their quads as it hears split-screen players' (each view a listener).
+player 1's seat on the grid and hears their quads as it hears split-screen
+players' (each view a listener). For 0x1dbc60 it takes a window wider than
+4:3 as widescreen, so two views, the demo's or two players', sit side by
+side there and one above the other on a 4:3 window.
 
 ## The race intro
 
