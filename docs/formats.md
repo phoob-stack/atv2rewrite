@@ -536,7 +536,15 @@ left alone.
   console is set to widescreen (see the race's views below); three or four
   take quarters.
   `WAITING_FOR_REST` ("Waiting For Other Competitors") shows on a finished
-  player's view.
+  player's view. Each view gets its own HUD manager (0x82930 makes one
+  per view, 0xa4990), so every player has the speedo (0.4 across instead
+  of one player's 0.7), the place and race panels, the countdown and the
+  messages; only one player gets the guide `Arrow`. Its panels scale by
+  0.8 on a widescreen console and by 1.7 in a 4:3 split, against the
+  view's shape (0xa4800/0xa4870/0xa48e0 divide widths by it). The rewrite
+  draws its race HUD on each view and, on a view under 480 units tall,
+  lays it out 480 tall and scales it down to fit, so in a 4:3 split its
+  panels come out smaller than the original's.
   The multiplayer Championship has rider and ATV screens
   (`Multiplayer_Career_Rider`/`_ATV`), then runs the custom championship's
   state machine (`ID_MULTIPLAYER_MODE_CHAMPIONSHIP` starts `CustomChampSM`

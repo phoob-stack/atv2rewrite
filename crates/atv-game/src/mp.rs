@@ -2,12 +2,12 @@
 //!
 //! As in the original, two players split the screen left and right on a
 //! widescreen window (top and bottom on a 4:3 one) and three or four take
-//! a quarter each (the fourth stays empty for three),
-//! and computer riders make the field up to four. Player 1 drives the
-//! usual player quad; players 2 to 4 drive racer quads (see
-//! [`opponents::Racer::human`]), each with their own keys or pad and their
-//! own view. The race is over once every player is home, or a minute
-//! after the first one.
+//! a quarter each (the fourth stays empty for three), and computer riders
+//! make the field up to four. Player 1 drives the usual player quad;
+//! players 2 to 4 drive racer quads (see [`opponents::Racer::human`]),
+//! each with their own keys or pad, their own view and, on it, the race
+//! HUD with their own figures. The race is over once every player is
+//! home, or a minute after the first one.
 //!
 //! Freestyle Battle is Open Freestyle for the same players with no
 //! computer riders: each player has their own trick session, and the most
@@ -38,7 +38,7 @@ use crate::career::{self, Career, Entrant, Plan, Run};
 use crate::freestyle::Session;
 use crate::frontend::Roster;
 use crate::hud::ordinal;
-use crate::opponents::{Opponents, Standings};
+use crate::opponents::Opponents;
 use crate::race::{fmt_time, RaceProgress};
 use crate::ui::{set_text, BitmapText, FontId};
 use crate::AppState;
@@ -198,7 +198,7 @@ pub struct MpPlugin;
 
 impl Plugin for MpPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<MpChamp>().add_systems(Update, (split_views, spawn_hud.run_if(resource_added::<Opponents>), update_hud).chain().run_if(in_state(AppState::Race)));
+        app.init_resource::<MpChamp>().add_systems(Update, (split_views, spawn_battle_hud.run_if(resource_added::<Opponents>), update_battle_hud).chain().run_if(in_state(AppState::Race)));
     }
 }
 
@@ -223,78 +223,65 @@ fn split_views(window: Query<&Window, With<PrimaryWindow>>, mut cams: Query<(&mu
 
 #[derive(Component)]
 enum Readout {
-    Lap(usize),
+    Score(usize),
     Place(usize),
     Time(usize),
-    Speed(usize),
-    Banner(usize),
+    Callout(usize),
 }
 
-/// A HUD on each other player's view: lap, place, time, speed. Player 1
-/// has the usual one on theirs.
-fn spawn_hud(mut commands: Commands, opponents: Res<Opponents>, cams: Query<(Entity, &Split)>) {
+/// Freestyle Battle's readouts on each other player's view: their score,
+/// place by score, the time left and their latest trick. Each view has the
+/// race HUD too (see [`crate::hud`]); player 1 has Open Freestyle's
+/// readouts on theirs.
+fn spawn_battle_hud(mut commands: Commands, opponents: Res<Opponents>, session: Option<Res<Session>>, cams: Query<(Entity, &Split)>) {
+    if !session.is_some_and(|s| s.freestyle) {
+        return;
+    }
     for (cam, split) in &cams {
         let n = split.0 + 1;
         if n == 1 || opponents.human(n).is_none() {
             continue;
         }
         commands
-            .spawn((crate::ui::fullscreen(), crate::hud::HudRoot, UiTargetCamera(cam), DespawnOnExit(AppState::Race), Pickable::IGNORE))
+            .spawn((
+                crate::ui::fullscreen(),
+                crate::hud::HudRoot,
+                crate::hud::ViewHud,
+                UiTransform::default(),
+                UiTargetCamera(cam),
+                DespawnOnExit(AppState::Race),
+                Pickable::IGNORE,
+            ))
             .with_children(|root| {
                 root.spawn(Node { position_type: PositionType::Absolute, left: px(16), top: px(10), flex_direction: FlexDirection::Column, row_gap: px(3), ..default() })
                     .with_children(|c| {
                         c.spawn(BitmapText::new(FontId::Small, 9.0, format!("PLAYER {n}")).color(Color::srgb(1.0, 0.85, 0.3)));
-                        c.spawn((BitmapText::new(FontId::Chrome, 18.0, ""), Readout::Lap(n)));
+                        c.spawn((BitmapText::new(FontId::Chrome, 18.0, ""), Readout::Score(n)));
                         c.spawn((BitmapText::new(FontId::Chrome, 14.0, ""), Readout::Place(n)));
                     });
                 root.spawn(Node { position_type: PositionType::Absolute, right: px(16), top: px(10), ..default() })
                     .with_child((BitmapText::new(FontId::Chrome, 16.0, ""), Readout::Time(n)));
-                root.spawn(Node { position_type: PositionType::Absolute, right: px(16), bottom: px(10), ..default() })
-                    .with_child((BitmapText::new(FontId::Chrome, 16.0, ""), Readout::Speed(n)));
                 root.spawn(Node { position_type: PositionType::Absolute, width: percent(100), top: percent(40), justify_content: JustifyContent::Center, ..default() })
-                    .with_child((BitmapText::new(FontId::Menu, 18.0, ""), Readout::Banner(n)));
+                    .with_child((BitmapText::new(FontId::Menu, 18.0, ""), Readout::Callout(n)));
             });
     }
 }
 
-fn update_hud(
-    opponents: Option<Res<Opponents>>,
-    standings: Option<Res<Standings>>,
-    p1: Option<Res<RaceProgress>>,
-    session: Option<Res<Session>>,
-    mut readouts: Query<(&Readout, &mut BitmapText)>,
-) {
-    let (Some(opp), Some(p1)) = (opponents, p1) else { return };
-    let battle = session.as_deref().filter(|s| s.freestyle);
-    let scores = battle.map(|s| battle_scores(s, &opp)).unwrap_or_default();
+fn update_battle_hud(opponents: Option<Res<Opponents>>, p1: Option<Res<RaceProgress>>, session: Option<Res<Session>>, mut readouts: Query<(&Readout, &mut BitmapText)>) {
+    let (Some(opp), Some(p1), Some(p1s)) = (opponents, p1, session.as_deref().filter(|s| s.freestyle)) else { return };
+    let scores = battle_scores(p1s, &opp);
     for (r, mut t) in &mut readouts {
         let n = match r {
-            Readout::Lap(n) | Readout::Place(n) | Readout::Time(n) | Readout::Speed(n) | Readout::Banner(n) => *n,
+            Readout::Score(n) | Readout::Place(n) | Readout::Time(n) | Readout::Callout(n) => *n,
         };
-        let Some((i, racer)) = opp.racers.iter().enumerate().find(|(_, r)| r.human == Some(n)) else { continue };
-        let p = &racer.progress;
-        if let (Some(p1s), Some(s)) = (battle, racer.session.as_ref()) {
-            let text = match r {
-                Readout::Lap(_) => format!("SCORE {}", s.score),
-                Readout::Place(_) => format!("{} OF {}", ordinal(place(&scores, n)), scores.len()),
-                Readout::Time(_) => fmt_time(p1s.time_left(p1.clock).unwrap_or(p1.clock)),
-                Readout::Speed(_) => format!("{:.0} MPH", racer.vehicle.speed_mph().abs()),
-                Readout::Banner(_) if p1s.over(p1.clock) => "TIME UP".into(),
-                // The latest trick call-out.
-                Readout::Banner(_) => s.popups.last().filter(|pp| s.time - pp.at < 2.2).map_or(String::new(), |pp| pp.text.clone()),
-            };
-            set_text(&mut t, &text);
-            continue;
-        }
+        let Some(s) = opp.human(n).and_then(|r| r.session.as_ref()) else { continue };
         let text = match r {
-            Readout::Lap(_) => format!("LAP {}/{}", p.lap(), p.laps),
-            Readout::Place(_) => standings.as_ref().and_then(|s| s.opponents.get(i)).map_or(String::new(), |o| format!("{} OF {}", ordinal(o.0), opp.racers.len() + 1)),
-            Readout::Time(_) => fmt_time(p.finished.unwrap_or(p.clock)),
-            Readout::Speed(_) => format!("{:.0} MPH", racer.vehicle.speed_mph().abs()),
-            Readout::Banner(_) if !p.started() => String::new(),
-            Readout::Banner(_) if p.finished.is_some() && !p1.over() => "WAITING FOR OTHER COMPETITORS".into(),
-            Readout::Banner(_) if p.finished.is_some() => "FINISHED".into(),
-            Readout::Banner(_) => String::new(),
+            Readout::Score(_) => format!("SCORE {}", s.score),
+            Readout::Place(_) => format!("{} OF {}", ordinal(place(&scores, n)), scores.len()),
+            Readout::Time(_) => fmt_time(p1s.time_left(p1.clock).unwrap_or(p1.clock)),
+            // The latest trick call-out (the race HUD says TIME UP).
+            Readout::Callout(_) if p1s.over(p1.clock) => String::new(),
+            Readout::Callout(_) => s.popups.last().filter(|pp| s.time - pp.at < 2.2).map_or(String::new(), |pp| pp.text.clone()),
         };
         set_text(&mut t, &text);
     }
