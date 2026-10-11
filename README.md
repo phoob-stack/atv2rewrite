@@ -190,6 +190,9 @@ on the stadiums), longest jump, biggest air, best wheelie and best
 bicycle. They start as `Setup/Tracks.xml` has them, and the results of any
 race or freestyle session (not a challenge) show the ones you broke, which
 are saved in `records.cfg` in the config folder under your profile's name.
+The track select shows the highlighted track's records on three panels
+with the holders' faces, each turning to the next record every few
+seconds.
 
 **Replays**, as in the original: the results of a one-player race or
 session offer Replay, which plays it back with the original's TV

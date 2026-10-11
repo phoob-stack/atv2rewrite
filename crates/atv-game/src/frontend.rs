@@ -36,6 +36,7 @@ use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::ui::{fullscreen, placed, read_nav_from, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::mp::MpChamp;
+use crate::records::{self, TrackRecords};
 use crate::trickbook::{self, TrickDemo};
 use crate::unlocks;
 use crate::{AppState, Mode, Selection};
@@ -54,6 +55,7 @@ impl Plugin for FrontEndPlugin {
                     update_rider_panel,
                     update_quad_panel,
                     update_track_panel,
+                    update_record_panels,
                     update_options,
                     blink,
                     showroom,
@@ -352,6 +354,18 @@ enum Field {
 struct StatBar(usize);
 #[derive(Component)]
 struct TrackPreview;
+/// A line of the track select's record panel `.0`.
+#[derive(Component)]
+struct RecordText(usize, RecordLine);
+#[derive(Clone, Copy, PartialEq)]
+enum RecordLine {
+    Kind,
+    Value,
+    Name,
+}
+/// The holder's mug on record panel `.0`.
+#[derive(Component)]
+struct RecordMug(usize);
 /// The lit part of a volume bar: 0 music, 1 sound effects.
 #[derive(Component)]
 struct VolumeBar(usize);
@@ -359,6 +373,19 @@ struct VolumeBar(usize);
 struct VibrationBox;
 
 const MUG: f32 = 50.0;
+/// The track select's three record panels (0x519d0, 0x51920), right of
+/// the track's picture: one every `RECORD_GAP` down.
+const RECORD_X: f32 = 452.0;
+const RECORD_Y: f32 = 76.0;
+const RECORD_W: f32 = 180.0;
+const RECORD_H: f32 = 72.0;
+const RECORD_GAP: f32 = 80.0;
+const RECORD_MUG: f32 = 48.0;
+const RECORD_PAD: f32 = 8.0;
+/// Room for a panel's text, right of the mug.
+const RECORD_TEXT_W: f32 = RECORD_W - 3.0 * RECORD_PAD - RECORD_MUG;
+/// The panels' colour (0x4d360).
+const RECORD_BG: Color = Color::srgb(0.15, 0.27, 0.27);
 const MUG_GAP: f32 = 64.0;
 const MUG_X: f32 = 64.0;
 const MUG_Y: f32 = 92.0;
@@ -1546,19 +1573,23 @@ fn rebuild(
                 .lock(|i| race && !unlocks::track_open(&career, &roster, &rules, &roster.tracks[i]));
             kids.push(menu(&mut commands, &ui, list, 40.0, 70.0));
             kids.push(locked_line(&mut commands, 418.0));
-            let side = 250.0;
+            let (left, side) = (250.0, 196.0);
             let preview = commands
                 .spawn((
-                    Node { position_type: PositionType::Absolute, left: px(300), top: px(76), width: px(side), height: px(side), ..default() },
+                    Node { position_type: PositionType::Absolute, left: px(left), top: px(RECORD_Y), width: px(side), height: px(side), ..default() },
                     ImageNode::default().with_mode(bevy::ui::widget::NodeImageMode::Stretch),
                     TrackPreview,
                 ))
                 .id();
             kids.push(preview);
-            kids.push(commands.spawn((BitmapText::new(FontId::Menu, 16.0, ""), ui_at(300.0, 340.0), Field::TrackName)).id());
+            kids.push(commands.spawn((BitmapText::new(FontId::Small, 9.0, "RECORDS"), ui_at(RECORD_X, RECORD_Y - 14.0))).id());
+            for k in 0..3 {
+                kids.push(record_panel(&mut commands, &ui, k));
+            }
+            kids.push(commands.spawn((BitmapText::new(FontId::Menu, 16.0, ""), ui_at(left, 290.0), Field::TrackName)).id());
             let freestyle = fe.mode == Mode::Freestyle;
             let laps = commands
-                .spawn(Node { position_type: PositionType::Absolute, left: px(300), top: px(370), align_items: AlignItems::Center, column_gap: px(10), ..default() })
+                .spawn(Node { position_type: PositionType::Absolute, left: px(left), top: px(326), align_items: AlignItems::Center, column_gap: px(10), ..default() })
                 .with_children(|r| {
                     r.spawn(BitmapText::new(FontId::Small, 10.0, if freestyle { "TIME" } else { "LAPS" }));
                     let (n, mut img) = ui.design.node("DARKLRARROW", 0.6);
@@ -1570,7 +1601,7 @@ fn rebuild(
                 .id();
             kids.push(laps);
             if freestyle {
-                kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(1.0, 0.85, 0.3)), ui_at(300.0, 398.0), Field::Targets)).id());
+                kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(1.0, 0.85, 0.3)), ui_at(left, 354.0), Field::Targets)).id());
             }
         }
         Screen::Options => {
@@ -2187,6 +2218,39 @@ fn mug(commands: &mut Commands, ui: &UiAssets, i: usize, (x, y): (f32, f32), dim
     commands.spawn((n, img)).id()
 }
 
+/// Track select record panel `k`: the holder's mug, then the record's name,
+/// its value and who holds it (0x4d360), filled in by
+/// [`update_record_panels`].
+fn record_panel(commands: &mut Commands, ui: &UiAssets, k: usize) -> Entity {
+    let (mut n, img) = ui.mugs.region(Rect::new(0.0, 0.0, 1.0, 1.0), 1.0);
+    n.width = px(RECORD_MUG);
+    n.height = px(RECORD_MUG);
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: px(RECORD_X),
+                top: px(RECORD_Y + k as f32 * RECORD_GAP),
+                width: px(RECORD_W),
+                height: px(RECORD_H),
+                padding: UiRect::all(px(RECORD_PAD)),
+                column_gap: px(RECORD_PAD),
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(RECORD_BG),
+        ))
+        .with_children(|p| {
+            p.spawn((n, img, Visibility::Hidden, RecordMug(k)));
+            p.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(6), ..default() }).with_children(|c| {
+                c.spawn((BitmapText::new(FontId::Small, 9.0, ""), RecordText(k, RecordLine::Kind)));
+                c.spawn((BitmapText::new(FontId::Chrome, 13.0, "").color(Color::srgb(1.0, 0.85, 0.2)), RecordText(k, RecordLine::Value)));
+                c.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(0.75, 0.85, 1.0)), RecordText(k, RecordLine::Name)));
+            });
+        })
+        .id()
+}
+
 /// The blue bio panel: a name, two detail lines (riders) and 1-5 rating
 /// bars made of the attribute-bar sprites.
 fn bio_panel(commands: &mut Commands, ui: &UiAssets, left: f32, top: f32, stats: &[&str], rider: bool) -> Entity {
@@ -2344,6 +2408,58 @@ fn update_track_panel(
         && img.image != tex.image
     {
         img.image = tex.image.clone();
+    }
+}
+
+/// Shows the highlighted track's records on the track select's panels,
+/// each turning over in its own time.
+fn update_record_panels(
+    time: Res<Time>,
+    (fe, roster, records): (Res<FrontEnd>, Res<Roster>, Option<Res<TrackRecords>>),
+    ui: Option<Res<UiAssets>>,
+    mut texts: Query<(&RecordText, &mut BitmapText)>,
+    mut mugs: Query<(&RecordMug, &mut ImageNode, &mut Visibility)>,
+    mut clock: Local<f32>,
+) {
+    let (Some(ui), Some(records)) = (ui, records) else { return };
+    if fe.screen != Screen::Track {
+        *clock = 0.0;
+        return;
+    }
+    *clock += time.delta_secs();
+    let Some(track) = roster.tracks.get(fe.track) else { return };
+    let shown = |k: usize| {
+        let kind = records::panel_kind(k, *clock);
+        (kind, records.get(track, kind))
+    };
+    let small = ui.font(FontId::Small);
+    for (t, mut text) in &mut texts {
+        let (kind, record) = shown(t.0);
+        let (line, size) = match (t.1, record) {
+            (RecordLine::Kind, _) => (kind.label().to_string(), 9.0),
+            (RecordLine::Value, Some(r)) => (kind.long(r.value), 13.0),
+            (RecordLine::Name, Some(r)) => (r.name.to_uppercase(), 8.0),
+            (_, None) => (String::new(), text.size),
+        };
+        // A long name is drawn smaller to fit, as the original fits it
+        // (0x3df20).
+        let size = if t.1 == RecordLine::Value { size } else { size.min(size * RECORD_TEXT_W / small.width(&line, size).max(1.0)) };
+        set_text(&mut text, &line);
+        if text.size != size {
+            text.size = size;
+        }
+    }
+    for (m, mut img, mut vis) in &mut mugs {
+        let rider = shown(m.0).1.and_then(|r| roster.riders.iter().position(|i| !r.rider.is_empty() && i.model.eq_ignore_ascii_case(&r.rider)));
+        vis.set_if_neq(if rider.is_some() { Visibility::Inherited } else { Visibility::Hidden });
+        if let Some(i) = rider {
+            let corner = Vec2::new((i % 8) as f32, (i / 8) as f32) * 64.0;
+            let scale = ui.mugs.size.x / 512.0;
+            let rect = Some(ui.mugs.image_rect(Rect::from_corners(corner * scale, (corner + 64.0) * scale)));
+            if img.rect != rect {
+                img.rect = rect;
+            }
+        }
     }
 }
 
