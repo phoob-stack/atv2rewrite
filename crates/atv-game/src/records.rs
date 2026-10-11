@@ -39,6 +39,10 @@ const REACH: f32 = 50.0;
 /// Further than this in one physics step, metres, and the quad was put
 /// somewhere rather than driven there.
 const TELEPORT: f32 = 5.0;
+/// The track select's record panels turn to their next record every 2.5 s
+/// (+0xe4), the second and third 0.1 and 0.2 s ahead of the first (+0xe8).
+const PANEL_TURN: f32 = 2.5;
+const PANEL_STAGGER: f32 = 0.1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -97,6 +101,16 @@ impl Kind {
             Kind::Lap => fmt_time(value),
             Kind::LongestJump | Kind::HighestJump => format!("{value:.1}M"),
             Kind::Wheelie | Kind::Bicycle => format!("{value:.1}S"),
+        }
+    }
+
+    /// As the track select shows it, long (0x4cdf0): a time, "metres" or
+    /// "Seconds" (strings 0x21f and 0x1c1).
+    pub fn long(self, value: f32) -> String {
+        match self {
+            Kind::Lap => fmt_time(value),
+            Kind::LongestJump | Kind::HighestJump => format!("{value:.1} METRES"),
+            Kind::Wheelie | Kind::Bicycle => format!("{value:.1} SECONDS"),
         }
     }
 
@@ -270,6 +284,15 @@ impl TrackRecords {
             warn!("couldn't save the track records to {}: {e}", path.display());
         }
     }
+}
+
+/// The record the track select's panel `panel` (0 to 2) shows `secs` after
+/// the screen came up (0x519d0, 0x4e760): each has all five in turn, the
+/// first from the best lap, the second from the longest jump and the third
+/// from the biggest air.
+pub fn panel_kind(panel: usize, secs: f32) -> Kind {
+    let turns = ((secs + panel as f32 * PANEL_STAGGER) / PANEL_TURN) as usize;
+    Kind::ALL[(panel + turns) % Kind::ALL.len()]
 }
 
 /// One rider's jumps in a race (the stunt manager's +0xd8 to +0xf8).
@@ -456,6 +479,16 @@ mod tests {
         assert_eq!(back.get("Dunes1", Kind::Lap).unwrap().value, 81.25);
         // The rest stay as the tracks file has them.
         assert_eq!(back.get("Dunes1", Kind::Wheelie).unwrap().value, 5.0);
+    }
+
+    #[test]
+    fn panels_turn_over_a_little_apart() {
+        assert_eq!([0, 1, 2].map(|k| panel_kind(k, 0.0)), [Kind::Lap, Kind::LongestJump, Kind::HighestJump]);
+        // The third turns first.
+        assert_eq!([0, 1, 2].map(|k| panel_kind(k, 2.35)), [Kind::Lap, Kind::LongestJump, Kind::Wheelie]);
+        assert_eq!([0, 1, 2].map(|k| panel_kind(k, 2.5)), [Kind::LongestJump, Kind::HighestJump, Kind::Wheelie]);
+        // Round to the start after five turns.
+        assert_eq!(panel_kind(0, 12.6), Kind::Lap);
     }
 
     #[test]

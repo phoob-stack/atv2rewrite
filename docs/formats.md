@@ -817,6 +817,18 @@ air take the length and height if they're more. A wheelie, bicycle or endo
 that scores (a second or more, 0x614f0) sets +0xbc, +0xc0 or +0xc4 to its
 time if that's more.
 
+The track select (0x519d0) shows the highlighted track's records on three
+panels at the screen's left edge (x -1), 0.6 wide and 0.3 tall, placed at
+y 0.15, -0.15 and -0.45 less 0.15 (0x51920, 0x4cc50), each a box in
+(0.15, 0.27, 0.27)
+holding the holder's mug (`FrontEnd/RiderMugs`), the record's name, its long
+value and the holder's name, fitted to the box (0x4d360, 0x4ced0). Each has
+all five records in turn (0x4dfa0): the first from the best lap, the second
+from the longest jump and the third from the biggest air. Every 2.5 s
+(+0xe4) a panel turns over to its next one, the second and third starting
+0.1 and 0.2 s on (+0xe8, 0x4e760). The rewrite stacks them right of the
+track's picture, since its track list is on the left.
+
 The rewrite keeps the records in `records.cfg` in the config folder and
 shows those broken among the results rather than on their own page, with no
 name entry: the holder is the profile's name, or the rider's when there's no
