@@ -103,11 +103,14 @@ pub struct TrackInfo {
     /// Whether riders off the course are put back (`mAllowsForcedRespots`:
     /// all but the Stadium).
     pub forced_respots: bool,
+    /// Whether it has checkpoints to race round (`Checkpoints`): all but
+    /// the Stadium, which the original only offers for freestyle.
+    pub circuit: bool,
 }
 
 impl Default for TrackInfo {
     fn default() -> Self {
-        Self { arcade_start: 40.0, ground: crate::convert::Ground::Road, forced_respots: false }
+        Self { arcade_start: 40.0, ground: crate::convert::Ground::Road, forced_respots: false, circuit: true }
     }
 }
 
@@ -184,6 +187,7 @@ impl Roster {
                     arcade_start: e.num("mArcadeStartTime").filter(|v| *v > 0.0).unwrap_or(d.arcade_start),
                     ground: crate::convert::Ground::from_tyre_type(e.get("mTyreType").unwrap_or("")),
                     forced_respots: e.get("mAllowsForcedRespots") == Some("1"),
+                    circuit: e.get("Checkpoints").is_none_or(|c| !c.trim().is_empty()),
                 })
             })
             .collect();
