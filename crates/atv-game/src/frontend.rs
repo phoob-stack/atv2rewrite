@@ -564,6 +564,13 @@ fn navigate(
                             sel.mode = Mode::Career;
                             fe.screen = Screen::CareerChamp;
                         }
+                        // The original's TrainingSM (0x9d6c0): the profile's
+                        // rider picks an ATV, then practises on Stadium 2.
+                        Some("ATV ACADEMY") => {
+                            fe.mode = Mode::Training;
+                            sel.mode = Mode::Training;
+                            to_rider(&mut fe, &mut sel, &career);
+                        }
                         Some("OPTIONS") => fe.screen = Screen::Options,
                         Some("QUIT GAME") => {
                             exit.write(AppExit::Success);
@@ -644,6 +651,9 @@ fn navigate(
                 } else if fe.mode == Mode::Career {
                     start_career(&mut career, Plan::set(&rules, fe.champ), &roster, &rules, &sel);
                     fe.screen = Screen::CareerStatus;
+                } else if fe.mode == Mode::Training {
+                    sel.track = crate::TRAINING_TRACK.into();
+                    next.set(AppState::Loading);
                 } else if fe.mode == Mode::Challenge {
                     sel.track = challenge::TRACK.into();
                     sel.laps = 1;
@@ -672,6 +682,7 @@ fn navigate(
             Nav::Back if rides_profile(&fe, &career) => {
                 fe.screen = match fe.mode {
                     Mode::Career => Screen::CareerChamp,
+                    Mode::Training => Screen::Main,
                     _ => Screen::ArcadeStatus,
                 };
             }
@@ -1149,9 +1160,10 @@ fn in_profile(fe: &FrontEnd, model: &str) -> bool {
     fe.profiles.iter().flatten().filter_map(|c| c.profile.as_ref()).any(|p| p.rider.eq_ignore_ascii_case(model))
 }
 
-/// Whether the player rides the profile's rider: in Career and Arcade.
+/// Whether the player rides the profile's rider: in Career, Arcade and
+/// ATV Academy.
 fn rides_profile(fe: &FrontEnd, career: &Career) -> bool {
-    career.profile.is_some() && fe.players <= 1 && matches!(fe.mode, Mode::Career | Mode::Arcade)
+    career.profile.is_some() && fe.players <= 1 && matches!(fe.mode, Mode::Career | Mode::Arcade | Mode::Training)
 }
 
 /// On to rider select, or past it to ATV select on the profile's rider.
@@ -1329,6 +1341,8 @@ fn rebuild(
         Mode::Freestyle => ("Freestyle_Open_Rider", "Freestyle_Open_ATV", "Freestyle_Open"),
         Mode::Career => ("Profile_Rider", "Career_ATV", "SingleRace_Track"),
         Mode::Challenge => ("Freestyle_Open_Rider", "Freestyle_Challenge_ATV", "Freestyle_Challenge"),
+        // TrainingSM opens Open Freestyle's ATV page (page 0x26).
+        Mode::Training => ("Freestyle_Open_Rider", "Freestyle_Open_ATV", "Freestyle_Open"),
     };
     let split = fe.players > 1;
     let (rider_key, atv_key, track_key) = match (split, fe.mode) {
@@ -1427,18 +1441,20 @@ fn rebuild(
             let w = 400.0;
             kids.push(commands.spawn(placed(ui.logo.node(w, w / 4.0), (SCREEN_W - w) / 2.0, 34.0)).id());
             let current = match fe.mode {
-                _ if fe.players > 1 => 5,
+                _ if fe.players > 1 => 4,
                 Mode::Arcade => 0,
-                Mode::SingleRace => 2,
-                Mode::TimeTrial => 3,
-                Mode::Freestyle | Mode::Challenge => 4,
                 Mode::Career => 1,
+                Mode::SingleRace => 2,
+                Mode::Freestyle | Mode::Challenge => 3,
+                Mode::TimeTrial => 5,
+                Mode::Training => 6,
             };
             let mut off = vec![];
             if roster.arcade.is_empty() {
                 off.push("ARCADE");
             }
-            let list = MenuList::new(&["ARCADE", "CAREER", "SINGLE RACE", "TIME TRIAL", "FREESTYLE", "MULTIPLAYER", "OPTIONS", "QUIT GAME"], 280.0)
+            // The original's order (0x47f70), and a way out.
+            let list = MenuList::new(&["ARCADE", "CAREER", "SINGLE RACE", "FREESTYLE", "MULTIPLAYER", "TIME TRIAL", "ATV ACADEMY", "OPTIONS", "QUIT GAME"], 280.0)
                 .with_row(32.0)
                 .select(current)
                 .disable(&off);

@@ -12,7 +12,7 @@ or a folder the disc was extracted to.
 | `atv-formats` | Engine-free readers: Xbox disc filesystem, "Bark" archive + LZSS, BOG textures (DXT1/DXT5, swizzled ARGB, 8-bit palettized), BED sprite sheets and bitmap fonts, ROM 1.26 models (meshes + Bezier patches), ROW 2.25 track worlds, `Setup/*.xml` rule files. |
 | `atv-sim` | Engine-free vehicle physics ported from the original game (see `docs/physics.md`): reads the game's `.params` tuning files, spring-strut wheels, body-level ground forces, auto gearbox, wheelies, preload jumps, air control, and track collision built from the track's meshes and patches. |
 | `atv-tool` | Command line: `list`, `extract <dir>`, `check` (parses every texture, model and track), `sim` (headless autopilot lap test). |
-| `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, the race loading screen with the track's picture and a racing tip) into a race with the original HUD (rev gauge, laps, times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); Single Race, Time Trial, Career, Arcade, Open Freestyle and split-screen multiplayer modes; computer riders; tricks with the original stunt animations; a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
+| `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, the race loading screen with the track's picture and a racing tip) into a race with the original HUD (rev gauge, laps, times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); Single Race, Time Trial, Career, Arcade, Open Freestyle, ATV Academy and split-screen multiplayer modes; computer riders; tricks with the original stunt animations; a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
 | `atv-hd` | HD texture packs: upscales the game's own textures with an AI upscaler (Real-ESRGAN) on the player's machine into a local cache the game prefers when present. |
 | `atv-launcher` | The launcher (binary `atv2-launcher`): pick your disc image or extracted folder once, choose track, quad, resolution and fullscreen, press Play. |
 
@@ -111,6 +111,10 @@ Race, Restart and Quit Race.
   Gold targets. Points come from tricks, multi-trick combos, flips and spins,
   big air, wheelies, endos and bicycles, the Stadium trick boxes (Cage Jump,
   Bus Leap, Hoopa...) and the first visit to each of the track's spots.
+- **ATV Academy**: the original's training mode. Pick an ATV (with a
+  profile loaded you ride its rider) and practise on Stadium 2, scoring as
+  in Open Freestyle but with no time limit or medal targets, until you
+  quit from the pause menu.
 - **Multiplayer**: split-screen Single Race for two to four players (two
   split top and bottom, three or four take a quarter each), with computer
   riders making the field up to four. Each player picks a rider (one
@@ -256,8 +260,9 @@ the way down after a drop, with a splash and ripples), and the quad is put
 back two seconds later.
 Other options: `--frontend` (show the menus even with `--track`, which
 then preselects), `--screen title|main|rider|atv|track|tricks` (open on that
-front-end screen; also `profiles`, and `arcade` with `--mode arcade`), `--mode race|timetrial|arcade|freestyle` with
-`--minutes N` (freestyle limit, 0 = unlimited) or `--round N` (arcade round),
+front-end screen; also `profiles`, and `arcade` with `--mode arcade`), `--mode race|timetrial|arcade|freestyle|training` with
+`--minutes N` (freestyle limit, 0 = unlimited) or `--round N` (arcade round;
+training is ATV Academy on Stadium 2),
 `--opponents N` (computer riders in a single race, default 5),
 `--players N` (split screen for N players, in a single race or freestyle),
 `--autodrive` (autopilot chases checkpoints and throws tricks), `--camera
