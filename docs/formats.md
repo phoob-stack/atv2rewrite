@@ -888,6 +888,14 @@ lap's row (the original draws both there when five laps are listed). The
 hints are X "Replay" (not in the demo) and A "Continue", which goes on as a
 race's does.
 
+An Arcade round (game type 2) has 0x3f7a0, filled by 0x3ed10: a race's
+page without the points. "Race Results" (0x191) is outlined in dark blue
+over `ResultsOverlay`. The heads are "Competitors" (0x7f) from x 30 and
+"Time" (0x1f1) centred on 460, and the rows put the time on 460 too. The
+bests box has all five kinds, and the hints are a race's. After it the
+original's Arcade flow (0x7df60) takes over: the record pages (0x7dd30),
+then the unlocks (0x7e290) for a round won, or "You Lost" (0xc9, 0x7e0a0).
+
 Open Freestyle and Freestyle Battle (game types 4 and 8) have their own
 page (0x40620, filled by 0x3ff20) on `ResultsOverlay`: "Open Freestyle"
 (0x16c; "Freestyle Battle" 0xb5, "Training" 0x206, otherwise "Freestyle"
@@ -953,15 +961,17 @@ because the bar's +0x198 is only set during its own set-up.
 
 The rewrite builds the race page and Race Again for Single Race, the Time
 Trial page, the freestyle page with Try Again for a lone player's Open
-Freestyle, the championship round page for Career and split-screen
-championship rounds, and the challenge page (`results.rs`); No on a
-challenge's Try Again goes back to the challenges. After the round page the rewrite keeps
-its round summary (skill points, level, gold, ATV unlocks), where the
-original has its unlockables page (0x35d60) still to port. A rider who never reached the start line shows
+Freestyle, the Arcade page, the championship round page for Career and
+split-screen championship rounds, and the challenge page (`results.rs`); No
+on a challenge's Try Again goes back to the challenges. After the round page
+the rewrite keeps its round summary (skill points, level, gold, ATV
+unlocks), where the original has its unlockables page (0x35d60) still to
+port. After the Arcade page it keeps its own round menu (won or out of time,
+attempts, the next round) in place of the original's 0x7df60 flow. A rider who never reached the start line shows
 dashes for a time, where the original would divide by nothing; with five
 laps listed, Time Trial's record moves down a row. The rewrite's freestyle
 scoring adds bonuses after multiplying the tricks, so its Best Trick is that
-jump's whole score. Freestyle Battle and Arcade keep the rewrite's results menu for now. After
+jump's whole score. Freestyle Battle keeps the rewrite's results menu for now. After
 a challenge the original says nothing of a rider unlocked or a skill level
 reached, and nor does the rewrite now.
 

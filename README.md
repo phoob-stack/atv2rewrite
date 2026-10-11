@@ -122,6 +122,8 @@ Race, Restart and Quit Race.
   profile, the original's `mArcadeProgress`); choosing Arcade then offers
   to continue from it or start a new game. With a profile loaded you ride
   its rider.
+  Each round ends on the original's Arcade results page, the field's
+  finishing order and times with the race's bests below.
 - **Open Freestyle**: roam any track for points against a time limit (1, 3,
   5, 10, 15 or 30 minutes, or unlimited) with the disc's Bronze, Silver and
   Gold targets. Points come from tricks, multi-trick combos, flips and spins,

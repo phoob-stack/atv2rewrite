@@ -1182,6 +1182,13 @@ fn race_menus(
                 // A challenge's: passed or not, the medal, the skill points
                 // (0x55900), then "Try Again?".
                 results::spawn_challenge(&mut commands, &ui, o, overlay);
+            } else if selection.mode == Mode::Arcade {
+                // An Arcade round's list (0x3f7a0), then the round's
+                // summary: won or not, attempts, the next round.
+                let finishers = results::finishers(&p, session.as_deref(), &feats, &selection, &roster, &career, field.1);
+                results::spawn_arcade(&mut commands, &ui, &finishers, demo.is_none(), overlay);
+                let menu = spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref(), &broken), overlay, "");
+                commands.entity(menu).insert(Visibility::Hidden);
             } else if let Some((rows, order)) = &round {
                 // A championship round's three views (0x3a900), then the
                 // round's summary with what it earned.
