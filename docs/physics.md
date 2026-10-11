@@ -110,10 +110,14 @@ clip once over the riding pose.
 
 ## Surfaces
 
-The original collides with the track's `.kdt` triangles, each naming a
-surface in `Setup/Materials.xml`. The rewrite collides with the `.row`
-render meshes, so on load each render triangle takes the surface of the
-`.kdt` triangle under its centre (they match to a few centimetres). Each
+The original collides with the track's `.kdt` triangles (0x5d030), each
+naming a surface in `Setup/Materials.xml`, and so does the rewrite. The
+`.row` render meshes mostly match them to a few centimetres, but not
+everywhere: Industrial 2 and 3 have a 2-3 m trench across the track that
+the `.kdt` bridges, where riders on the render meshes crashed and respotted
+(47 and 51 respots in a 6-rider 3-lap race, now 24 and 13). Under deep
+water the `.kdt` has no floor at all, so render triangles fill in there,
+with no surface. Each
 tyre on the ground takes its surface's `Friction` as grip (a tenth of it on
 faces over 45 degrees from the strut) and its `Damping` as drag; the quad
 averages both over the tyres down. Grip blends every handling pair between
