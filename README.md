@@ -234,7 +234,9 @@ checkpoint it missed ("MISSED CHECKPOINT"), back to the furthest point of
 the course it reached; the Stadium, freestyle and the challenges leave
 these out. Every respot in a race, R and after a crash too, puts the quad
 at that point, over at the side of the course when another rider is close
-by. "WRONG WAY" shows after two seconds facing back down the course.
+by. "WRONG WAY" shows after two seconds facing back down the course. As in
+the original, the quad and rider vanish just before any respot and
+blink back in over three seconds after it.
 Ride into deep water and the rider comes off and treads water (bracing on
 the way down after a drop, with a splash and ripples), and the quad is put
 back two seconds later.

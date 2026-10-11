@@ -223,9 +223,9 @@ const FLOAT_PULL: f32 = 50.0;
 const FLOAT_LEVEL: f32 = 0.3;
 const WATER_DRAG: f32 = 25.0;
 const FLOAT_GRAVITY: f32 = atv_sim::vehicle::GRAVITY;
-/// Seconds in the water before the quad is put back: 1.5 until the
-/// original starts its respot (0x26e30), and its 0.5 s fade (0x25f20).
-const WET_TIME: f32 = 2.0;
+/// Seconds in the water before the original starts its respot (0x26e30);
+/// the quad is put back after the respot's half-second fade (0x25f20).
+const WET_TIME: f32 = 1.5;
 /// Treading water plays frames 2-46 of `Tread_water` once, then 46-68
 /// over and over, stirring the water each time round (0x2bbb0, state 6).
 const TREAD_START: f32 = 2.0;

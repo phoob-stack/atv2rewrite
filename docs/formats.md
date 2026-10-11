@@ -304,8 +304,16 @@ respot in a race goes there, after a crash, stuck upside down or on the
 rider's say-so too (0x90ac0, run half a second into the fade 0x25f20).
 With any other racer within 10 m of the point (0x1c3160, squared), racer
 i of n goes i/n of the way across the corridor from its left edge, so
-player 1, the first, goes to the left edge. The rewrite only watches
-player 1, and puts the quad back without the fade.
+player 1, the first, goes to the left edge. Asked for, a respot first
+fades the racer's model out over half a second (state 1 at racer +0x2c,
+alpha twice the time left, set as the model's colour at +0x106c), puts it
+back (state 2), then blinks it back in over three seconds (state 3: alpha
+`(sin(34π × t/6 + 3π/2) + 1) / 2`, 0x26050 ends it); asking again before
+it's over does nothing, and the respot counts as it's asked for (racer
++0xac). The racer's shadow fades out with it and back in steadily over
+the three seconds. The rewrite only watches player 1, and draws its quad
+and rider only while that alpha is at least a half, since its textures
+keep gloss in their alpha; it has no racer shadows.
 
 The original paces its computer riders (0x69950, 0x6a3f0, 0x6a970): "pace
 cars" lap the track at `mAIBestLapTime`..`mAIWorstLapTime` from
