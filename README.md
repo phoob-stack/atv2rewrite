@@ -126,7 +126,9 @@ Race, Restart and Quit Race.
   Bronze scores beside their medals, your score taking its place among
   them (in orange) once it beats one, and the top right shows the clock
   (only with a time limit) and your score, rolling up to the points you've
-  earned.
+  earned. When the session ends, the original's results page lists your
+  trick points, longest endo, best trick combo and what it scored, with the
+  session's bests below, then asks "Try Again?".
 - **ATV Academy**: the original's training mode. Pick an ATV (with a
   profile loaded you ride its rider) and practise on Stadium 2, scoring as
   in Open Freestyle but with no time limit or medal targets (the score

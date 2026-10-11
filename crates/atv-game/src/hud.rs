@@ -1131,6 +1131,14 @@ fn race_menus(
                 let name = results::player_name(&selection, &roster, &career);
                 let record = records.as_deref().and_then(|r| r.get(&selection.track, records::Kind::Lap));
                 results::spawn_time_trial(&mut commands, &ui, &name, &p.lap_times, record, true, overlay);
+            } else if selection.mode == Mode::Freestyle
+                && selection.players <= 1
+                && let Some(s) = session.as_deref()
+            {
+                // Open Freestyle's: the session's stunts and the bests
+                // (0x40620), then "Try Again?".
+                let finishers = results::finishers(&p, Some(s), &feats, &selection, &roster, &career, field.1);
+                results::spawn_freestyle(&mut commands, &ui, s, limit, results::bests(&finishers), true, overlay);
             } else {
                 spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref(), &broken), overlay, "");
             }

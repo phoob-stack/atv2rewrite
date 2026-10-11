@@ -17,6 +17,11 @@
 //! Time Trial has its own page (0x40080) on `ResultsOverlay2`: the rider's
 //! five fastest laps under "Best Lap Times", then the track's lap record and
 //! who holds it.
+//!
+//! Open Freestyle's (0x40620, filled by 0x3ff20) lists the session's trick
+//! points, longest endo, best trick combo and what that jump scored under
+//! its time limit, with the bests' box but for the best lap; it carries on
+//! to "Try Again?" (0x34bc0), the same page under another title.
 
 use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::prelude::*;
@@ -76,6 +81,13 @@ const TT_TIME_Y: f32 = 200.0;
 const TT_LAPS: usize = 5;
 /// Seconds each race best is shown for.
 const BEST_TIME: f32 = 2.5;
+/// Open Freestyle's labels, right-aligned, and values, left-aligned
+/// (0x40620), and its first row: two rows under the heads.
+const FS_LABEL_X: f32 = 334.0;
+const FS_VALUE_X: f32 = 348.0;
+const FS_FIRST_Y: f32 = HEAD_Y + 2.0 * ROW_GAP;
+/// The time limits' names (0x40620), in [`crate::freestyle::TIME_LIMITS`]' order.
+const LIMIT_NAMES: [&str; 7] = ["ONE MINUTE", "THREE MINUTES", "FIVE MINUTES", "TEN MINUTES", "FIFTEEN MINUTES", "THIRTY MINUTES", "UNLIMITED TIME"];
 
 const GREY: Color = Color::srgb(0.7, 0.7, 0.7);
 const NAVY: Color = Color::srgb(0.098, 0.192, 0.262);
@@ -199,6 +211,15 @@ pub struct ResultsPage {
     shown: usize,
     clock: f32,
     replay: bool,
+    /// "Try Again?" follows instead of "Race Again?" (0x7fe40 picks it for
+    /// freestyle and challenges).
+    try_again: bool,
+}
+
+impl ResultsPage {
+    fn new(bests: Vec<Best>, replay: bool) -> Self {
+        Self { bests, shown: 0, clock: 0.0, replay, try_again: false }
+    }
 }
 
 /// The Race Again page.
@@ -291,7 +312,7 @@ fn small_text(f: &mut ChildSpawnerCommands, ui: &UiAssets, (x, y, align): (f32, 
 /// The results page for `finishers`, in finishing order.
 pub fn spawn_page(commands: &mut Commands, ui: &UiAssets, finishers: &[Finisher], replay: bool, overlay: Option<Entity>) {
     let first = FIRST_ROW_Y + 10.0 * (8.0 - finishers.len().min(8) as f32);
-    let page = ResultsPage { bests: bests(finishers), shown: 0, clock: 0.0, replay };
+    let page = ResultsPage::new(bests(finishers), replay);
     spawn_frame(commands, ui, &ui.results_overlay, ("RACE RESULTS", NAVY), page, overlay, |f| {
         for (text, x, align) in [("POSITION", POSITION_X, 0), ("TIME", TIME_X, 1), ("POINTS", POINTS_X, 1)] {
             small_text(f, ui, (x, HEAD_Y, align), HEAD, text, GREY);
@@ -304,23 +325,28 @@ pub fn spawn_page(commands: &mut Commands, ui: &UiAssets, finishers: &[Finisher]
                 small_text(f, ui, (x, y, align), ROW, text, colour);
             }
         }
-        // The race bests' box, a line at a time: the face, the name over the
-        // value, and what it is to the right (0x4d360).
-        f.spawn((Node { position_type: PositionType::Absolute, left: px(0), top: px(BOX_TOP), width: px(SCREEN_W), height: px(BOX_H), ..default() }, BackgroundColor(BOX_BG.with_alpha(0.0))))
-            .with_children(|b| {
-                let (mut m, img) = ui.mugs.region(Rect::new(0.0, 0.0, 1.0, 1.0), 1.0);
-                m.position_type = PositionType::Absolute;
-                m.left = px(SCREEN_W * 0.04);
-                m.top = px(BOX_H * 0.05);
-                m.width = px(BOX_H * 0.9);
-                m.height = px(BOX_H * 0.9);
-                b.spawn((m, img, Visibility::Hidden, BestMug));
-                let x = SCREEN_W * 0.12;
-                b.spawn((BitmapText::new(FontId::Small, LINE, "").color(YELLOW), BestText::Name, Node { position_type: PositionType::Absolute, left: px(x), top: px(BOX_H * 0.25 - LINE / 2.0), ..default() }));
-                b.spawn((BitmapText::new(FontId::Small, LINE, "").color(YELLOW), BestText::Value, Node { position_type: PositionType::Absolute, left: px(x), top: px(BOX_H * 0.75 - LINE / 2.0), ..default() }));
-                b.spawn((BitmapText::new(FontId::Small, KIND, "").color(ORANGE), BestText::Kind, Node { position_type: PositionType::Absolute, right: px(SCREEN_W * 0.04), top: px(BOX_H * 0.5 - KIND / 2.0), ..default() }));
-            });
+        bests_box(f, ui);
     });
+}
+
+/// The race bests' box under a page's list, a line at a time: the face, the
+/// name over the value, and what it is to the right (0x4d360). [`show_best`]
+/// fills it.
+fn bests_box(f: &mut ChildSpawnerCommands, ui: &UiAssets) {
+    f.spawn((Node { position_type: PositionType::Absolute, left: px(0), top: px(BOX_TOP), width: px(SCREEN_W), height: px(BOX_H), ..default() }, BackgroundColor(BOX_BG.with_alpha(0.0))))
+        .with_children(|b| {
+            let (mut m, img) = ui.mugs.region(Rect::new(0.0, 0.0, 1.0, 1.0), 1.0);
+            m.position_type = PositionType::Absolute;
+            m.left = px(SCREEN_W * 0.04);
+            m.top = px(BOX_H * 0.05);
+            m.width = px(BOX_H * 0.9);
+            m.height = px(BOX_H * 0.9);
+            b.spawn((m, img, Visibility::Hidden, BestMug));
+            let x = SCREEN_W * 0.12;
+            b.spawn((BitmapText::new(FontId::Small, LINE, "").color(YELLOW), BestText::Name, Node { position_type: PositionType::Absolute, left: px(x), top: px(BOX_H * 0.25 - LINE / 2.0), ..default() }));
+            b.spawn((BitmapText::new(FontId::Small, LINE, "").color(YELLOW), BestText::Value, Node { position_type: PositionType::Absolute, left: px(x), top: px(BOX_H * 0.75 - LINE / 2.0), ..default() }));
+            b.spawn((BitmapText::new(FontId::Small, KIND, "").color(ORANGE), BestText::Kind, Node { position_type: PositionType::Absolute, right: px(SCREEN_W * 0.04), top: px(BOX_H * 0.5 - KIND / 2.0), ..default() }));
+        });
 }
 
 /// A Time Trial's laps as its results list them (0x3fbd0): numbered from 1,
@@ -335,7 +361,7 @@ pub fn fastest_laps(laps: &[f32]) -> Vec<(usize, f32)> {
 /// Time Trial's results (0x40080, filled by 0x3fbd0): "Best Lap Times" over
 /// the rider's fastest laps, and the track's lap record with who holds it.
 pub fn spawn_time_trial(commands: &mut Commands, ui: &UiAssets, name: &str, laps: &[f32], record: Option<&Record>, replay: bool, overlay: Option<Entity>) {
-    let page = ResultsPage { bests: Vec::new(), shown: 0, clock: 0.0, replay };
+    let page = ResultsPage::new(Vec::new(), replay);
     let laps = fastest_laps(laps);
     spawn_frame(commands, ui, &ui.results_overlay2, ("TIME TRIAL", TT_BLUE), page, overlay, |f| {
         small_text(f, ui, (NAME_X, HEAD_Y, 0), HEAD, "BEST LAP TIMES", GREY);
@@ -357,8 +383,44 @@ pub fn spawn_time_trial(commands: &mut Commands, ui: &UiAssets, name: &str, laps
     });
 }
 
-/// The Race Again page (0x34990): "Race Again?" in yellow over Yes and No.
-pub fn spawn_race_again(commands: &mut Commands, ui: &UiAssets, overlay: Option<Entity>) {
+/// Open Freestyle's list (0x3ff20): the session's trick points, longest
+/// endo, best trick combo and what that jump scored. The original has no
+/// cages or pickups to count.
+pub fn freestyle_rows(s: &Session) -> [(&'static str, String); 6] {
+    [
+        ("TRICK POINTS", s.score.to_string()),
+        ("BEST ENDO", format!("{:.2} SECONDS", s.longest_endo)),
+        ("CAGES", "N/A".into()),
+        ("PICKUPS", "N/A".into()),
+        ("BEST TRICK COMBO", format!("X {}", s.best_combo.0)),
+        ("BEST TRICK", s.best_combo.1.to_string()),
+    ]
+}
+
+/// Open Freestyle's results (0x40620): the time limit's name at the top,
+/// [`freestyle_rows`] under it, and the box of bests, with no best lap to
+/// show (0x3e560).
+pub fn spawn_freestyle(commands: &mut Commands, ui: &UiAssets, session: &Session, limit: Option<usize>, bests: Vec<Best>, replay: bool, overlay: Option<Entity>) {
+    let mut page = ResultsPage::new(bests.into_iter().filter(|b| b.kind != Kind::Lap).collect(), replay);
+    page.try_again = true;
+    spawn_frame(commands, ui, &ui.results_overlay, ("OPEN FREESTYLE", TT_BLUE), page, overlay, |f| {
+        if let Some(name) = limit.and_then(|l| LIMIT_NAMES.get(l)) {
+            small_text(f, ui, (FS_LABEL_X, HEAD_Y, 2), HEAD, "TIME", ORANGE);
+            small_text(f, ui, (FS_VALUE_X, HEAD_Y, 0), HEAD, *name, YELLOW);
+        }
+        // A wider gap under the trick points.
+        for (i, (label, value)) in freestyle_rows(session).into_iter().enumerate() {
+            let y = FS_FIRST_Y + ROW_GAP * (i + usize::from(i > 0)) as f32;
+            small_text(f, ui, (FS_LABEL_X, y, 2), ROW, label, ORANGE);
+            small_text(f, ui, (FS_VALUE_X, y, 0), ROW, value, YELLOW);
+        }
+        bests_box(f, ui);
+    });
+}
+
+/// The Race Again page (0x34990): "Race Again?" in yellow over Yes and No;
+/// with `title` "Try Again?", the page freestyle and challenges get (0x34bc0).
+pub fn spawn_race_again(commands: &mut Commands, ui: &UiAssets, title: &str, overlay: Option<Entity>) {
     let list = MenuList::new(&["YES", "NO"], 272.0);
     let row = list.row;
     let menu = commands.spawn_empty().id();
@@ -367,9 +429,8 @@ pub fn spawn_race_again(commands: &mut Commands, ui: &UiAssets, overlay: Option<
         .insert_if(UiTargetCamera(overlay.unwrap_or(Entity::PLACEHOLDER)), || overlay.is_some())
         .with_children(|root| {
             root.spawn(frame()).with_children(|f| {
-                let text = "RACE AGAIN?";
-                let w = ui.font(FontId::Inside).width(text, AGAIN);
-                f.spawn((BitmapText::new(FontId::Inside, AGAIN, text).color(YELLOW), Node { position_type: PositionType::Absolute, left: px((SCREEN_W - w) / 2.0), top: px(AGAIN_Y), ..default() }));
+                let w = ui.font(FontId::Inside).width(title, AGAIN);
+                f.spawn((BitmapText::new(FontId::Inside, AGAIN, title).color(YELLOW), Node { position_type: PositionType::Absolute, left: px((SCREEN_W - w) / 2.0), top: px(AGAIN_Y), ..default() }));
                 f.spawn(Node { position_type: PositionType::Absolute, left: px((SCREEN_W - 272.0) / 2.0), top: px(YES_Y - row / 2.0), ..default() }).add_child(menu);
                 hints(f, ui, &[("controlbuttoncross", "SELECT")]);
             });
@@ -395,9 +456,10 @@ fn run(
         return;
     }
     let overlay = target.map(UiTargetCamera::entity);
+    let again = if page.try_again { "TRY AGAIN?" } else { "RACE AGAIN?" };
     let carry_on = |commands: &mut Commands| {
         commands.entity(e).despawn();
-        spawn_race_again(commands, &ui, overlay);
+        spawn_race_again(commands, &ui, again, overlay);
     };
     // The record pages are done.
     if records.as_mut().and_then(|r| r.resume()).is_some() {
@@ -527,5 +589,16 @@ mod tests {
         let c = row_colour(3, false).to_srgba();
         assert!((c.red - 0.7).abs() < 1e-5 && c.red == c.green && c.blue == 0.05, "{c:?}");
         assert_eq!(row_colour(5, true), ORANGE);
+    }
+
+    #[test]
+    fn freestyle_rows_read_as_the_original() {
+        let mut s = Session::test_with(Vec::new());
+        s.score = 4930;
+        s.longest_endo = 1.256;
+        s.best_combo = (3, 1440);
+        let rows = freestyle_rows(&s).map(|(label, value)| format!("{label} {value}"));
+        assert_eq!(rows, ["TRICK POINTS 4930", "BEST ENDO 1.26 SECONDS", "CAGES N/A", "PICKUPS N/A", "BEST TRICK COMBO X 3", "BEST TRICK 1440"]);
+        assert_eq!(LIMIT_NAMES.len(), crate::freestyle::TIME_LIMITS.len());
     }
 }

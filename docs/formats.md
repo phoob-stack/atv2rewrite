@@ -888,11 +888,33 @@ lap's row (the original draws both there when five laps are listed). The
 hints are X "Replay" (not in the demo) and A "Continue", which goes on as a
 race's does.
 
-The rewrite builds the race page and Race Again for Single Race, and the
-Time Trial page (`results.rs`). A rider who never reached the start line
-shows dashes for a time, where the original would divide by nothing; with
-five laps listed, Time Trial's record moves down a row. The other modes keep
-the rewrite's results menu for now.
+Open Freestyle and Freestyle Battle (game types 4 and 8) have their own
+page (0x40620, filled by 0x3ff20) on `ResultsOverlay`: "Open Freestyle"
+(0x16c; "Freestyle Battle" 0xb5, "Training" 0x206, otherwise "Freestyle"
+0xb4) outlined in dark blue (0.06, 0.09, 0.39). Labels are orange,
+right-aligned to x 334, and values yellow from x 348, at 0.7: "Trick Points"
+(0x20b, the score) on y 160, then 20 apart from y 200 "Best Endo" (0x10c,
+"%.2f %s" with "Seconds" 0x1c1, the stunt stat +0xc4), "Cages" (0x3c) and
+"Pickups" (0x172), both "N/A", "Best Trick Combo" (0x27, "x %d", +0xc8) and
+"Best Trick" (0x26, "%d", +0xcc). In types 4 and 8, "Time" (0x1f1) and the
+time limit's name (deaf0 +0x4c: "One Minute" 0x16a, "Three Minutes" 0x1ed,
+"Five Minutes" 0xae, "Ten Minutes" 0x1e9, "Fifteen Minutes" 0xad, "Thirty
+Minutes" 0x1ec, "Unlimited Time" 0x223) go on y 120 at 0.9. At each landing
+0x62040 keeps in +0xc8 the most scoring moves of one jump (+0x10c: every
+trick, flip and trick box counts one, repeats too; 0x61ae0 to 0x61dd0) and
+in +0xcc what that jump scored (+0x100 different moves times +0x104
+points). The bests box follows as on a race's page, without the best lap
+(0x3e560 skips it in types 4, 5, 8 and 9). The hints are a race's; Continue
+leads to "Try Again?".
+
+The rewrite builds the race page and Race Again for Single Race, the Time
+Trial page, and the freestyle page with Try Again for a lone player's Open
+Freestyle (`results.rs`). A rider who never reached the start line shows
+dashes for a time, where the original would divide by nothing; with five
+laps listed, Time Trial's record moves down a row. The rewrite's freestyle
+scoring adds bonuses after multiplying the tricks, so its Best Trick is that
+jump's whole score. Freestyle Battle and the other modes keep the rewrite's
+results menu for now.
 
 ## Track records
 
