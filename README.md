@@ -188,9 +188,11 @@ mode, and computer riders never ride the ATC. Locked items show dimmed
 with the original's message saying how to open them. The original's
 cheats are typed as a name on Name Your Rider (below): `ALLOFEM`
 (everything), `ALLRIDERS`, `ALLBIKES`, `ALLTRACKS`, `ALLTRICKS` (top skill
-level), `ALLCHAMPS`, `ALLCHALS`. Each shows its message and goes to the
-next profile you make or load, and stays in its save; `--cheat NAME` enters
-one into the profile loaded.
+level), `ALLCHAMPS`, `ALLCHALS`, and `NOHUD` (races with no HUD at all,
+menus aside; as in the original it stays in the profile, so make another
+profile to get the HUD back). Each shows its message and goes to the next
+profile you make or load, and stays in its save; `--cheat NAME` enters one
+into the profile loaded.
 
 **Profiles**, as in the original: up to ten players, each with their own
 progress, name and rider. Pressing start with no profile loaded opens

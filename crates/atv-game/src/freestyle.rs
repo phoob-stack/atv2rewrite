@@ -823,7 +823,7 @@ const POPUP_SECS: f32 = 2.2;
 fn spawn_hud(mut commands: Commands, session: Res<Session>, sel: Res<Selection>, ui: Option<Res<UiAssets>>) {
     let academy = sel.mode == Mode::Training;
     commands
-        .spawn((crate::ui::fullscreen(), DespawnOnExit(AppState::Race), Pickable::IGNORE))
+        .spawn((crate::ui::fullscreen(), crate::hud::HudRoot, DespawnOnExit(AppState::Race), Pickable::IGNORE))
         .with_children(|root| {
             if session.freestyle {
                 let score_row = |c: &mut ChildSpawnerCommands| {

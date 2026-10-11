@@ -227,7 +227,7 @@ fn spawn_hud(mut commands: Commands, opponents: Res<Opponents>, cams: Query<(Ent
             continue;
         }
         commands
-            .spawn((crate::ui::fullscreen(), UiTargetCamera(cam), DespawnOnExit(AppState::Race), Pickable::IGNORE))
+            .spawn((crate::ui::fullscreen(), crate::hud::HudRoot, UiTargetCamera(cam), DespawnOnExit(AppState::Race), Pickable::IGNORE))
             .with_children(|root| {
                 root.spawn(Node { position_type: PositionType::Absolute, left: px(16), top: px(10), flex_direction: FlexDirection::Column, row_gap: px(3), ..default() })
                     .with_children(|c| {

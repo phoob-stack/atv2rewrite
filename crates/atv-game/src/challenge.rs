@@ -394,7 +394,7 @@ pub struct GuideArrow;
 fn spawn_hud(mut commands: Commands, course: Res<Course>, defs: Res<Defs>, ui: Option<Res<UiAssets>>) {
     let records = defs.get(course.n).is_some_and(|d| d.records != [0.0; 3]);
     commands
-        .spawn((crate::ui::fullscreen(), DespawnOnExit(AppState::Race), Pickable::IGNORE))
+        .spawn((crate::ui::fullscreen(), crate::hud::HudRoot, DespawnOnExit(AppState::Race), Pickable::IGNORE))
         .with_children(|root| {
             root.spawn(Node { position_type: PositionType::Absolute, left: px(24), top: px(18), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() })
                 .with_children(|c| {

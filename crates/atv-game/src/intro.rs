@@ -322,7 +322,7 @@ pub(crate) fn hold(mut progress: Option<ResMut<RaceProgress>>, mut opponents: Op
 /// Flies the camera; after the last shot puts the race camera, the HUD and
 /// the split-screen views back.
 #[allow(clippy::type_complexity)]
-fn fly(
+pub(crate) fn fly(
     mut commands: Commands,
     time: Res<Time>,
     mut intro: ResMut<Intro>,

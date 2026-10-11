@@ -6,6 +6,12 @@
 //! the pause and results menus for every mode, the pause menu with the
 //! original's Audio, Camera and Controller pages. Freestyle's score
 //! readouts are in `freestyle`.
+//!
+//! A profile with the NOHUD cheat races with none of it, as the original's
+//! HUD manager draws nothing then (0xa4990 keeps `mCheat & 0x80`, 0xa5140
+//! skips its gauge, panels, arrow, countdown and messages): every
+//! [`HudRoot`] is hidden. The menus stay, and the attract demo's page goes
+//! too (0x3c980, 0x3ce40).
 
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
@@ -42,7 +48,28 @@ impl Plugin for HudPlugin {
                 Update,
                 (update_gauge, update_readouts, update_panel, update_meter, update_banners, race_menus.run_if(no_demo).run_if(no_intro).run_if(no_briefing))
                     .run_if(in_state(AppState::Race)),
+            )
+            .add_systems(
+                PostUpdate,
+                hide_hud
+                    .after(crate::intro::fly)
+                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate)
+                    .run_if(in_state(AppState::Race))
+                    .run_if(|career: Res<Career>| unlocks::hud_off(&career)),
             );
+    }
+}
+
+/// In-race HUD (each player's screen of it, freestyle's, a challenge's and
+/// its guide arrow, the attract demo's page): what NOHUD hides.
+#[derive(Component)]
+pub struct HudRoot;
+
+/// NOHUD: keeps the HUD hidden, whatever the intro, a replay or the guide
+/// arrow set.
+fn hide_hud(mut huds: Query<&mut Visibility, With<HudRoot>>) {
+    for mut v in &mut huds {
+        v.set_if_neq(Visibility::Hidden);
     }
 }
 
@@ -162,7 +189,7 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
     let dial_size = dial.rect.size() * GAUGE;
 
     commands
-        .spawn((fullscreen(), DespawnOnExit(AppState::Race), Pickable::IGNORE))
+        .spawn((fullscreen(), HudRoot, DespawnOnExit(AppState::Race), Pickable::IGNORE))
         .with_children(|root| {
             // Rev gauge, bottom right.
             root.spawn(Node {

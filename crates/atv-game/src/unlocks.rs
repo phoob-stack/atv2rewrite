@@ -22,10 +22,11 @@
 //!   0x1cef14, applied at 0x18f20): ALLOFEM (all of the below), ALLRIDERS,
 //!   ALLBIKES, ALLTRACKS, ALLTRICKS (skill points up to the top level),
 //!   ALLCHAMPS (every championship open) and ALLCHALS (every challenge
-//!   open). Here too they're entered on Name Your Rider (see
-//!   [`crate::frontend`]) and go to the next profile made or loaded, or
-//!   `--cheat NAME` enters one into the profile loaded; they stay in its
-//!   save.
+//!   open). NOHUD turns the in-race HUD off (0xa4990 and 0xa5140: see
+//!   [`crate::hud`]); ALLOFEM leaves it out. Here too they're entered on
+//!   Name Your Rider (see [`crate::frontend`]) and go to the next profile
+//!   made or loaded, or `--cheat NAME` enters one into the profile loaded;
+//!   they stay in its save, NOHUD too, as in the original (its `mCheat`).
 
 use bevy::prelude::*;
 
@@ -40,10 +41,11 @@ pub const TRACKS: u32 = 0x8;
 pub const TRICKS: u32 = 0x10;
 pub const CHAMPS: u32 = 0x20;
 pub const CHALS: u32 = 0x40;
+pub const NO_HUD: u32 = 0x80;
 
-/// The original's cheat names, what each opens and the message it shows
-/// (its `NOHUD` isn't here).
-pub const CHEATS: [(&str, u32, &str); 7] = [
+/// The original's cheat names (0x1cee90), what each opens and the message
+/// it shows.
+pub const CHEATS: [(&str, u32, &str); 8] = [
     ("ALLOFEM", RIDERS | BIKES | TRACKS | TRICKS | CHAMPS | CHALS, "UNLOCKED EVERYTHING"),
     ("ALLRIDERS", RIDERS, "UNLOCKED ALL RIDERS"),
     ("ALLBIKES", BIKES, "UNLOCKED ALL VEHICLES"),
@@ -51,6 +53,7 @@ pub const CHEATS: [(&str, u32, &str); 7] = [
     ("ALLTRICKS", TRICKS, "MAXXED OUT SKILL LEVEL"),
     ("ALLCHAMPS", CHAMPS, "UNLOCKED ALL CHAMPIONSHIPS"),
     ("ALLCHALS", CHALS, "UNLOCKED ALL CHALLENGES"),
+    ("NOHUD", NO_HUD, "NO HUD"),
 ];
 
 pub const TRACK_LOCKED: &str = "THIS TRACK CAN BE UNLOCKED BY REACHING IT WITHIN ARCADE OR CAREER MODE";
@@ -93,6 +96,11 @@ pub fn apply_bits(career: &mut Career, rules: &Rules, bits: u32) {
     if bits & CHAMPS != 0 {
         career.open = [true; 4];
     }
+}
+
+/// Whether the profile has entered NOHUD.
+pub fn hud_off(career: &Career) -> bool {
+    career.cheats & NO_HUD != 0
 }
 
 /// Carries progress from before tracks were saved as reached: the
@@ -222,5 +230,16 @@ mod tests {
         assert_eq!(c.skill_points, *rules.skill_levels.last().unwrap());
         let back = Career::parse(&c.to_text());
         assert_eq!(back.cheats, CHEATS[0].1);
+    }
+
+    #[test]
+    fn nohud_is_saved_and_not_in_allofem() {
+        let rules = Rules::default();
+        let mut c = Career::new();
+        apply_cheat(&mut c, &rules, "ALLOFEM");
+        assert!(!hud_off(&c));
+        assert!(apply_cheat(&mut c, &rules, "nohud"));
+        assert!(hud_off(&Career::parse(&c.to_text())));
+        assert_eq!(cheat("NOHUD"), Some((NO_HUD, "NO HUD")));
     }
 }
