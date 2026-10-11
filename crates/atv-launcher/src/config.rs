@@ -3,12 +3,89 @@
 
 use std::path::PathBuf;
 
+/// What Play starts: the game's own menus, or straight into one mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Start {
+    /// The title screen ("Press Start"), as the original boots.
+    Menu,
+    SingleRace,
+    TimeTrial,
+    Freestyle,
+    Arcade,
+    Challenge,
+    Academy,
+}
+
+impl Start {
+    pub const ALL: [Start; 7] =
+        [Start::Menu, Start::SingleRace, Start::TimeTrial, Start::Freestyle, Start::Arcade, Start::Challenge, Start::Academy];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Start::Menu => "Start menu",
+            Start::SingleRace => "Single Race",
+            Start::TimeTrial => "Time Trial",
+            Start::Freestyle => "Open Freestyle",
+            Start::Arcade => "Arcade",
+            Start::Challenge => "Freestyle Challenge",
+            Start::Academy => "ATV Academy",
+        }
+    }
+
+    pub fn hint(self) -> &'static str {
+        match self {
+            Start::Menu => "Opens the game's title screen. Pick a mode, rider and quad in the game's own menus.",
+            Start::SingleRace => "Straight into a race against computer riders.",
+            Start::TimeTrial => "Straight into a race against the clock and your ghost.",
+            Start::Freestyle => "Roam any track scoring tricks against the clock.",
+            Start::Arcade => "Arcade from the first round: beat the clock at each checkpoint.",
+            Start::Challenge => "One of the Freestyle Challenges in the stadium.",
+            Start::Academy => "Practice tricks in the stadium with no time limit.",
+        }
+    }
+
+    /// The word kept in the settings file.
+    fn key(self) -> &'static str {
+        match self {
+            Start::Menu => "menu",
+            Start::SingleRace => "race",
+            Start::TimeTrial => "timetrial",
+            Start::Freestyle => "freestyle",
+            Start::Arcade => "arcade",
+            Start::Challenge => "challenge",
+            Start::Academy => "academy",
+        }
+    }
+
+    fn from_key(k: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.key() == k)
+    }
+
+    /// Picks a track (races and freestyle; the rest have their own).
+    pub fn picks_track(self) -> bool {
+        matches!(self, Start::SingleRace | Start::TimeTrial | Start::Freestyle)
+    }
+
+    /// Races go round circuits; freestyle roams any track.
+    pub fn circuits_only(self) -> bool {
+        matches!(self, Start::SingleRace | Start::TimeTrial)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     /// The player's disc image or extracted folder.
     pub game: PathBuf,
+    pub start: Start,
     pub track: String,
     pub quad: String,
+    /// Rider model folder under `Characters`.
+    pub rider: String,
+    pub laps: u32,
+    /// Open Freestyle's time limit in minutes (0 = unlimited).
+    pub minutes: u32,
+    /// The Freestyle Challenge (1-based).
+    pub challenge: usize,
     pub width: u32,
     pub height: u32,
     pub fullscreen: bool,
@@ -16,22 +93,30 @@ pub struct Config {
     pub hd: bool,
     /// Also upscale track, quad and rider textures when building the pack.
     pub hd_world: bool,
-    /// The upscaler, when the player picked it by hand.
+    /// The upscaler, when the player picked it by hand (empty = find it).
     pub upscaler: PathBuf,
+    /// Where the HD pack is built and read (empty = the default folder).
+    pub hd_dir: PathBuf,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             game: std::env::var_os("ATV2_GAME").map(PathBuf::from).unwrap_or_default(),
+            start: Start::Menu,
             track: "Dunes1".into(),
             quad: "Bandit".into(),
+            rider: "Male1".into(),
+            laps: 3,
+            minutes: 3,
+            challenge: 1,
             width: 1280,
             height: 720,
             fullscreen: false,
             hd: true,
             hd_world: false,
             upscaler: PathBuf::new(),
+            hd_dir: PathBuf::new(),
         }
     }
 }
@@ -51,14 +136,20 @@ impl Config {
             let v = v.trim();
             match k.trim() {
                 "game" if !v.is_empty() => c.game = PathBuf::from(v),
+                "start" => c.start = Start::from_key(v).unwrap_or(c.start),
                 "track" => c.track = v.into(),
                 "quad" => c.quad = v.into(),
+                "rider" if !v.is_empty() => c.rider = v.into(),
+                "laps" => c.laps = v.parse::<u32>().map_or(c.laps, |l| l.clamp(1, 9)),
+                "minutes" => c.minutes = v.parse().unwrap_or(c.minutes),
+                "challenge" => c.challenge = v.parse::<usize>().map_or(c.challenge, |n| n.max(1)),
                 "width" => c.width = v.parse().unwrap_or(c.width),
                 "height" => c.height = v.parse().unwrap_or(c.height),
                 "fullscreen" => c.fullscreen = v == "true",
                 "hd" => c.hd = v == "true",
                 "hd_world" => c.hd_world = v == "true",
                 "upscaler" => c.upscaler = PathBuf::from(v),
+                "hd_dir" => c.hd_dir = PathBuf::from(v),
                 _ => {}
             }
         }
@@ -70,18 +161,47 @@ impl Config {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let text = format!(
-            "game = {}\ntrack = {}\nquad = {}\nwidth = {}\nheight = {}\nfullscreen = {}\nhd = {}\nhd_world = {}\nupscaler = {}\n",
+        std::fs::write(path, self.to_text())
+    }
+
+    fn to_text(&self) -> String {
+        format!(
+            "game = {}\nstart = {}\ntrack = {}\nquad = {}\nrider = {}\nlaps = {}\nminutes = {}\nchallenge = {}\nwidth = {}\nheight = {}\nfullscreen = {}\nhd = {}\nhd_world = {}\nupscaler = {}\nhd_dir = {}\n",
             self.game.display(),
+            self.start.key(),
             self.track,
             self.quad,
+            self.rider,
+            self.laps,
+            self.minutes,
+            self.challenge,
             self.width,
             self.height,
             self.fullscreen,
             self.hd,
             self.hd_world,
-            self.upscaler.display()
-        );
-        std::fs::write(path, text)
+            self.upscaler.display(),
+            self.hd_dir.display()
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn start_keys_round_trip() {
+        for s in Start::ALL {
+            assert_eq!(Start::from_key(s.key()), Some(s));
+        }
+        assert_eq!(Start::from_key("nonsense"), None);
+    }
+
+    #[test]
+    fn text_lists_every_setting() {
+        let text = Config { start: Start::Challenge, hd_dir: PathBuf::from("packs"), ..Default::default() }.to_text();
+        assert!(text.contains("start = challenge\n"));
+        assert!(text.contains("hd_dir = packs\n"));
     }
 }

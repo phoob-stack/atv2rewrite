@@ -14,7 +14,7 @@ or a folder the disc was extracted to.
 | `atv-tool` | Command line: `list`, `extract <dir>`, `check` (parses every texture, model and track), `sim` (headless autopilot lap test). |
 | `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, the race loading screen with the track's picture and a racing tip) into a race with the original HUD (rev gauge, the race panels with place, trick score, lead and lap times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); Single Race, Time Trial, Career, Arcade, Open Freestyle, ATV Academy and split-screen multiplayer modes; computer riders; tricks with the original stunt animations; a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
 | `atv-hd` | HD texture packs: upscales the game's own textures with an AI upscaler (Real-ESRGAN) on the player's machine into a local cache the game prefers when present. |
-| `atv-launcher` | The launcher (binary `atv2-launcher`): pick your disc image or extracted folder once, choose track, quad, resolution and fullscreen, press Play. |
+| `atv-launcher` | The launcher (binary `atv2-launcher`): pick your disc image or extracted folder once and press Play to boot into the game's start menu, or start straight into a game mode with a track, rider and quad; resolution, fullscreen and HD texture settings. |
 
 ## Running
 
@@ -28,9 +28,12 @@ cargo build --release -p atv-game -p atv-launcher
 
 ![Launcher](docs/launcher.png)
 
-It checks your game data with the same loader the game uses, lists the tracks
-and quads it finds, remembers your choices, and starts `atv2` for you. If the
-game fails to start, its last error lines show in the launcher.
+It checks your game data with the same loader the game uses, remembers your
+choices, and starts `atv2` for you. **Game mode** picks what Play starts:
+**Start menu** (the default) opens the game's title screen like the original,
+while Single Race, Time Trial, Open Freestyle, Arcade, a Freestyle Challenge
+or ATV Academy go straight in with the track, laps, rider and quad you pick.
+If the game fails to start, its last error lines show in the launcher.
 
 To update to the latest version later, close the game and run `update.bat`
 (Windows) from the repository folder: it pulls `main` from GitHub, keeps any
@@ -387,7 +390,11 @@ your local data folder (`%LOCALAPPDATA%\atv2\data\hd` on Windows,
 
 1. Download `realesrgan-ncnn-vulkan` for your OS from the
    [Real-ESRGAN releases](https://github.com/xinntao/Real-ESRGAN/releases)
-   and unzip it next to `atv2-launcher` (its own folder is fine).
+   and unzip it next to `atv2-launcher` (its own folder is fine), or put it
+   anywhere and set **Upscaler** in the launcher to its
+   `realesrgan-ncnn-vulkan` file (**Auto** goes back to looking for it).
+   **Pack folder** moves where the pack is built and read (**Default** goes
+   back to your local data folder).
 2. In the launcher, press **Build HD pack**. Tick "Also upscale tracks,
    quads and riders" for the 3D textures too (slower, a few hundred MB).
 3. Play. The game uses the pack whenever it is there; untick "Use HD
