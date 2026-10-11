@@ -94,11 +94,16 @@ in use pauses the race until it's back, as the original does.
 
 **Steam Controller and Steam Deck:** add `atv2-launcher` (or `atv2`) to
 Steam with *Add a Non-Steam Game*, make sure Steam Input is on for it, and
-start it from Steam. Steam then presents the controller to the game as an
-Xbox pad, so it works with the default layout, and Steam's own
-configurator can remap it further. Pads Steam passes through this way
-always show Xbox pictures; set `pad_pictures` if yours is a PlayStation or
-Switch pad.
+start it from Steam. Outside a Steam launch the Steam Controller is a
+mouse and keyboard, which the game can't use as a pad. Steam hands the
+game its controllers as Xbox pads through XInput, so when Steam starts the
+game it reads pads through XInput (the Steam Controller, and any pad Steam
+Input manages) and they work with the default layout; Steam's own
+configurator can remap them further. To choose, put `pad_reader = xinput`
+(always XInput) or `pad_reader = native` (never: PlayStation and Switch
+pads as Windows sees them, e.g. with Steam Input off for the game) in
+`options.cfg`. Pads Steam passes through show Xbox pictures; set
+`pad_pictures` if yours is a PlayStation or Switch pad.
 
 **Pads the game reads wrongly:** a pad missing from the built-in list (SDL's
 community controller database) can be given a mapping line in SDL's
