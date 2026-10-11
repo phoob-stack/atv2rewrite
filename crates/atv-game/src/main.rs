@@ -54,6 +54,7 @@ mod settings;
 mod trickbook;
 mod ui;
 mod unlocks;
+mod xinput;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -485,20 +486,26 @@ fn main() -> anyhow::Result<()> {
     let first = if args.direct { AppState::Loading } else { AppState::FrontEnd };
     controller::load_mappings();
     let front_end = FrontEnd::at(args.screen.unwrap_or_default());
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "ATV Quad Power Racing 2".into(),
-                resolution: args.resolution.into(),
-                mode: if args.fullscreen {
-                    WindowMode::BorderlessFullscreen(MonitorSelection::Current)
-                } else {
-                    WindowMode::Windowed
-                },
-                ..default()
-            }),
+    // Steam Input's pads come through XInput (see xinput.rs).
+    let xinput = settings.pad_reader.xinput();
+    let mut plugins = DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "ATV Quad Power Racing 2".into(),
+            resolution: args.resolution.into(),
+            mode: if args.fullscreen {
+                WindowMode::BorderlessFullscreen(MonitorSelection::Current)
+            } else {
+                WindowMode::Windowed
+            },
             ..default()
-        }))
+        }),
+        ..default()
+    });
+    if xinput {
+        plugins = plugins.disable::<bevy::gilrs::GilrsPlugin>();
+    }
+    let mut app = App::new();
+    app.add_plugins(plugins)
         .insert_resource(ClearColor(Color::srgb(0.55, 0.7, 0.9)))
         .insert_resource(Time::<Fixed>::from_hz(120.0))
         .insert_resource(args)
@@ -532,8 +539,12 @@ fn main() -> anyhow::Result<()> {
                 .chain()
                 .run_if(in_state(AppState::Race)),
         )
-        .add_systems(Update, auto_screenshot)
-        .run();
+        .add_systems(Update, auto_screenshot);
+    #[cfg(windows)]
+    if xinput {
+        app.add_plugins(xinput::XInputPlugin);
+    }
+    app.run();
     Ok(())
 }
 
