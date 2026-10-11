@@ -32,6 +32,10 @@ It checks your game data with the same loader the game uses, lists the tracks
 and quads it finds, remembers your choices, and starts `atv2` for you. If the
 game fails to start, its last error lines show in the launcher.
 
+To update to the latest version later, close the game and run `update.bat`
+(Windows) from the repository folder: it pulls `main` from GitHub, keeps any
+local edits in `git stash`, rebuilds, and offers to start the launcher.
+
 From the command line:
 
 ```
