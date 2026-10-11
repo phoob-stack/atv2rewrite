@@ -332,10 +332,10 @@ pub fn spawn(
     let track = setup::entries(&String::from_utf8_lossy(&game.read("/Setup/Tracks.xml").unwrap_or_default()))
         .into_iter()
         .find(|e| e.name.eq_ignore_ascii_case(&sel.track));
-    let lap_time = |k: &str| track.as_ref().and_then(|e| e.num(k)).unwrap_or(0.0);
+    let lap_time = |worst| track.as_ref().and_then(|e| e.ai_lap_time(worst)).unwrap_or(0.0);
     let pacer = Pacer::new(
-        lap_time("mAIBestLapTime"),
-        lap_time("mAIWorstLapTime"),
+        lap_time(false),
+        lap_time(true),
         racers.len() + 1,
         1 + humans.len(),
         line.lap_length(),

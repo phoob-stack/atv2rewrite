@@ -193,6 +193,11 @@ fn check(game: &GameSource) -> Result<()> {
     }
     for name in music {
         let path = format!("/{}.wav", name.replace('\\', "/"));
+        // Retail lists sections its disc doesn't ship; the game skips them.
+        if !game.exists(&path) {
+            println!("skip {path}: not on this disc");
+            continue;
+        }
         match game.read(&path).map_err(anyhow::Error::from).and_then(|b| Ok(atv_formats::wav::decode(&b)?)) {
             Ok(_) => ok += 1,
             Err(e) => {
@@ -281,8 +286,8 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
         line.edges.len(),
         line.lap_length(),
         cps.len(),
-        info.as_ref().and_then(|e| e.num("mAIBestLapTime")),
-        info.as_ref().and_then(|e| e.num("mAIWorstLapTime")),
+        info.as_ref().and_then(|e| e.ai_lap_time(false)),
+        info.as_ref().and_then(|e| e.ai_lap_time(true)),
     );
     if std::env::var_os("ATV2_TRACE").is_some() {
         for (i, &c) in cps.iter().enumerate() {
@@ -332,8 +337,8 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
     // Paced as in a race with a player on the grid, but nobody to chase.
     let mut pacer = std::env::var_os("ATV2_NOPACE").is_none().then(|| {
         Pacer::new(
-            info.as_ref().and_then(|e| e.num("mAIBestLapTime")).unwrap_or(0.0),
-            info.as_ref().and_then(|e| e.num("mAIWorstLapTime")).unwrap_or(0.0),
+            info.as_ref().and_then(|e| e.ai_lap_time(false)).unwrap_or(0.0),
+            info.as_ref().and_then(|e| e.ai_lap_time(true)).unwrap_or(0.0),
             cars.len() + 1,
             1,
             line.lap_length(),
@@ -350,7 +355,7 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
     let limit = laps as f32
         * info
             .as_ref()
-            .and_then(|e| e.num("mAIWorstLapTime"))
+            .and_then(|e| e.ai_lap_time(true))
             .filter(|&w| w > 0.0)
             .unwrap_or(150.0)
         * 3.0;
