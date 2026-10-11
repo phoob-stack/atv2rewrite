@@ -216,6 +216,8 @@ pub struct Outcome {
     /// None when a respot ended it.
     pub time: Option<f32>,
     pub medal: Option<usize>,
+    /// The medal beats the challenge's best before (0x80500).
+    pub improved: bool,
     pub best_time: bool,
     pub skill_points: u32,
     pub new_level: Option<usize>,
@@ -224,7 +226,7 @@ pub struct Outcome {
 
 impl Outcome {
     /// A run a respot ended: nothing is recorded.
-    pub const FAILED: Self = Self { time: None, medal: None, best_time: false, skill_points: 0, new_level: None, unlocked: None };
+    pub const FAILED: Self = Self { time: None, medal: None, improved: false, best_time: false, skill_points: 0, new_level: None, unlocked: None };
 }
 
 /// Records a finished run of challenge `n` in `time`.
@@ -232,9 +234,10 @@ pub fn score(career: &mut Career, rules: &Rules, def: &Def, n: usize, time: f32)
     let medal = def.medal(time);
     let prev = career.challenges.get(&n).copied();
     let old = prev.and_then(|p| p.1);
+    let improved = medal.is_some_and(|m| old.is_none_or(|o| m > o));
     // Each tier climbed pays the new medal's bonus.
     let skill_points = match medal {
-        Some(m) if old.is_none_or(|o| m > o) => (m as i32 - old.map_or(-1, |o| o as i32)) as u32 * def.bonus[m],
+        Some(m) if improved => (m as i32 - old.map_or(-1, |o| o as i32)) as u32 * def.bonus[m],
         _ => 0,
     };
     let level = rules.skill_level(career.skill_points);
@@ -243,7 +246,7 @@ pub fn score(career: &mut Career, rules: &Rules, def: &Def, n: usize, time: f32)
     let best_time = prev.is_none_or(|p| time < p.0);
     career.challenges.insert(n, (if best_time { time } else { prev.map_or(time, |p| p.0) }, medal.max(old)));
     let unlocked = (medal == Some(2) && old != Some(2)).then(|| def.reward.clone()).flatten();
-    Outcome { time: Some(time), medal, best_time, skill_points, new_level, unlocked }
+    Outcome { time: Some(time), medal, improved, best_time, skill_points, new_level, unlocked }
 }
 
 /// A rider entry name as the menus show it (`JASON LUBURGH`).
@@ -518,6 +521,7 @@ mod tests {
         assert!(is_open(&c, 1) && !is_open(&c, 2));
         let o = score(&mut c, &rules, d.get(1).unwrap(), 1, 14.5);
         assert_eq!((o.medal, o.skill_points, o.unlocked.as_deref()), (Some(0), 200, None));
+        assert!(o.improved);
         assert!(is_open(&c, 2));
         // Bronze to gold climbs two tiers: twice the gold bonus.
         let o = score(&mut c, &rules, d.get(1).unwrap(), 1, 12.0);
@@ -525,7 +529,7 @@ mod tests {
         assert_eq!(c.skill_points, 2200);
         // No better medal, no bonus; the best time stays.
         let o = score(&mut c, &rules, d.get(1).unwrap(), 1, 12.5);
-        assert_eq!((o.skill_points, o.best_time, o.unlocked), (0, false, None));
+        assert_eq!((o.skill_points, o.best_time, o.unlocked, o.improved), (0, false, None, false));
         assert_eq!(c.challenges[&1], (12.0, Some(2)));
         // A first gold pays three times.
         let o = score(&mut c, &rules, d.get(2).unwrap(), 2, 10.0);

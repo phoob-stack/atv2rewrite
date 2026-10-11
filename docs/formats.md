@@ -907,6 +907,26 @@ points). The bests box follows as on a race's page, without the best lap
 (0x3e560 skips it in types 4, 5, 8 and 9). The hints are a race's; Continue
 leads to "Try Again?".
 
+A challenge (game type 5) has 0x55900, filled by 0x55780. It has no
+bands, so the race stays in view under the default title, "Freestyle"
+(0xb4, grey outlined in navy), and three centred lines:
+- The verdict, in white `MgrammeSmall` at 1, hanging from y 84 (y-up 0.65).
+  It is "Challenge Passed" (0x58) or "Challenge Failed" (0x53).
+- The message, grey at 0.7 in a box from x 64 to 576, hanging from y 192
+  (box -0.7, -0.6, 1.4 by 0.8). A failed run (a respot) has none. A run
+  that beat no record says "You failed to beat any of the records." (0xbd).
+  A medal says "Congratulations, you've got the gold/silver/bronze medal!"
+  (0xbb, 0xbc, 0xb6) when it beats the challenge's best before, or
+  "Challenge completed at gold/silver/bronze level." (0xb9, 0xba, 0xb8)
+  when it doesn't.
+- "%d Skill Points Awarded" (0x1c9), orange at 1 from y 336 (y-up -0.4).
+  It shows only for a new medal that paid some.
+
+0x80500 sets these (+0x3f0 the medal, 0 gold to 2 bronze or -1, +0x3f4
+new, +0x3f8 the points). The only hint is A "Continue". "Try Again?"
+follows, where No goes through 0x806e0, which tells the front end to unwind
+to the mode's own screen for challenges and Open Freestyle (0x84bf0(2)).
+
 Career and Multiplayer Championship rounds (game types 3 and 7) have
 0x3a900 (filled by 0x3a160): "Race Results" (0x191) outlined in dark blue
 over `ResultsOverlay`, with nine columns (0x39cc0) in three views of three.
@@ -933,15 +953,17 @@ because the bar's +0x198 is only set during its own set-up.
 
 The rewrite builds the race page and Race Again for Single Race, the Time
 Trial page, the freestyle page with Try Again for a lone player's Open
-Freestyle, and the championship round page for Career and split-screen
-championship rounds (`results.rs`). After the round page the rewrite keeps
+Freestyle, the championship round page for Career and split-screen
+championship rounds, and the challenge page (`results.rs`); No on a
+challenge's Try Again goes back to the challenges. After the round page the rewrite keeps
 its round summary (skill points, level, gold, ATV unlocks), where the
 original has its unlockables page (0x35d60) still to port. A rider who never reached the start line shows
 dashes for a time, where the original would divide by nothing; with five
 laps listed, Time Trial's record moves down a row. The rewrite's freestyle
 scoring adds bonuses after multiplying the tricks, so its Best Trick is that
-jump's whole score. Freestyle Battle, Arcade and challenges keep the rewrite's results menu for
-now.
+jump's whole score. Freestyle Battle and Arcade keep the rewrite's results menu for now. After
+a challenge the original says nothing of a rider unlocked or a skill level
+reached, and nor does the rewrite now.
 
 ## Track records
 

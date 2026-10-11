@@ -279,7 +279,9 @@ on R or after a crash, fails the run. As in the original, cones cost no
 time and the trick challenges don't check the trick, whatever their text
 says. The top left lists the Gold, Silver and Bronze times beside their
 medals, the best one you're still inside lit. Challenge 12 has no course
-on the disc.
+on the disc. At the end the original's results page says whether you
+passed, the medal (new, or the level you matched) and the skill points a
+new medal paid, then asks "Try Again?" (No goes back to the challenges).
 
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on
