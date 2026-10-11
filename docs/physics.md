@@ -8,6 +8,11 @@ anyone checking the port against a disassembly.
 ## Model
 
 * Mass is 1, so forces are accelerations. Gravity is 25 m/s².
+* In the air (no wheel down) gravity is 25 × `INAIRGRAVSCALE` ×
+  `INAIRGRAVUPSCALE` while rising or `INAIRGRAVDOWNSCALE` while falling
+  (2.8 and 1.5 in `Generic.params`) × the preload gravity scale × mass
+  (0x5ba70, 0x5b330). The Options menu's Air Gravity, not in the original,
+  scales that for the players' quads only; 100% is the original.
 * The game frame is left handed (X right, Y up, +Z forward). The port runs in
   game coordinates internally and mirrors (negates Z) when it exposes state
   and when it raycasts the track.

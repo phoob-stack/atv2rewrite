@@ -478,6 +478,8 @@ fn drive_opponents(
         r.vehicle.drive_scale = boost_rules.as_deref().map_or(1.0, |rules| r.boost.step(rules, held, banked, dt))
             * r.driver.torque_scale();
         let before = (r.vehicle.velocity, r.vehicle.angular_velocity);
+        // The Air Gravity option is the players'; computer riders keep the original's.
+        r.vehicle.air_gravity = if r.human.is_some() { settings.air_gravity_scale() } else { 1.0 };
         r.vehicle.step(&r.input, dt, &race.collision);
         let mut back_on = false;
         if crashed {

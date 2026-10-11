@@ -35,7 +35,7 @@ use crate::career::{self, Career, Champ, CustomSetup, Plan, Profile, Run, PROFIL
 use crate::challenge;
 use crate::controller::{self, Action, Input, PadInput, PORTS};
 use crate::hud::{ordinal, track_title};
-use crate::settings::{CameraView, Settings, VOLUME_STEPS};
+use crate::settings::{air_gravity_label, CameraView, Settings, AIR_GRAVITY, VOLUME_STEPS};
 use crate::ui::{fullscreen, placed, read_nav_from, set_text, spawn_menu_rows, two_tone, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::mp::MpChamp;
 use crate::name_entry::{self, NameEntry};
@@ -229,6 +229,8 @@ pub enum Screen {
     Options,
     Audio,
     Camera,
+    /// How strongly gravity pulls the players' quads in the air.
+    AirGravity,
     Controller,
     /// One controller's actions, to rebind (the Custom layout).
     Remap,
@@ -264,10 +266,12 @@ pub enum Screen {
 
 /// The Options menu's rows, in the original's order (0x492d0), and the
 /// page each opens. Replays and Credits are greyed there too.
-const OPTIONS: [(&str, Option<Screen>); 6] = [
+const OPTIONS: [(&str, Option<Screen>); 7] = [
     ("AUDIO", Some(Screen::Audio)),
     ("CONTROLLER", Some(Screen::Controller)),
     ("CAMERA", Some(Screen::Camera)),
+    // Not in the original.
+    ("AIR GRAVITY", Some(Screen::AirGravity)),
     ("REPLAYS", None),
     ("PROFILES", Some(Screen::ProfileSelect)),
     ("CREDITS", None),
@@ -786,6 +790,19 @@ fn navigate(
                 if let Some(l) = list.as_mut() {
                     l.step(nav);
                     settings.camera = CameraView::ALL[l.selected.min(CameraView::ALL.len() - 1)];
+                }
+            }
+            Nav::Accept | Nav::Start | Nav::Back => {
+                settings.save();
+                fe.screen = Screen::Options;
+            }
+            _ => {}
+        },
+        Screen::AirGravity => match nav {
+            Nav::Up | Nav::Down => {
+                if let Some(l) = list.as_mut() {
+                    l.step(nav);
+                    settings.air_gravity = AIR_GRAVITY[l.selected.min(AIR_GRAVITY.len() - 1)];
                 }
             }
             Nav::Accept | Nav::Start | Nav::Back => {
@@ -1385,7 +1402,7 @@ fn rebuild(
         Screen::Track => (track_key, label),
         Screen::Options => ("Options", "OPTIONS"),
         Screen::Audio => ("Options_Sound", "OPTIONS"),
-        Screen::Camera => ("Options_Camera", "OPTIONS"),
+        Screen::Camera | Screen::AirGravity => ("Options_Camera", "OPTIONS"),
         Screen::Controller | Screen::Remap => ("Options_Controller", "OPTIONS"),
         Screen::CareerChamp => ("Career_Newgame", "CAREER"),
         Screen::CareerStatus => (career.run.as_ref().map_or("Career_Status_Amateur", |r| r.champ.status_screen()), "CAREER"),
@@ -1635,6 +1652,14 @@ fn rebuild(
             let list = MenuList::new(&names, 320.0).with_row(36.0).select(settings.camera.index());
             kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 150.0));
             kids.push(hint(&mut commands, &ui, "PRESS C OR BACK IN A RACE TO CHANGE CAMERA", 300.0));
+        }
+        Screen::AirGravity => {
+            let labels = AIR_GRAVITY.map(air_gravity_label);
+            let names: Vec<&str> = labels.iter().map(String::as_str).collect();
+            let at = AIR_GRAVITY.iter().position(|&p| p == settings.air_gravity).unwrap_or(0);
+            let list = MenuList::new(&names, 320.0).with_row(36.0).select(at);
+            kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 120.0));
+            kids.push(hint(&mut commands, &ui, "LOWER IS FLOATIER IN THE AIR", 390.0));
         }
         Screen::Controller => {
             for port in 0..PORTS {
@@ -1914,7 +1939,7 @@ fn rebuild(
         Screen::ProfileSelect if fe.profiles.get(fe.slot).is_none_or(Option::is_none) => &[("controlbuttoncross", "CREATE PROFILE"), ("controlbuttoncircle", "BACK")],
         Screen::Title => &[],
         Screen::Main => &[("controlbuttoncross", "SELECT")],
-        Screen::Audio | Screen::Camera => &[("controlbuttoncross", "OK")],
+        Screen::Audio | Screen::Camera | Screen::AirGravity => &[("controlbuttoncross", "OK")],
         Screen::CareerChamp => &[("controlbuttoncross", "SELECT"), ("controlbuttoncircle", "BACK")],
         Screen::Controller => &[("controlbuttoncross", "TOGGLE"), ("YButton", "EDIT LAYOUT"), ("controlbuttoncircle", "BACK")],
         Screen::Remap if fe.remap.waiting => &[],
