@@ -227,11 +227,12 @@ fn falloff(d: f32) -> f32 {
     (8.0 / (d.max(0.0) + 8.0)).powi(2)
 }
 
-/// Where the race is heard from: each player's quad, player 1 first (the
-/// original listens from each view's camera; the rewrite's mix has always
-/// been relative to the player's quad).
-fn listeners(player: &Player, opponents: Option<&crate::opponents::Opponents>) -> Vec<Vec3> {
-    let others = opponents.into_iter().flat_map(|o| o.racers.iter().filter(|r| r.human.is_some()).map(|r| r.vehicle.position));
+/// Where the race is heard from: each player's quad, player 1 first, or
+/// the quad each of the attract demo's `views` is on (the original listens
+/// from each view's camera; the rewrite's mix has always been relative to
+/// the player's quad).
+fn listeners(player: &Player, opponents: Option<&crate::opponents::Opponents>, views: usize) -> Vec<Vec3> {
+    let others = opponents.into_iter().flat_map(|o| o.racers.iter().enumerate().filter(|(i, r)| r.human.is_some() || i + 1 < views).map(|(_, r)| r.vehicle.position));
     std::iter::once(player.0.position).chain(others).collect()
 }
 
@@ -407,7 +408,7 @@ fn engine_and_wheels(
     mix: Option<Res<QuadMix>>,
     settings: Res<Settings>,
     virt: Res<Time<Virtual>>,
-    water: Option<Res<crate::water::Water>>,
+    (water, demo): (Option<Res<crate::water::Water>>, Option<Res<crate::demo::Demo>>),
     mut sinks: Query<(&mut AudioSink, Option<&EngineLoop>, Option<&WheelLoop>, Option<&OtherEngine>), With<PausesWithGame>>,
 ) {
     let paused = virt.is_paused();
@@ -419,7 +420,7 @@ fn engine_and_wheels(
         }
     }
     let (Some(player), Some(mix)) = (player, mix) else { return };
-    let ears = listeners(&player, opponents.as_deref());
+    let ears = listeners(&player, opponents.as_deref(), demo.as_deref().map_or(1, crate::demo::Demo::views));
     let v = &player.0;
     let r = (v.revs / v.params.max_revs.max(1.0)).clamp(0.0, 1.0);
     let [on, off] = engine_mix(r, v.throttle, mix.pitch_zero, mix.pitch_span);
@@ -638,7 +639,7 @@ fn crash_sounds(
     wreck: Option<ResMut<crate::crash::Wreck>>,
     player: Option<Res<Player>>,
     mut opponents: Option<ResMut<crate::opponents::Opponents>>,
-    sel: Res<Selection>,
+    (sel, demo): (Res<Selection>, Option<Res<crate::demo::Demo>>),
     settings: Res<Settings>,
     mut sounds: ResMut<Assets<Sound>>,
     mut state: Local<CrashVoices>,
@@ -655,7 +656,7 @@ fn crash_sounds(
     let mut out = |pcm: &Arc<Pcm>, volume: f32, pitch: f32| one_shot(&mut commands, &mut sounds, pcm, volume * effects, pitch);
     let female = |model: &str| model.to_ascii_lowercase().starts_with("female");
     state.play(0, &mut wreck, female(&sel.rider), 1.0, &mut out, &banks);
-    let ears = listeners(&player, opponents.as_deref());
+    let ears = listeners(&player, opponents.as_deref(), demo.as_deref().map_or(1, crate::demo::Demo::views));
     if let Some(opp) = opponents.as_mut() {
         for (i, r) in opp.racers.iter_mut().enumerate() {
             let near = nearness(&ears, r.vehicle.position);

@@ -238,8 +238,11 @@ behind the results, moving between the computer riders every few seconds.
 **Attract demo**, as in the original: left on Press Start for 30 seconds
 with nothing pressed, the game races eight computer riders on a random
 track (any the setup files offer for the demo, locked or not), filmed by
-the same TV director, under the logo and a flashing PRESS START. Any key
-or button, the first rider home or five minutes brings back Press Start.
+the same TV director, under the logo and a flashing PRESS START. A third
+of the time the screen splits in two, and half of those times in four,
+the other views following the next riders on the grid with the race
+camera. Any key or button, the first rider home or five minutes brings
+back Press Start.
 
 **Race intro**, as in the original: before the 3-2-1, the track's intro
 cameras fly over it one after another, each along its own path, with
