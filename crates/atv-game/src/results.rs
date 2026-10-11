@@ -49,7 +49,7 @@ use crate::race::RaceProgress;
 use crate::record_page::RecordPages;
 use crate::records::{Feats, Kind, Record};
 use crate::replay;
-use crate::ui::{fullscreen, read_nav, spawn_menu_rows, two_tone, BitmapText, FontId, MenuList, Nav, UiAssets, UiTex, SCREEN_H, SCREEN_W};
+use crate::ui::{fullscreen, read_nav, HintButton, spawn_menu_rows, two_tone, BitmapText, FontId, MenuList, Nav, UiAssets, UiTex, SCREEN_H, SCREEN_W};
 use crate::{AppState, Selection};
 
 /// Sizes in screen units: the page title (scale 0.9 in the big font,
@@ -345,14 +345,13 @@ fn frame() -> Node {
 }
 
 /// The pad buttons along the bottom, as the front end draws them.
-fn hints(parent: &mut ChildSpawnerCommands, ui: &UiAssets, hints: &[(&str, &str)]) {
+fn hints(parent: &mut ChildSpawnerCommands, hints: &[(GamepadButton, &str)]) {
     parent
         .spawn(Node { position_type: PositionType::Absolute, right: px(40), top: px(436), column_gap: px(18), align_items: AlignItems::Center, ..default() })
         .with_children(|f| {
             for (button, label) in hints {
                 f.spawn(Node { align_items: AlignItems::Center, column_gap: px(5), ..default() }).with_children(|h| {
-                    let s = ui.pad.get(button).rect;
-                    h.spawn(ui.pad.tex.region(s, 22.0 / s.height()));
+                    h.spawn(HintButton::new(*button, 22.0));
                     h.spawn(BitmapText::new(FontId::Small, 8.0, *label));
                 });
             }
@@ -365,9 +364,9 @@ fn hints(parent: &mut ChildSpawnerCommands, ui: &UiAssets, hints: &[(&str, &str)
 fn spawn_frame(commands: &mut Commands, ui: &UiAssets, bands: Option<&UiTex>, (title, outline): (&str, Color), page: ResultsPage, overlay: Option<Entity>, body: impl FnOnce(&mut ChildSpawnerCommands)) {
     let mut buttons = Vec::new();
     if page.replay {
-        buttons.push(("controlbuttonsquare", "REPLAY"));
+        buttons.push((GamepadButton::West, "REPLAY"));
     }
-    buttons.push(("controlbuttoncross", "CONTINUE"));
+    buttons.push((GamepadButton::South, "CONTINUE"));
     commands
         .spawn((fullscreen(), page, RaceMenu { results: true, page: None }, DespawnOnExit(AppState::Race), Pickable::IGNORE))
         .insert_if(UiTargetCamera(overlay.unwrap_or(Entity::PLACEHOLDER)), || overlay.is_some())
@@ -384,7 +383,7 @@ fn spawn_frame(commands: &mut Commands, ui: &UiAssets, bands: Option<&UiTex>, (t
                 f.spawn(at(SCREEN_W / 2.0, TITLE_Y, w, TITLE, 1)).with_child(two_tone(TITLE, title, GREY, outline));
                 body(f);
             });
-            root.spawn(frame()).with_children(|f| hints(f, ui, &buttons));
+            root.spawn(frame()).with_children(|f| hints(f, &buttons));
         });
 }
 
@@ -622,7 +621,7 @@ pub fn spawn_race_again(commands: &mut Commands, ui: &UiAssets, title: &str, ove
                 let w = ui.font(FontId::Inside).width(title, AGAIN);
                 f.spawn((BitmapText::new(FontId::Inside, AGAIN, title).color(YELLOW), Node { position_type: PositionType::Absolute, left: px((SCREEN_W - w) / 2.0), top: px(AGAIN_Y), ..default() }));
                 f.spawn(Node { position_type: PositionType::Absolute, left: px((SCREEN_W - 272.0) / 2.0), top: px(YES_Y - row / 2.0), ..default() }).add_child(menu);
-                hints(f, ui, &[("controlbuttoncross", "SELECT")]);
+                hints(f, &[(GamepadButton::South, "SELECT")]);
             });
         });
     spawn_menu_rows(commands, ui, menu, &list);

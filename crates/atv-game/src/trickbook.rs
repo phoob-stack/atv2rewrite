@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 
-use crate::controller::PadInput;
+use crate::controller::{PadInput, PadStyle};
 use crate::freestyle::{Dir, TrickDef};
 use crate::rider::{Clip, Rider};
 use crate::ui::{placed, BitmapText, FontId, UiAssets};
@@ -77,19 +77,34 @@ pub fn activation(def: &TrickDef, names: &[&str; 4]) -> String {
     parts.join(" + ")
 }
 
-/// Where a pad button sits on the `TrickPad_XBox` picture: Y, B, A and X
-/// on the face, the shoulders on the top view, and the d-pad. Others (and
-/// sticks) have no spot.
-fn pad_spot(p: PadInput) -> Option<&'static str> {
+/// Where a pad button sits on a `style` pad's trick pad picture
+/// (`TrickPad_XBox`, `_PS2` or `_GC`): the face buttons, the shoulders on
+/// the top view, and the d-pad. Others (and sticks) have no spot. Bevy's
+/// buttons go by place, so a Nintendo pad's South is the GameCube's B.
+fn pad_spot(p: PadInput, style: PadStyle) -> Option<&'static str> {
     use bevy::input::gamepad::GamepadButton as B;
     let PadInput::Button(b) = p else { return None };
+    let face = match style {
+        PadStyle::Xbox => ["BUTTON4", "BUTTON5", "BUTTON6", "BUTTON7"],
+        // The PS2 picture has the cross on the left and the square at the
+        // bottom; they light by symbol.
+        PadStyle::PlayStation => ["BUTTON4", "BUTTON6", "BUTTON5", "BUTTON7"],
+        PadStyle::Nintendo => ["BUTTON7", "BUTTON4", "BUTTON5", "BUTTON6"],
+    };
+    // The PS2's shoulders are L1 and L2 (BUTTON8, 9), then R1 and R2.
+    let ps = style == PadStyle::PlayStation;
     Some(match b {
-        B::North => "BUTTON4",
-        B::East => "BUTTON5",
-        B::South => "BUTTON6",
-        B::West => "BUTTON7",
-        B::LeftTrigger | B::LeftTrigger2 => "BUTTON8",
-        B::RightTrigger | B::RightTrigger2 => "BUTTON9",
+        B::North => face[0],
+        B::East => face[1],
+        B::South => face[2],
+        B::West => face[3],
+        B::LeftTrigger => "BUTTON8",
+        B::LeftTrigger2 if ps => "BUTTON9",
+        B::LeftTrigger2 => "BUTTON8",
+        B::RightTrigger if ps => "BUTTON10",
+        B::RightTrigger => "BUTTON9",
+        B::RightTrigger2 if ps => "BUTTON11",
+        B::RightTrigger2 => "BUTTON9",
         B::DPadUp => "BUTTON0",
         B::DPadDown => "BUTTON1",
         B::DPadLeft => "BUTTON2",
@@ -98,14 +113,32 @@ fn pad_spot(p: PadInput) -> Option<&'static str> {
     })
 }
 
-/// How much larger than drawn on the disc the lit buttons' glows are.
-const GLOW: f32 = 1.3;
+/// The glow lighting a spot, and whether it's flipped: the shoulders'
+/// glows are drawn for the left side, and the PS2's upper shoulders (L2,
+/// R2) have the bigger one.
+fn glow(at: &str, style: PadStyle) -> (&'static str, bool) {
+    match (at, style) {
+        ("BUTTON8", PadStyle::PlayStation) => ("SHOULDER2", false),
+        ("BUTTON9", PadStyle::PlayStation) => ("SHOULDER1", false),
+        ("BUTTON10", _) => ("SHOULDER2", true),
+        ("BUTTON11", _) => ("SHOULDER1", true),
+        ("BUTTON8", _) => ("SHOULDER1", false),
+        ("BUTTON9", _) => ("SHOULDER1", true),
+        _ => ("BUTTON", false),
+    }
+}
+
+/// How much larger than drawn on the disc the lit buttons' glows are (the
+/// PS2 pad's buttons are smaller, so its glows are too).
+fn glow_scale(style: PadStyle) -> f32 {
+    if style == PadStyle::PlayStation { 0.75 } else { 1.3 }
+}
 
 /// The trick pad picture with the trick's buttons and its direction on the
 /// d-pad lit (as 0x52a40 lights them), `scale` units per texel. `buttons`:
-/// the pad's trick buttons, in mask order.
-pub fn pad_picture(commands: &mut Commands, ui: &UiAssets, def: &TrickDef, buttons: [Option<PadInput>; 4], locked: bool, (left, top): (f32, f32), scale: f32) -> Entity {
-    let sheet = &ui.trick_pad;
+/// the pad's trick buttons, in mask order, on a `style` pad.
+pub fn pad_picture(commands: &mut Commands, ui: &UiAssets, def: &TrickDef, (buttons, style): ([Option<PadInput>; 4], PadStyle), locked: bool, (left, top): (f32, f32), scale: f32) -> Entity {
+    let sheet = ui.trick_pad_for(style);
     let pad = sheet.get("PAD").rect;
     let dim = Color::srgb(0.45, 0.45, 0.45);
     let spot = |name: &str| (sheet.get(name).rect.center() - pad.min) * scale;
@@ -126,16 +159,14 @@ pub fn pad_picture(commands: &mut Commands, ui: &UiAssets, def: &TrickDef, butto
             if locked {
                 return;
             }
-            let lit = (0..4).filter(|b| def.buttons & (1 << b) != 0).filter_map(|b| buttons[b].and_then(pad_spot)).chain([dir]);
+            let lit = (0..4).filter(|b| def.buttons & (1 << b) != 0).filter_map(|b| buttons[b].and_then(|p| pad_spot(p, style))).chain([dir]);
             for at in lit {
-                let shoulder = matches!(at, "BUTTON8" | "BUTTON9");
-                let name = if shoulder { "SHOULDER1" } else { "BUTTON" };
+                let (name, flip) = glow(at, style);
                 // Bigger and gold, so they show on the dark pad.
-                let size = sheet.get(name).rect.size() * scale * GLOW;
-                let (n, mut img) = sheet.node(name, scale * GLOW);
+                let size = sheet.get(name).rect.size() * scale * glow_scale(style);
+                let (n, mut img) = sheet.node(name, scale * glow_scale(style));
                 img.color = Color::srgb(1.0, 0.85, 0.2);
-                // The shoulder glow is drawn for the left trigger.
-                img.flip_x = at == "BUTTON9";
+                img.flip_x = flip;
                 let c = spot(at) - size * 0.5;
                 p.spawn(placed((n, img), c.x, c.y));
             }

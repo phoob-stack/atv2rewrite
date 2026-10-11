@@ -20,7 +20,6 @@
 
 use bevy::app::{HierarchyPropagatePlugin, Propagate};
 use bevy::ecs::system::SystemParam;
-use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
@@ -56,10 +55,11 @@ impl Plugin for HudPlugin {
         let no_briefing = not(resource_exists::<crate::challenge::Briefing>);
         app.add_plugins(HierarchyPropagatePlugin::<HudOf>::new(PreUpdate))
             .add_systems(OnEnter(AppState::Race), spawn_hud.after(crate::setup).run_if(no_demo.clone()))
+            .add_systems(OnEnter(AppState::Race), |mut commands: Commands| commands.insert_resource(LostPads::default()))
             .add_systems(OnExit(AppState::Race), unpause)
             .add_systems(
                 Update,
-                (update_gauge, update_readouts, update_panel, update_meter, update_banners, race_menus.run_if(no_demo).run_if(no_intro).run_if(no_briefing))
+                (update_gauge, update_readouts, update_panel, update_meter, update_banners, (race_menus, lost_pad_note).chain().run_if(no_demo).run_if(no_intro).run_if(no_briefing))
                     .run_if(in_state(AppState::Race)),
             )
             .add_systems(PostUpdate, fit_views.before(bevy::ui::UiSystems::Prepare).run_if(in_state(AppState::Race)))
@@ -271,6 +271,74 @@ pub(crate) struct RaceMenu {
     pub(crate) results: bool,
     /// The pause menu's Audio, Camera or Controller page, when one is open.
     pub(crate) page: Option<PausePage>,
+}
+
+/// Controllers unplugged mid-race: each port's pad as last seen, and the
+/// ports whose pad went and hasn't come back.
+#[derive(Resource, Default)]
+pub(crate) struct LostPads {
+    plugged: Option<[bool; controller::PORTS]>,
+    lost: [bool; controller::PORTS],
+}
+
+impl LostPads {
+    /// Notes which pads came and went; true when one in use (in split
+    /// screen, a player's) was just unplugged.
+    fn watch(&mut self, pads: &controller::Pads, players: usize) -> bool {
+        let now: [bool; controller::PORTS] = std::array::from_fn(|n| pads.port(n).is_some());
+        let before = self.plugged.replace(now).unwrap_or(now);
+        let mut unplugged = false;
+        for n in 0..controller::PORTS {
+            if before[n] && !now[n] && (players <= 1 || n < players) {
+                self.lost[n] = true;
+                unplugged = true;
+            }
+            if now[n] {
+                self.lost[n] = false;
+            }
+        }
+        unplugged
+    }
+}
+
+/// The line over the pause menu while an unplugged controller is still
+/// out: the original's "Please reconnect the controller to port %i and
+/// press START to continue" (string 0x86).
+#[derive(Component)]
+struct LostNote(usize);
+
+fn lost_pad_note(
+    mut commands: Commands,
+    lost: Res<LostPads>,
+    ui: Option<Res<UiAssets>>,
+    game: Res<crate::Game>,
+    menus: Query<&RaceMenu>,
+    notes: Query<(Entity, &LostNote)>,
+    overlay: Query<Entity, With<mp::Overlay>>,
+) {
+    let paused = menus.iter().any(|m| !m.results);
+    let want = lost.lost.iter().position(|&l| l).filter(|_| paused);
+    let shown = notes.iter().next();
+    if shown.map(|(_, n)| n.0) == want {
+        return;
+    }
+    if let Some((e, _)) = shown {
+        commands.entity(e).despawn();
+    }
+    let (Some(port), Some(ui)) = (want, ui) else { return };
+    let strings = game.0.read("/Strings/Strings_ENG.txt").map(|b| b.iter().map(|&c| c as char).collect::<String>()).unwrap_or_default();
+    let line = strings.lines().nth(0x86).map(str::trim).filter(|l| l.contains("%i")).unwrap_or("Please reconnect the controller to port %i and press START to continue");
+    let text = line.replace("%i", &(port + 1).to_string());
+    let size = 9.0;
+    let w = ui.font(FontId::Small).width(&text, size);
+    let overlay = overlay.iter().next();
+    commands
+        .spawn((fullscreen(), LostNote(port), DespawnOnExit(AppState::Race), Pickable::IGNORE, GlobalZIndex(5)))
+        .insert_if(UiTargetCamera(overlay.unwrap_or(Entity::PLACEHOLDER)), || overlay.is_some())
+        .with_children(|root| {
+            root.spawn(Node { position_type: PositionType::Absolute, left: percent(50), margin: UiRect::left(px(-w / 2.0)), top: px(48), ..default() })
+                .with_child(BitmapText::new(FontId::Small, size, text).color(Color::srgb(1.0, 0.85, 0.3)));
+        });
 }
 
 /// The pages the original's race menu opens (0x4a5c0): the Options pages,
@@ -1005,7 +1073,7 @@ fn update_banners(
 fn race_menus(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
-    pads: Query<&Gamepad>,
+    pads: controller::Pads,
     ui: Option<Res<UiAssets>>,
     progress: Option<Res<RaceProgress>>,
     mut session: Option<ResMut<Session>>,
@@ -1015,7 +1083,7 @@ fn race_menus(
     menus: Query<(Entity, &RaceMenu)>,
     mut lists: Query<&mut MenuList>,
     mut next: ResMut<NextState<AppState>>,
-    mut finished_for: Local<f32>,
+    (mut finished_for, mut lost): (Local<f32>, ResMut<LostPads>),
     field: (Option<Res<Standings>>, Option<Res<Opponents>>),
     (mut career, rules, mut fe, mut settings, (mut records, feats, demo)): (
         ResMut<Career>,
@@ -1033,6 +1101,7 @@ fn race_menus(
         Option<ResMut<RecordPages>>,
     ),
 ) {
+    let unplugged = lost.watch(&pads, selection.players);
     // The replay and the record page have the controls while they're up.
     if replay.is_some() || pages.as_deref().is_some_and(RecordPages::open) {
         return;
@@ -1040,7 +1109,7 @@ fn race_menus(
     let overlay = overlay.iter().next();
     let (Some(ui), Some(p)) = (ui, progress) else { return };
     let field = (field.0.as_deref(), field.1.as_deref());
-    let nav = read_nav(&keys, &pads);
+    let nav = read_nav(&keys, &pads.all);
     // Results come up a moment after the line (or the clock running out).
     let over = match session.as_deref() {
         Some(s) if s.freestyle => s.over(p.clock),
@@ -1051,8 +1120,9 @@ fn race_menus(
     *finished_for = if over { *finished_for + virt.delta_secs() } else { 0.0 };
 
     let (Ok((e, menu)), Ok(mut list)) = (menus.single(), lists.single_mut()) else {
-        // Escape or Start pauses (Backspace is the quick restart).
-        if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start)) && !over {
+        // Escape or Start pauses (Backspace is the quick restart), as
+        // does a controller in use coming out.
+        if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start) || unplugged) && !over {
             virt.pause();
             spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None, None, &[]), overlay, "RETURN TO RACE");
         } else if *finished_for > 2.5 && menus.is_empty() {
@@ -1242,7 +1312,7 @@ fn race_menus(
         }
         if redraw {
             commands.entity(e).despawn();
-            spawn_pause_page(&mut commands, &ui, page, &settings, list.selected, overlay);
+            spawn_pause_page(&mut commands, &ui, page, (&settings, &pads.ports), list.selected, overlay);
         }
         return;
     }
@@ -1255,7 +1325,7 @@ fn race_menus(
             item @ ("AUDIO" | "CAMERA" | "CONTROLLER") => {
                 let page = [PausePage::Audio, PausePage::Camera, PausePage::Controller].into_iter().find(|p| p.item() == item).unwrap_or(PausePage::Audio);
                 commands.entity(e).despawn();
-                spawn_pause_page(&mut commands, &ui, page, &settings, 0, overlay);
+                spawn_pause_page(&mut commands, &ui, page, (&settings, &pads.ports), 0, overlay);
             }
             // Arcade's last round won: on to Arcade Complete.
             "CONTINUE" if menu.results && selection.mode == Mode::Arcade => {
@@ -1569,7 +1639,7 @@ fn spawn_race_menu(
 /// lay them out: the volume bars, the camera views, or each controller's
 /// vibration (layouts are changed in Options, as in the original, whose
 /// race page leaves the layout out) and the picked one's controls.
-fn spawn_pause_page(commands: &mut Commands, ui: &UiAssets, page: PausePage, settings: &Settings, row: usize, overlay: Option<Entity>) {
+fn spawn_pause_page(commands: &mut Commands, ui: &UiAssets, page: PausePage, (settings, ports): (&Settings, &controller::Ports), row: usize, overlay: Option<Entity>) {
     let (items, selected, note): (Vec<&str>, usize, &str) = match page {
         PausePage::Audio => (vec!["MUSIC VOLUME", "SOUND EFFECTS VOLUME"], row, "LEFT AND RIGHT CHANGE THE VOLUME"),
         PausePage::Camera => (CameraView::ALL.map(CameraView::label).to_vec(), settings.camera.index(), "C OR BACK CHANGES IT IN THE RACE TOO"),
@@ -1632,7 +1702,7 @@ fn spawn_pause_page(commands: &mut Commands, ui: &UiAssets, page: PausePage, set
                             let port = row.min(controller::PORTS - 1);
                             let setup = &settings.pads[port];
                             let head = (setup.layout_label(), "PAD".to_string(), "KEYBOARD".to_string());
-                            for (i, (action, pad, keys)) in [head].into_iter().chain(controller::table(setup, port).into_iter().map(|(a, p, k)| (a.to_string(), p, k))).enumerate() {
+                            for (i, (action, pad, keys)) in [head].into_iter().chain(controller::table(setup, port, ports.style(port)).into_iter().map(|(a, p, k)| (a.to_string(), p, k))).enumerate() {
                                 t.spawn(Node { column_gap: px(8), ..default() }).with_children(|r| {
                                     for (text, width, color) in [(action, 140.0, Color::WHITE), (pad, 200.0, grey), (keys, 170.0, grey)] {
                                         let color = if i == 0 { Color::srgb(1.0, 0.85, 0.3) } else { color };

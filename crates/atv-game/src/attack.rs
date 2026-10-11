@@ -12,7 +12,6 @@
 
 use std::sync::Arc;
 
-use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
 
 use atv_formats::setup;
@@ -170,7 +169,7 @@ struct Seat {
 pub fn kicks(
     time: Res<Time>,
     args: Res<Args>,
-    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, Query<&Gamepad>, Res<Settings>),
+    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, controller::Pads, Res<Settings>),
     (rules, clips): (Option<Res<FightRules>>, Option<Res<FightClips>>),
     (race, progress): (Option<Res<Race>>, Option<Res<RaceProgress>>),
     (player, fighter, boost, wreck): (Option<Res<Player>>, Option<ResMut<Fighter>>, Option<ResMut<Boost>>, Option<ResMut<Wreck>>),

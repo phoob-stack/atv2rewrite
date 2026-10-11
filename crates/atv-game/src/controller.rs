@@ -12,6 +12,7 @@
 //! another player has as their first choice is theirs, so player 1's
 //! spare arrow keys go to player 2.
 
+use bevy::ecs::system::SystemParam;
 use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton};
 use bevy::prelude::*;
 
@@ -259,8 +260,46 @@ const KEYS: [(KeyCode, &str); 97] = [
     (KeyCode::ContextMenu, "MENU"),
 ];
 
+/// The input's name in the options file (Xbox names, whatever the pad).
 pub fn pad_name(p: PadInput) -> &'static str {
     PAD_INPUTS.iter().find(|(i, _)| *i == p).map_or("?", |(_, n)| n)
+}
+
+/// The input's name as printed on a `style` pad: CROSS, L1 on a
+/// PlayStation pad, B (bottom), ZL on a Nintendo one.
+pub fn pad_label(p: PadInput, style: PadStyle) -> &'static str {
+    let Button(b) = p else { return pad_name(p) };
+    let named = match style {
+        PadStyle::Xbox => None,
+        PadStyle::PlayStation => match b {
+            Bt::South => Some("CROSS"),
+            Bt::East => Some("CIRCLE"),
+            Bt::West => Some("SQUARE"),
+            Bt::North => Some("TRIANGLE"),
+            Bt::LeftTrigger => Some("L1"),
+            Bt::RightTrigger => Some("R1"),
+            Bt::LeftTrigger2 => Some("L2"),
+            Bt::RightTrigger2 => Some("R2"),
+            Bt::Select => Some("SHARE"),
+            Bt::LeftThumb => Some("L3"),
+            Bt::RightThumb => Some("R3"),
+            _ => None,
+        },
+        // Bevy's buttons are by place, so Nintendo's B is South.
+        PadStyle::Nintendo => match b {
+            Bt::South => Some("B"),
+            Bt::East => Some("A"),
+            Bt::West => Some("Y"),
+            Bt::North => Some("X"),
+            Bt::LeftTrigger => Some("L"),
+            Bt::RightTrigger => Some("R"),
+            Bt::LeftTrigger2 => Some("ZL"),
+            Bt::RightTrigger2 => Some("ZR"),
+            Bt::Select => Some("MINUS"),
+            _ => None,
+        },
+    };
+    named.unwrap_or_else(|| pad_name(p))
 }
 
 pub fn key_name(k: KeyCode) -> &'static str {
@@ -470,6 +509,148 @@ pub fn default_setups() -> [PadSetup; PORTS] {
     std::array::from_fn(PadSetup::new)
 }
 
+/// Whose buttons a pad has, for the button pictures and names. Steam's
+/// virtual pad (a Steam Controller or Deck) is an Xbox pad.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PadStyle {
+    #[default]
+    Xbox,
+    PlayStation,
+    Nintendo,
+}
+
+impl PadStyle {
+    pub const ALL: [PadStyle; 3] = [PadStyle::Xbox, PadStyle::PlayStation, PadStyle::Nintendo];
+
+    /// Its name in the options file.
+    pub fn key(self) -> &'static str {
+        match self {
+            PadStyle::Xbox => "xbox",
+            PadStyle::PlayStation => "playstation",
+            PadStyle::Nintendo => "nintendo",
+        }
+    }
+
+    pub fn parse(v: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.key().eq_ignore_ascii_case(v.trim()))
+    }
+
+    /// By the pad's maker (USB vendor id), else its name.
+    pub fn of(vendor: Option<u16>, name: &str) -> Self {
+        let name = name.to_ascii_lowercase();
+        let has = |words: &[&str]| words.iter().any(|w| name.contains(w));
+        match vendor {
+            Some(0x054c) => PadStyle::PlayStation,
+            Some(0x057e) => PadStyle::Nintendo,
+            _ if has(&["dualshock", "dualsense", "playstation", "ps3", "ps4", "ps5"]) => PadStyle::PlayStation,
+            _ if has(&["nintendo", "switch", "joy-con"]) => PadStyle::Nintendo,
+            _ => PadStyle::Xbox,
+        }
+    }
+}
+
+/// The file of extra pad mappings, in SDL's `gamecontrollerdb.txt` form.
+pub const MAPPINGS: &str = "gamecontrollerdb.txt";
+
+/// Adds the player's own pad mappings to the ones the pads are opened
+/// with: a [`MAPPINGS`] file beside the game or in its config folder,
+/// for a pad the built-in list gets wrong or doesn't know. They go after
+/// any Steam passes in (`SDL_GAMECONTROLLERCONFIG`), so they win. Call
+/// before the app starts.
+pub fn load_mappings() {
+    let beside = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join(MAPPINGS)));
+    let config = directories::ProjectDirs::from("", "", "atv2").map(|d| d.config_dir().join(MAPPINGS));
+    let mut all = std::env::var("SDL_GAMECONTROLLERCONFIG").unwrap_or_default();
+    let mut added = 0;
+    for path in [beside, config].into_iter().flatten() {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
+            eprintln!("{} pad mappings from {}", lines.len(), path.display());
+            added += lines.len();
+            for l in lines {
+                all.push('\n');
+                all.push_str(l);
+            }
+        }
+    }
+    if added > 0 {
+        // SAFETY: called from main before any other thread starts.
+        unsafe { std::env::set_var("SDL_GAMECONTROLLERCONFIG", all.trim_start()) };
+    }
+}
+
+/// Which pad is in which controller port. A pad keeps its port while
+/// it's unplugged (Bevy keeps a pad's entity across reconnects), so it
+/// comes back to the same player; a new pad takes the first free port,
+/// else one whose pad is unplugged.
+#[derive(Resource, Clone, PartialEq, Debug, Default)]
+pub struct Ports {
+    slots: [Option<Entity>; PORTS],
+    styles: [PadStyle; PORTS],
+    /// The style of the pad last pressed, for the menus' button pictures.
+    pub last: PadStyle,
+}
+
+impl Ports {
+    pub fn entity(&self, port: usize) -> Option<Entity> {
+        self.slots.get(port).copied().flatten()
+    }
+
+    /// The style of the pad in `port`, or the last pad used when it has
+    /// none.
+    pub fn style(&self, port: usize) -> PadStyle {
+        if self.entity(port).is_some() { self.styles[port] } else { self.last }
+    }
+}
+
+/// Keeps [`Ports`] up to date as pads come and go, and follows the last
+/// pad pressed (or the pictures the options file asks for).
+pub fn track_ports(mut ports: ResMut<Ports>, pads: Query<(Entity, &Gamepad, Option<&Name>)>, settings: Option<Res<crate::settings::Settings>>) {
+    let mut new = ports.clone();
+    let mut fresh: Vec<Entity> = pads.iter().map(|(e, ..)| e).filter(|e| !new.slots.contains(&Some(*e))).collect();
+    fresh.sort_by_key(|e| e.index());
+    for e in fresh {
+        let free = new.slots.iter().position(Option::is_none).or_else(|| new.slots.iter().position(|s| s.is_some_and(|s| !pads.contains(s))));
+        if let Some(n) = free {
+            new.slots[n] = Some(e);
+        }
+    }
+    for (n, slot) in new.slots.iter().enumerate() {
+        if let Some((_, pad, name)) = slot.and_then(|e| pads.get(e).ok()) {
+            new.styles[n] = PadStyle::of(pad.vendor_id(), name.map_or("", |n| n.as_str()));
+            if pad.get_just_pressed().next().is_some() {
+                new.last = new.styles[n];
+            }
+        }
+    }
+    if let Some(style) = settings.and_then(|s| s.pad_pictures) {
+        new.styles = [style; PORTS];
+        new.last = style;
+    }
+    if new != *ports {
+        *ports = new;
+    }
+}
+
+/// The pads, by controller port.
+#[derive(SystemParam)]
+pub struct Pads<'w, 's> {
+    pub all: Query<'w, 's, &'static Gamepad>,
+    pub ports: Res<'w, Ports>,
+}
+
+impl Pads<'_, '_> {
+    /// The pad in `port`, if it's plugged in.
+    pub fn port(&self, port: usize) -> Option<&Gamepad> {
+        self.ports.entity(port).and_then(|e| self.all.get(e).ok())
+    }
+
+    /// Each port's pad.
+    pub fn by_port(&self) -> [Option<&Gamepad>; PORTS] {
+        std::array::from_fn(|n| self.port(n))
+    }
+}
+
 /// A pad input or a key, as the remap page takes one.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Input {
@@ -520,18 +701,24 @@ fn pad_level(pad: &Gamepad, p: PadInput) -> f32 {
 }
 
 /// Reads the actions with the controller setups. `slot`: in split screen,
-/// the player (0-based), who has their own pad (the slot-th) and keys;
-/// alone, every pad drives (each with its own port's layout) and player
-/// 1's keys.
+/// the player (0-based), who has their own pad (the one in their port)
+/// and keys; alone, every pad drives (each with its own port's layout)
+/// and player 1's keys.
 pub struct Reader<'a> {
     keys: &'a ButtonInput<KeyCode>,
-    pads: Vec<&'a Gamepad>,
+    /// Each port's pad.
+    pads: [Option<&'a Gamepad>; PORTS],
     setups: &'a [PadSetup; PORTS],
 }
 
 impl<'a> Reader<'a> {
-    pub fn new(keys: &'a ButtonInput<KeyCode>, pads: &'a Query<&Gamepad>, setups: &'a [PadSetup; PORTS]) -> Self {
-        Self { keys, pads: pads.iter().collect(), setups }
+    pub fn new(keys: &'a ButtonInput<KeyCode>, pads: &'a Pads, setups: &'a [PadSetup; PORTS]) -> Self {
+        Self { keys, pads: pads.by_port(), setups }
+    }
+
+    /// Each plugged-in pad with its port, `slot`'s only in split screen.
+    fn pads(&self, slot: Option<usize>) -> impl Iterator<Item = (usize, &'a Gamepad)> + '_ {
+        self.pads.iter().enumerate().filter(move |(n, _)| slot.is_none_or(|s| s == *n)).filter_map(|(n, p)| Some((n, (*p)?)))
     }
 
     fn port_bindings(&self, port: usize) -> Bindings {
@@ -571,7 +758,7 @@ impl<'a> Reader<'a> {
                 v = 1.0;
             }
         }
-        for (n, pad) in self.pads.iter().copied().enumerate().filter(|(n, _)| slot.is_none_or(|s| s == *n)) {
+        for (n, pad) in self.pads(slot) {
             let b = self.port_bindings(n);
             for p in b[action.index()].pad.into_iter().flatten() {
                 if !skip(&b, Input::Pad(p)) {
@@ -590,7 +777,7 @@ impl<'a> Reader<'a> {
     pub fn just_pressed(&self, slot: Option<usize>, action: Action) -> bool {
         let port = slot.unwrap_or(0);
         let keys = self.port_bindings(port)[action.index()].keys.into_iter().flatten().any(|k| self.keys.just_pressed(k) && self.key_is_mine(port, k, slot.is_some()));
-        keys || self.pads.iter().copied().enumerate().filter(|(n, _)| slot.is_none_or(|s| s == *n)).any(|(n, pad)| {
+        keys || self.pads(slot).any(|(n, pad)| {
             self.port_bindings(n)[action.index()].pad.into_iter().flatten().any(|p| matches!(p, Button(b) if pad.just_pressed(b)))
         })
     }
@@ -604,28 +791,28 @@ impl<'a> Reader<'a> {
     }
 }
 
-/// Each action's inputs as the Controller pages list them: action, pad,
-/// keys ("RT OR A").
-pub fn table(setup: &PadSetup, port: usize) -> Vec<(&'static str, String, String)> {
+/// Each action's inputs as the Controller pages list them: action, pad
+/// (named as on a `style` pad), keys ("RT OR A").
+pub fn table(setup: &PadSetup, port: usize, style: PadStyle) -> Vec<(&'static str, String, String)> {
     let b = setup.bindings(port);
     Action::ALL
         .iter()
         .zip(b)
         .map(|(a, b)| {
-            let pad: Vec<&str> = b.pad.into_iter().flatten().map(pad_name).collect();
+            let pad: Vec<&str> = b.pad.into_iter().flatten().map(|p| pad_label(p, style)).collect();
             let keys: Vec<&str> = b.keys.into_iter().flatten().map(key_name).collect();
             (a.label(), pad.join(" OR "), keys.join(" OR "))
         })
         .collect()
 }
 
-/// The trick buttons' names on player 1's pad and keyboard, in mask
-/// order, for the Trick Book.
-pub fn trick_names(setup: &PadSetup) -> ([&'static str; 4], [&'static str; 4]) {
+/// The trick buttons' names on player 1's pad (a `style` pad) and
+/// keyboard, in mask order, for the Trick Book.
+pub fn trick_names(setup: &PadSetup, style: PadStyle) -> ([&'static str; 4], [&'static str; 4]) {
     let b = setup.bindings(0);
     let first = |a: &Action| &b[a.index()];
     (
-        Action::TRICKS.map(|a| first(&a).pad.into_iter().flatten().next().map_or("-", pad_name)),
+        Action::TRICKS.map(|a| first(&a).pad.into_iter().flatten().next().map_or("-", |p| pad_label(p, style))),
         Action::TRICKS.map(|a| first(&a).keys.into_iter().flatten().next().map_or("-", key_name)),
     )
 }
@@ -688,6 +875,46 @@ mod tests {
         assert_eq!(labels, ["LAYOUT 2", "LAYOUT 3", "CUSTOM", "LAYOUT 1"]);
         s.step_layout(false);
         assert_eq!(s.layout_label(), "CUSTOM");
+    }
+
+    #[test]
+    fn pads_are_styled_by_maker_then_name() {
+        assert_eq!(PadStyle::of(Some(0x054c), "Wireless Controller"), PadStyle::PlayStation);
+        assert_eq!(PadStyle::of(Some(0x057e), "Pro Controller"), PadStyle::Nintendo);
+        assert_eq!(PadStyle::of(Some(0x28de), "Steam Virtual Gamepad"), PadStyle::Xbox);
+        assert_eq!(PadStyle::of(None, "DualSense Wireless Controller"), PadStyle::PlayStation);
+        assert_eq!(PadStyle::of(None, "Xbox Wireless Controller"), PadStyle::Xbox);
+        assert_eq!(pad_label(Button(Bt::South), PadStyle::PlayStation), "CROSS");
+        assert_eq!(pad_label(Button(Bt::South), PadStyle::Nintendo), "B");
+        assert_eq!(pad_label(Button(Bt::RightTrigger2), PadStyle::Nintendo), "ZR");
+        assert_eq!(pad_label(Axis(Ax::LeftStickX, false), PadStyle::PlayStation), "L STICK LEFT");
+    }
+
+    #[test]
+    fn pads_keep_their_port_across_reconnects() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.init_resource::<Ports>();
+        let a = world.spawn(Gamepad::default()).id();
+        let b = world.spawn(Gamepad::default()).id();
+        world.run_system_once(track_ports).unwrap();
+        let ports = |w: &World| std::array::from_fn::<_, PORTS, _>(|n| w.resource::<Ports>().entity(n));
+        assert_eq!(ports(&world), [Some(a), Some(b), None, None]);
+        // Pad 1 unplugged keeps port 1; a new pad takes port 3.
+        world.entity_mut(a).remove::<Gamepad>();
+        let c = world.spawn(Gamepad::default()).id();
+        world.run_system_once(track_ports).unwrap();
+        assert_eq!(ports(&world), [Some(a), Some(b), Some(c), None]);
+        // Pad 1 back in port 1.
+        world.entity_mut(a).insert(Gamepad::default());
+        world.run_system_once(track_ports).unwrap();
+        assert_eq!(ports(&world), [Some(a), Some(b), Some(c), None]);
+        // With every port taken, a new pad takes an unplugged pad's.
+        let d = world.spawn(Gamepad::default()).id();
+        world.entity_mut(b).remove::<Gamepad>();
+        let e = world.spawn(Gamepad::default()).id();
+        world.run_system_once(track_ports).unwrap();
+        assert_eq!(ports(&world), [Some(a), Some(e), Some(c), Some(d)]);
     }
 
     #[test]

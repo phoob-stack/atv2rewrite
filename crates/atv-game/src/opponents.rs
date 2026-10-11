@@ -6,7 +6,6 @@
 //! player against that player.
 
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
-use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
 
 use atv_formats::GameSource;
@@ -381,7 +380,7 @@ fn drive_opponents(
     progress: Option<Res<RaceProgress>>,
     opponents: Option<ResMut<Opponents>>,
     standings: Option<ResMut<Standings>>,
-    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, Query<&Gamepad>, Res<crate::settings::Settings>),
+    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, crate::controller::Pads, Res<crate::settings::Settings>),
     args: Res<crate::Args>,
     (session, crash_clips, boost_rules): (Option<Res<Session>>, Option<Res<CrashClips>>, Option<Res<BoostRules>>),
     (player_boost, player_wreck): (Option<Res<Boost>>, Option<Res<Wreck>>),
