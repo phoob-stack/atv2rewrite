@@ -1171,13 +1171,12 @@ fn race_menus(
                 let record = records.as_deref().and_then(|r| r.get(&selection.track, records::Kind::Lap));
                 results::spawn_time_trial(&mut commands, &ui, &name, &p.lap_times, record, true, overlay);
             } else if selection.mode == Mode::Freestyle
-                && selection.players <= 1
                 && let Some(s) = session.as_deref()
             {
-                // Open Freestyle's: the session's stunts and the bests
-                // (0x40620), then "Try Again?".
+                // Open Freestyle's and Freestyle Battle's: player 1's
+                // stunts and everyone's bests (0x40620), then "Try Again?".
                 let finishers = results::finishers(&p, Some(s), &feats, &selection, &roster, &career, field.1);
-                results::spawn_freestyle(&mut commands, &ui, s, limit, results::bests(&finishers), true, overlay);
+                results::spawn_freestyle(&mut commands, &ui, s, limit, results::bests(&finishers), selection.players, overlay);
             } else if let Some(o) = outcome.as_ref().filter(|_| selection.mode == Mode::Challenge) {
                 // A challenge's: passed or not, the medal, the skill points
                 // (0x55900), then "Try Again?".

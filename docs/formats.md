@@ -911,9 +911,13 @@ Minutes" 0x1ec, "Unlimited Time" 0x223) go on y 120 at 0.9. At each landing
 0x62040 keeps in +0xc8 the most scoring moves of one jump (+0x10c: every
 trick, flip and trick box counts one, repeats too; 0x61ae0 to 0x61dd0) and
 in +0xcc what that jump scored (+0x100 different moves times +0x104
-points). The bests box follows as on a race's page, without the best lap
-(0x3e560 skips it in types 4, 5, 8 and 9). The hints are a race's; Continue
-leads to "Try Again?".
+points). The stats are the first racer's (0x1deaf0 +0x14 holds the
+racers, +0x10 their count), so in Freestyle Battle the page shows player
+1's session; no winner is named (the strings "Win" 0x22e and "Winner"
+0x22f go unused). The bests box follows as on a race's page, without the
+best lap (0x3e560 skips it in types 4, 5, 8 and 9). The hints are a race's,
+Replay only for one player (0x1deaf0 +4 below 2); Continue leads to "Try
+Again?".
 
 A challenge (game type 5) has 0x55900, filled by 0x55780. It has no
 bands, so the race stays in view under the default title, "Freestyle"
@@ -960,8 +964,8 @@ hint bar's d-pad arrows (0x45f50: dark and light `DARKUDARROW`, set by
 because the bar's +0x198 is only set during its own set-up.
 
 The rewrite builds the race page and Race Again for Single Race, the Time
-Trial page, the freestyle page with Try Again for a lone player's Open
-Freestyle, the Arcade page, the championship round page for Career and
+Trial page, the freestyle page with Try Again for Open Freestyle and
+Freestyle Battle, the Arcade page, the championship round page for Career and
 split-screen championship rounds, and the challenge page (`results.rs`); No
 on a challenge's Try Again goes back to the challenges. After the round page
 the rewrite keeps its round summary (skill points, level, gold, ATV
@@ -971,7 +975,7 @@ attempts, the next round) in place of the original's 0x7df60 flow. A rider who n
 dashes for a time, where the original would divide by nothing; with five
 laps listed, Time Trial's record moves down a row. The rewrite's freestyle
 scoring adds bonuses after multiplying the tricks, so its Best Trick is that
-jump's whole score. Freestyle Battle keeps the rewrite's results menu for now. After
+jump's whole score. After
 a challenge the original says nothing of a rider unlocked or a skill level
 reached, and nor does the rewrite now.
 

@@ -21,7 +21,9 @@
 //! Open Freestyle's (0x40620, filled by 0x3ff20) lists the session's trick
 //! points, longest endo, best trick combo and what that jump scored under
 //! its time limit, with the bests' box but for the best lap; it carries on
-//! to "Try Again?" (0x34bc0), the same page under another title.
+//! to "Try Again?" (0x34bc0), the same page under another title. Freestyle
+//! Battle has the same page, titled "Freestyle Battle", with player 1's
+//! session on it.
 //!
 //! An Arcade round's (0x3f7a0) is a race's without the points.
 //!
@@ -504,11 +506,13 @@ pub fn freestyle_rows(s: &Session) -> [(&'static str, String); 6] {
 
 /// Open Freestyle's results (0x40620): the time limit's name at the top,
 /// [`freestyle_rows`] under it, and the box of bests, with no best lap to
-/// show (0x3e560).
-pub fn spawn_freestyle(commands: &mut Commands, ui: &UiAssets, session: &Session, limit: Option<usize>, bests: Vec<Best>, replay: bool, overlay: Option<Entity>) {
-    let mut page = ResultsPage::new(bests.into_iter().filter(|b| b.kind != Kind::Lap).collect(), replay);
+/// show (0x3e560). With more than one of `players` it is Freestyle
+/// Battle's (0xb5), which shows player 1's `session` and has no replay.
+pub fn spawn_freestyle(commands: &mut Commands, ui: &UiAssets, session: &Session, limit: Option<usize>, bests: Vec<Best>, players: usize, overlay: Option<Entity>) {
+    let mut page = ResultsPage::new(bests.into_iter().filter(|b| b.kind != Kind::Lap).collect(), players <= 1);
     page.then = Then::TryAgain;
-    spawn_frame(commands, ui, Some(&ui.results_overlay), ("OPEN FREESTYLE", TT_BLUE), page, overlay, |f| {
+    let title = if players > 1 { "FREESTYLE BATTLE" } else { "OPEN FREESTYLE" };
+    spawn_frame(commands, ui, Some(&ui.results_overlay), (title, TT_BLUE), page, overlay, |f| {
         if let Some(name) = limit.and_then(|l| LIMIT_NAMES.get(l)) {
             small_text(f, ui, (FS_LABEL_X, HEAD_Y, 2), HEAD, "TIME", ORANGE);
             small_text(f, ui, (FS_VALUE_X, HEAD_Y, 0), HEAD, *name, YELLOW);
