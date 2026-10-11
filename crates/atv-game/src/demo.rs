@@ -9,7 +9,7 @@
 //! [`crate::replay::Broadcast`] director films the race from the start.
 //! As in the original, a third of the demos split the screen: the second
 //! rider gets a view too, and half of those times the third and fourth as
-//! well, top and bottom for two and a quarter each for four (0x97f90 sets
+//! well, laid out as split screen's two or four views (0x97f90 sets
 //! `mHasCamera`, 0x86530 lays the views out). The director takes only the
 //! first view (0x80ba0); the others follow their riders with the race
 //! camera.

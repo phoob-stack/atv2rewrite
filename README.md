@@ -126,7 +126,9 @@ Race, Restart and Quit Race.
   in Open Freestyle but with no time limit or medal targets (the score
   shows top left), until you quit from the pause menu.
 - **Multiplayer**: split-screen Single Race for two to four players (two
-  split top and bottom, three or four take a quarter each), with computer
+  split left and right on a widescreen window, as the original in
+  widescreen, or top and bottom on a 4:3 one; three or four take a quarter
+  each), with computer
   riders making the field up to four. Each player picks a rider (one
   another player has is greyed out) and an ATV in turn. Player 1 drives
   with WASD (lean R/F, preload Space, boost left Shift, kick E) or the first pad, player 2 with the

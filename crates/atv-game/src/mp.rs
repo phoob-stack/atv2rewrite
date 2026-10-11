@@ -1,7 +1,8 @@
 //! Split-screen multiplayer: two to four players racing on one screen.
 //!
-//! As in the original, two players split the screen top and bottom and
-//! three or four take a quarter each (the fourth stays empty for three),
+//! As in the original, two players split the screen left and right on a
+//! widescreen window (top and bottom on a 4:3 one) and three or four take
+//! a quarter each (the fourth stays empty for three),
 //! and computer riders make the field up to four. Player 1 drives the
 //! usual player quad; players 2 to 4 drive racer quads (see
 //! [`opponents::Racer::human`]), each with their own keys or pad and their
@@ -57,13 +58,23 @@ pub struct Split(pub usize);
 pub struct Overlay;
 
 /// Which part of the window (x, y, width, height, as shares of it) view
-/// `slot` takes with `players` playing.
-pub fn rect(slot: usize, players: usize) -> (f32, f32, f32, f32) {
+/// `slot` takes with `players` playing. Two views sit side by side when
+/// `wide`, as the original lays them out when the console is set to
+/// widescreen (0x86530 with 0x1dbc60), else one above the other.
+pub fn rect(slot: usize, players: usize, wide: bool) -> (f32, f32, f32, f32) {
     match players {
         0 | 1 => (0.0, 0.0, 1.0, 1.0),
+        2 if wide => (slot as f32 * 0.5, 0.0, 0.5, 1.0),
         2 => (0.0, slot as f32 * 0.5, 1.0, 0.5),
         _ => ((slot % 2) as f32 * 0.5, (slot / 2) as f32 * 0.5, 0.5, 0.5),
     }
+}
+
+/// Whether a window of `size` is widescreen: wider than 4:3, as the
+/// original's widescreen and letterbox video modes (0x1dbc60 from the
+/// video flags & 0x11).
+pub fn widescreen(size: Vec2) -> bool {
+    size.x * 3.0 > size.y * 4.0
 }
 
 /// Riders and quads for players 2 onwards when none were picked (from the
@@ -196,8 +207,9 @@ fn split_views(window: Query<&Window, With<PrimaryWindow>>, mut cams: Query<(&mu
     let Ok(window) = window.single() else { return };
     let size = window.physical_size().as_vec2();
     let players = cams.iter().count();
+    let wide = widescreen(size);
     for (mut cam, split) in &mut cams {
-        let (x, y, w, h) = rect(split.0, players);
+        let (x, y, w, h) = rect(split.0, players, wide);
         let vp = Viewport {
             physical_position: (Vec2::new(x, y) * size).as_uvec2(),
             physical_size: (Vec2::new(w, h) * size).as_uvec2().max(UVec2::ONE),
@@ -294,11 +306,16 @@ mod tests {
 
     #[test]
     fn layouts() {
-        // Two: top and bottom; three or four: quarters.
-        assert_eq!(rect(0, 2), (0.0, 0.0, 1.0, 0.5));
-        assert_eq!(rect(1, 2), (0.0, 0.5, 1.0, 0.5));
-        assert_eq!(rect(1, 3), (0.5, 0.0, 0.5, 0.5));
-        assert_eq!(rect(3, 4), (0.5, 0.5, 0.5, 0.5));
+        // Two: side by side on a widescreen window, else top and bottom;
+        // three or four: quarters.
+        assert_eq!(rect(0, 2, false), (0.0, 0.0, 1.0, 0.5));
+        assert_eq!(rect(1, 2, false), (0.0, 0.5, 1.0, 0.5));
+        assert_eq!(rect(0, 2, true), (0.0, 0.0, 0.5, 1.0));
+        assert_eq!(rect(1, 2, true), (0.5, 0.0, 0.5, 1.0));
+        assert_eq!(rect(1, 3, true), (0.5, 0.0, 0.5, 0.5));
+        assert_eq!(rect(3, 4, false), (0.5, 0.5, 0.5, 0.5));
+        assert!(widescreen(Vec2::new(1280.0, 720.0)));
+        assert!(!widescreen(Vec2::new(1024.0, 768.0)));
     }
 
     #[test]
