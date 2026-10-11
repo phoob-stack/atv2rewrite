@@ -125,6 +125,7 @@ fn mode_line(mode: Mode, players: usize, demo: bool) -> usize {
         Mode::Freestyle if split => 0xb5,     // FREESTYLE_BATTLE
         Mode::Freestyle => 0x16c,             // OPEN_FREESTYLE
         Mode::Challenge => 0x54,              // CHALLENGE_FREESTYLE
+        Mode::Training => 0x206,              // TRAINING
     }
 }
 
@@ -244,6 +245,11 @@ mod tests {
         assert_eq!(mode, "Loading Multiplayer Single Race Game");
         assert_eq!(mode_line(Mode::SingleRace, 1, true), 0x94);
         assert_eq!(mode_line(Mode::Freestyle, 3, false), 0xb5);
+    }
+
+    #[test]
+    fn atv_academy_loads_as_training() {
+        assert_eq!(mode_line(Mode::Training, 1, false), 0x206);
     }
 
     #[test]

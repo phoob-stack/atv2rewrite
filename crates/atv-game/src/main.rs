@@ -3,9 +3,9 @@
 //!
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
 //!             [--rider Male1] [--laps 3] [--frontend [--screen rider|tricks]]
-//!             [--mode race|timetrial|arcade|freestyle|career] [--minutes N]
-//!             [--round N] [--opponents N] [--challenge N] [--players N]
-//!             [--autodrive] [--screenshot out.png [--after SECONDS]]
+//!             [--mode race|timetrial|arcade|freestyle|career|training]
+//!             [--minutes N] [--round N] [--opponents N] [--challenge N]
+//!             [--players N] [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
 //!             [--resolution 1280x720] [--fullscreen] [--cheat ALLOFEM]
 //!
@@ -13,7 +13,8 @@
 //! straight into a race (`--frontend` shows the menus anyway, preselected).
 //! `--mode` picks the mode (`--minutes` is Open Freestyle's limit, 0 for
 //! none; arcade races its rounds' tracks, `--round` starts on one; career
-//! with `--round` races the saved championship's next round).
+//! with `--round` races the saved championship's next round; training is
+//! ATV Academy, always on Stadium 2).
 
 mod aitricks;
 mod arcade;
@@ -134,7 +135,14 @@ enum Mode {
     Career,
     /// One of the Freestyle Challenges (see [`challenge`]).
     Challenge,
+    /// ATV Academy: practice on [`TRAINING_TRACK`] with no time limit and
+    /// no medals (the original's game type 9, set by its TrainingSM at
+    /// 0x9d6c0).
+    Training,
 }
+
+/// The track ATV Academy practises on (0x9d6c0 sets track 16).
+const TRAINING_TRACK: &str = "Stadium2";
 
 impl Mode {
     /// Watermark shown on the select screens.
@@ -146,6 +154,7 @@ impl Mode {
             Mode::Freestyle => "FREESTYLE",
             Mode::Career => "CAREER",
             Mode::Challenge => "FREESTYLE",
+            Mode::Training => "ATV ACADEMY",
         }
     }
 }
@@ -321,7 +330,8 @@ fn parse_args() -> anyhow::Result<Args> {
                     "freestyle" => Mode::Freestyle,
                     "career" => Mode::Career,
                     "challenge" => Mode::Challenge,
-                    other => anyhow::bail!("unknown mode {other} (race, timetrial, arcade, freestyle, career, challenge)"),
+                    "training" | "academy" => Mode::Training,
+                    other => anyhow::bail!("unknown mode {other} (race, timetrial, arcade, freestyle, career, challenge, training)"),
                 }
             }
             "--minutes" => a.minutes = Some(val().parse::<u32>()?).filter(|&m| m > 0),
@@ -408,6 +418,9 @@ fn main() -> anyhow::Result<()> {
     if args.mode == Mode::Challenge {
         selection.track = challenge::TRACK.into();
         selection.laps = 1;
+    }
+    if args.mode == Mode::Training {
+        selection.track = TRAINING_TRACK.into();
     }
     // Arcade races its rounds' tracks (`--round N` starts on one), a lap
     // each.

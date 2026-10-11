@@ -123,7 +123,7 @@ impl PausePage {
 
 fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Selection>, roster: Res<Roster>) {
     let Some(ui) = assets else { return };
-    let racing = !matches!(sel.mode, Mode::Freestyle | Mode::Challenge);
+    let racing = !matches!(sel.mode, Mode::Freestyle | Mode::Challenge | Mode::Training);
     let rounds = roster.arcade.len();
     let hud = &ui.hud;
     let dial = hud.get("DIAL");
@@ -945,6 +945,8 @@ fn spawn_race_menu(
         (false, Mode::Freestyle) if freestyle.is_some_and(|s| s.limit.is_none()) => ("PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "END SESSION", "RESTART", "QUIT RACE"]),
         (false, Mode::Freestyle) => ("PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "RESTART", "QUIT RACE"]),
         (false, Mode::Challenge) => ("PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "RESTART CHALLENGE", "CHALLENGES", "QUIT RACE"]),
+        // ATV Academy never ends; the original keeps Restart Race (0x1a7).
+        (false, Mode::Training) => ("PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "RESTART RACE", "QUIT RACE"]),
         (false, _) => ("RACE PAUSED".into(), &["AUDIO", "CAMERA", "CONTROLLER", "RETURN TO RACE", "RESTART RACE", "QUIT RACE"]),
         // Passed with a medal (strings 0x58, 0x53; 0x55780).
         (true, Mode::Challenge) => {
@@ -1021,6 +1023,7 @@ fn spawn_race_menu(
                         Mode::Career => format!("ROUND {}/{}  -  {}", sel.round + 1, run.map_or(career::ROUNDS, Run::rounds), track_title(&sel.track)),
                         Mode::SingleRace if run.is_some() => format!("ROUND {}/{}  -  {}", sel.round + 1, run.map_or(career::ROUNDS, Run::rounds), track_title(&sel.track)),
                         Mode::Challenge => format!("FREESTYLE CHALLENGE  -  {}", track_title(&sel.track)),
+                        Mode::Training => format!("ATV ACADEMY  -  {}", track_title(&sel.track)),
                         _ => format!("{}  -  {}", track_title(&sel.track), sel.quad.to_uppercase()),
                     };
                     box_.spawn(BitmapText::new(FontId::Small, 9.0, sub).color(Color::srgb(0.75, 0.85, 1.0)));

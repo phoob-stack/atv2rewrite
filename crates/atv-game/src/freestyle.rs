@@ -10,6 +10,7 @@
 //!
 //! Open Freestyle is free roaming of a track against an optional time
 //! limit, with Bronze/Silver/Gold targets from `Setup/Freestyle.xml`.
+//! ATV Academy is the same on Stadium 2, with no limit or targets.
 //! Besides tricks it scores flying through the stadiums' trick boxes
 //! (`Setup/TrickBoxes.xml` and the `TBOXn` locators) and finding the
 //! track's spots (checkpoints, respots and photo boxes) for the first time.
@@ -340,12 +341,16 @@ pub struct Session {
 impl Session {
     pub fn new(game: &GameSource, sel: &Selection, world: &World) -> Self {
         let (tricks, ground_points) = load_tricks(game);
-        let freestyle = sel.mode == Mode::Freestyle;
+        // ATV Academy scores like unlimited Open Freestyle, without medals
+        // (0xa0e60 leaves its targets unset for game type 9).
+        let training = sel.mode == Mode::Training;
+        let freestyle = sel.mode == Mode::Freestyle || training;
         let mut s = Self::with(tricks, ground_points, if freestyle { load_boxes(game, &sel.track, world) } else { Vec::new() });
         s.freestyle = freestyle;
         if freestyle {
-            s.limit = sel.time_limit.map(|m| m as f32 * 60.0);
-            s.medals = medal_targets(game, sel.time_limit);
+            let limit = sel.time_limit.filter(|_| !training);
+            s.limit = limit.map(|m| m as f32 * 60.0);
+            s.medals = if training { None } else { medal_targets(game, limit) };
             s.spots = load_spots(world).into_iter().map(|p| (p, false)).collect();
         }
         s
