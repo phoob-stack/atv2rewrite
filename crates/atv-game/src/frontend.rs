@@ -21,7 +21,7 @@
 //! as does Options. Career and Arcade ride the profile's rider: the
 //! original has no rider select for them.
 
-use bevy::input::gamepad::Gamepad;
+use bevy::input::gamepad::GamepadButton as Pb;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use bevy::prelude::*;
@@ -36,7 +36,7 @@ use crate::challenge;
 use crate::controller::{self, Action, Input, PadInput, PORTS};
 use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
-use crate::ui::{fullscreen, placed, read_nav_from, set_text, spawn_menu_rows, two_tone, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
+use crate::ui::{fullscreen, placed, HintButton, read_nav_from, set_text, spawn_menu_rows, two_tone, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::mp::MpChamp;
 use crate::name_entry::{self, NameEntry};
 use crate::records::{self, TrackRecords};
@@ -494,7 +494,7 @@ fn open_book(fe: &mut FrontEnd, roster: &Roster, career: &Career, rules: &career
 #[allow(clippy::too_many_arguments)]
 fn navigate(
     keys: Res<ButtonInput<KeyCode>>,
-    pads: Query<&Gamepad>,
+    pads: controller::Pads,
     mut fe: ResMut<FrontEnd>,
     roster: Res<Roster>,
     mut sel: ResMut<Selection>,
@@ -521,8 +521,8 @@ fn navigate(
     // The remap page waiting for a button or key takes the next one.
     if fe.screen == Screen::Remap && fe.remap.waiting && fe.built == Some(fe.screen) {
         let port = fe.pad_row;
-        let cancel = keys.just_pressed(KeyCode::Escape) || pads.iter().any(|p| p.just_pressed(bevy::input::gamepad::GamepadButton::Start));
-        let got = controller::captured(&keys, &pads, &mut fe.remap.held);
+        let cancel = keys.just_pressed(KeyCode::Escape) || pads.all.iter().any(|p| p.just_pressed(Pb::Start));
+        let got = controller::captured(&keys, &pads.all, &mut fe.remap.held);
         let pad_col = fe.remap.col < 2;
         let fits = got.filter(|i| matches!(i, Input::Pad(_)) == pad_col);
         if cancel || fits.is_some() {
@@ -537,7 +537,13 @@ fn navigate(
     }
     // In split screen each player picks their rider and ATV with their own pad.
     let picking = fe.players > 1 && matches!(fe.screen, Screen::Rider | Screen::Quad);
-    let nav = if fe.screen == Screen::ProfileName { name_entry::read_nav(&keys, &pads) } else { read_nav_from(&keys, &pads, picking.then_some(fe.picking)) };
+    let nav = if fe.screen == Screen::ProfileName {
+        name_entry::read_nav(&keys, &pads.all)
+    } else if picking {
+        read_nav_from(&keys, pads.port(fe.picking))
+    } else {
+        read_nav_from(&keys, pads.all.iter())
+    };
     let Some(nav) = nav else { return };
     if fe.built != Some(fe.screen) {
         return;
@@ -832,7 +838,7 @@ fn navigate(
                     Some(_) => {
                         r.waiting = true;
                         // Sticks already pushed don't count.
-                        controller::captured(&keys, &pads, &mut r.held);
+                        controller::captured(&keys, &pads.all, &mut r.held);
                     }
                     None => {
                         settings.pads[port].reset(port);
@@ -1345,9 +1351,11 @@ fn rebuild(
     ui: Option<Res<UiAssets>>,
     roots: Query<Entity, With<ScreenRoot>>,
     sel: Res<Selection>,
+    ports: Res<controller::Ports>,
 ) {
     let Some(ui) = ui else { return };
-    if fe.built == Some(fe.screen) {
+    // A pad of another make picked up redraws the button pictures.
+    if fe.built == Some(fe.screen) && !ports.is_changed() {
         return;
     }
     for e in &roots {
@@ -1638,11 +1646,11 @@ fn rebuild(
         }
         Screen::Controller => {
             for port in 0..PORTS {
-                kids.push(controller_row(&mut commands, &ui, &settings, port, fe.pad_row == port));
+                kids.push(controller_row(&mut commands, &ui, (&settings, &ports), port, fe.pad_row == port));
             }
             kids.push(hint(&mut commands, &ui, "LEFT AND RIGHT CHANGE THE LAYOUT", 404.0));
         }
-        Screen::Remap => kids.extend(remap_page(&mut commands, &ui, &settings, fe.pad_row, &fe.remap)),
+        Screen::Remap => kids.extend(remap_page(&mut commands, &ui, (&settings, ports.style(fe.pad_row)), fe.pad_row, &fe.remap)),
         Screen::CareerChamp => {
             let items = champ_items(&career);
             let names: Vec<&str> = items.iter().map(|(n, _)| n.as_str()).collect();
@@ -1752,12 +1760,12 @@ fn rebuild(
                 let (x, y) = (360.0, 76.0);
                 kids.extend(trickbook::heading(&mut commands, def, locked, (x, y)));
                 kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, "ACTIVATION").color(plain), ui_at(x, y + 76.0))).id());
-                let (pad_names, key_names) = controller::trick_names(&settings.pads[0]);
+                let (pad_names, key_names) = controller::trick_names(&settings.pads[0], ports.style(0));
                 for (i, (dev, names)) in [("PAD", &pad_names), ("KEYS", &key_names)].into_iter().enumerate() {
                     let t = format!("{dev}  {}", trickbook::activation(def, names));
                     kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, t), ui_at(x, y + 92.0 + 15.0 * i as f32))).id());
                 }
-                kids.push(trickbook::pad_picture(&mut commands, &ui, def, controller::trick_pad(&settings.pads[0]), locked, (x - 6.0, y + 122.0), 0.9));
+                kids.push(trickbook::pad_picture(&mut commands, &ui, def, (controller::trick_pad(&settings.pads[0]), ports.style(0)), locked, (x - 6.0, y + 122.0), 0.9));
                 // The page count under the rider, between arrows.
                 let count = format!("{} OF {}", fe.trick + 1, roster.book.len());
                 let w = ui.font(FontId::Small).width(&count, 9.0);
@@ -1909,44 +1917,43 @@ fn rebuild(
     }
 
     // Button hints along the bottom.
-    let hints: &[(&str, &str)] = match fe.screen {
-        _ if fe.popup.is_some() => &[("controlbuttoncross", "OK")],
-        Screen::ProfileSelect if fe.profiles.get(fe.slot).is_none_or(Option::is_none) => &[("controlbuttoncross", "CREATE PROFILE"), ("controlbuttoncircle", "BACK")],
+    let hints: &[(Pb, &str)] = match fe.screen {
+        _ if fe.popup.is_some() => &[(Pb::South, "OK")],
+        Screen::ProfileSelect if fe.profiles.get(fe.slot).is_none_or(Option::is_none) => &[(Pb::South, "CREATE PROFILE"), (Pb::East, "BACK")],
         Screen::Title => &[],
-        Screen::Main => &[("controlbuttoncross", "SELECT")],
-        Screen::Audio | Screen::Camera => &[("controlbuttoncross", "OK")],
-        Screen::CareerChamp => &[("controlbuttoncross", "SELECT"), ("controlbuttoncircle", "BACK")],
-        Screen::Controller => &[("controlbuttoncross", "TOGGLE"), ("YButton", "EDIT LAYOUT"), ("controlbuttoncircle", "BACK")],
+        Screen::Main => &[(Pb::South, "SELECT")],
+        Screen::Audio | Screen::Camera => &[(Pb::South, "OK")],
+        Screen::CareerChamp => &[(Pb::South, "SELECT"), (Pb::East, "BACK")],
+        Screen::Controller => &[(Pb::South, "TOGGLE"), (Pb::North, "EDIT LAYOUT"), (Pb::East, "BACK")],
         Screen::Remap if fe.remap.waiting => &[],
-        Screen::Remap if fe.remap.row == Action::ALL.len() => &[("controlbuttoncross", "RESET"), ("controlbuttoncircle", "BACK")],
-        Screen::Remap => &[("controlbuttoncross", "CHANGE"), ("YButton", "CLEAR"), ("controlbuttoncircle", "BACK")],
-        Screen::CareerStatus => &[("controlbuttoncross", "RACE"), ("YButton", "TRICK BOOK"), ("controlbuttoncircle", "BACK")],
-        Screen::Rider | Screen::Track => &[("controlbuttoncross", "SELECT"), ("YButton", "TRICK BOOK"), ("controlbuttoncircle", "BACK")],
-        Screen::TrickBook => &[("controlbuttoncircle", "BACK")],
-        Screen::MpChampStatus if mp_champ.run.as_ref().is_some_and(|r| r.over()) => &[("controlbuttoncross", "OK")],
-        Screen::MpChampStatus => &[("controlbuttoncross", "RACE"), ("controlbuttoncircle", "BACK")],
-        Screen::CareerComplete | Screen::ArcadeComplete => &[("controlbuttoncross", "OK")],
-        Screen::ArcadeStatus => &[("controlbuttoncross", "RACE"), ("controlbuttoncircle", "BACK")],
+        Screen::Remap if fe.remap.row == Action::ALL.len() => &[(Pb::South, "RESET"), (Pb::East, "BACK")],
+        Screen::Remap => &[(Pb::South, "CHANGE"), (Pb::North, "CLEAR"), (Pb::East, "BACK")],
+        Screen::CareerStatus => &[(Pb::South, "RACE"), (Pb::North, "TRICK BOOK"), (Pb::East, "BACK")],
+        Screen::Rider | Screen::Track => &[(Pb::South, "SELECT"), (Pb::North, "TRICK BOOK"), (Pb::East, "BACK")],
+        Screen::TrickBook => &[(Pb::East, "BACK")],
+        Screen::MpChampStatus if mp_champ.run.as_ref().is_some_and(|r| r.over()) => &[(Pb::South, "OK")],
+        Screen::MpChampStatus => &[(Pb::South, "RACE"), (Pb::East, "BACK")],
+        Screen::CareerComplete | Screen::ArcadeComplete => &[(Pb::South, "OK")],
+        Screen::ArcadeStatus => &[(Pb::South, "RACE"), (Pb::East, "BACK")],
         Screen::CustomTracks if fe.custom.cursor < fe.custom.rows.len() && !fe.custom.editing => {
             let on = fe.custom.rows[fe.custom.cursor].round.is_some();
             if fe.custom.count() > 0 {
-                &[("controlbuttoncross", if on { "REMOVE TRACK" } else { "ADD TRACK" }), ("YButton", "CONTINUE"), ("controlbuttoncircle", "BACK")]
+                &[(Pb::South, if on { "REMOVE TRACK" } else { "ADD TRACK" }), (Pb::North, "CONTINUE"), (Pb::East, "BACK")]
             } else {
-                &[("controlbuttoncross", "ADD TRACK"), ("controlbuttoncircle", "BACK")]
+                &[(Pb::South, "ADD TRACK"), (Pb::East, "BACK")]
             }
         }
-        Screen::CustomTracks if fe.custom.editing => &[("controlbuttoncross", "OK"), ("controlbuttoncircle", "BACK")],
-        Screen::CustomTracks => &[("controlbuttoncross", "CONTINUE"), ("controlbuttoncircle", "BACK")],
-        Screen::CustomPoints => &[("controlbuttoncross", "CONTINUE"), ("controlbuttoncircle", "BACK")],
-        _ => &[("controlbuttoncross", "SELECT"), ("controlbuttoncircle", "BACK")],
+        Screen::CustomTracks if fe.custom.editing => &[(Pb::South, "OK"), (Pb::East, "BACK")],
+        Screen::CustomTracks => &[(Pb::South, "CONTINUE"), (Pb::East, "BACK")],
+        Screen::CustomPoints => &[(Pb::South, "CONTINUE"), (Pb::East, "BACK")],
+        _ => &[(Pb::South, "SELECT"), (Pb::East, "BACK")],
     };
     let footer = commands
         .spawn(Node { position_type: PositionType::Absolute, right: px(40), top: px(436), column_gap: px(18), align_items: AlignItems::Center, ..default() })
         .with_children(|f| {
             for (button, label) in hints {
                 f.spawn(Node { align_items: AlignItems::Center, column_gap: px(5), ..default() }).with_children(|h| {
-                    let s = ui.pad.get(button).rect;
-                    h.spawn(ui.pad.tex.region(s, 22.0 / s.height()));
+                    h.spawn(HintButton::new(*button, 22.0));
                     h.spawn(BitmapText::new(FontId::Small, 8.0, *label));
                 });
             }
@@ -2150,7 +2157,7 @@ const PALE: Color = Color::srgb(0.75, 0.82, 0.95);
 /// 0x49d20 puts it (a row every 0.3 of the screen's height down from 0.3):
 /// "CONTROLLER n" over its vibration toggle, and its pad with the layout's
 /// name on it.
-fn controller_row(commands: &mut Commands, ui: &UiAssets, settings: &Settings, port: usize, on: bool) -> Entity {
+fn controller_row(commands: &mut Commands, ui: &UiAssets, (settings, ports): (&Settings, &controller::Ports), port: usize, on: bool) -> Entity {
     // The original's screen space: x and y from -1 to 1, y up.
     let y0 = 0.3 - 0.3 * port as f32;
     let sx = |x: f32| (x + 1.0) * SCREEN_W / 2.0;
@@ -2184,17 +2191,22 @@ fn controller_row(commands: &mut Commands, ui: &UiAssets, settings: &Settings, p
             let (n, img) = ui.checkbox.node(if setup.vibration { "ON" } else { "OFF" }, 0.4);
             r.spawn(placed((n, img), left + bw + 10.0, top - 4.0));
             // The pad: the trick pad page's JUSTPAD at (0.35, y0), 0.32 by
-            // 0.3, and the layout on it at (0.5, y0 + 0.15).
-            let pad = ui.trick_pad.get("JUSTPAD").rect;
-            let ph = 0.3 * SCREEN_H / 2.0;
-            let scale = ph / pad.height();
-            let (mut n, mut img) = ui.trick_pad.node("JUSTPAD", scale);
+            // 0.3, and the layout on it at (0.5, y0 + 0.15). The PS2 and
+            // GameCube pads (for those pads in the port) fit in the same
+            // box.
+            let sheet = ui.trick_pad_for(ports.style(port));
+            let pad = sheet.get("JUSTPAD").rect;
+            let (pw, ph) = (0.32 * SCREEN_W / 2.0, 0.3 * SCREEN_H / 2.0);
+            let fit = ph / ui.trick_pad.get("JUSTPAD").rect.height();
+            let scale = fit.min(pw / pad.width()).min(ph / pad.height());
+            let (mut n, mut img) = sheet.node("JUSTPAD", scale);
             if !on {
                 img.color = Color::srgb(0.6, 0.6, 0.6);
             }
             n.position_type = PositionType::Absolute;
-            n.left = px(sx(0.35));
-            n.top = px(sy(y0) - ph);
+            let xbox_w = ui.trick_pad.get("JUSTPAD").rect.width() * fit;
+            n.left = px(sx(0.35) + (xbox_w - pad.width() * scale) / 2.0);
+            n.top = px(sy(y0) - (ph + pad.height() * scale) / 2.0);
             r.spawn((n, img));
             let layout = setup.layout_label();
             let size = 11.0;
@@ -2229,7 +2241,7 @@ const REMAP_ROW: f32 = 15.5;
 
 /// The remap page: a controller's actions with their pad buttons and
 /// keys, the cursor's cell lit, then Reset To Default.
-fn remap_page(commands: &mut Commands, ui: &UiAssets, settings: &Settings, port: usize, cur: &Remap) -> Vec<Entity> {
+fn remap_page(commands: &mut Commands, ui: &UiAssets, (settings, style): (&Settings, controller::PadStyle), port: usize, cur: &Remap) -> Vec<Entity> {
     let setup = &settings.pads[port];
     let bindings = setup.bindings(port);
     let mut kids = Vec::new();
@@ -2246,8 +2258,8 @@ fn remap_page(commands: &mut Commands, ui: &UiAssets, settings: &Settings, port:
             });
             for (i, (action, b)) in Action::ALL.iter().zip(bindings).enumerate() {
                 let cells = [
-                    b.pad[0].map_or("-", controller::pad_name),
-                    b.pad[1].map_or("-", controller::pad_name),
+                    b.pad[0].map_or("-", |p| controller::pad_label(p, style)),
+                    b.pad[1].map_or("-", |p| controller::pad_label(p, style)),
                     b.keys[0].map_or("-", controller::key_name),
                     b.keys[1].map_or("-", controller::key_name),
                 ];

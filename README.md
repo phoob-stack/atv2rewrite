@@ -14,7 +14,7 @@ or a folder the disc was extracted to.
 | `atv-tool` | Command line: `list`, `extract <dir>`, `check` (parses every texture, model and track), `sim` (headless autopilot lap test). |
 | `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, the race loading screen with the track's picture and a racing tip) into a race with the original HUD (rev gauge, the race panels with place, trick score, lead and lap times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); Single Race, Time Trial, Career, Arcade, Open Freestyle, ATV Academy and split-screen multiplayer modes; computer riders; tricks with the original stunt animations; a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
 | `atv-hd` | HD texture packs: upscales the game's own textures with an AI upscaler (Real-ESRGAN) on the player's machine into a local cache the game prefers when present. |
-| `atv-launcher` | The launcher (binary `atv2-launcher`): pick your disc image or extracted folder once, choose track, quad, resolution and fullscreen, press Play. |
+| `atv-launcher` | The launcher (binary `atv2-launcher`): pick your disc image or extracted folder once and press Play to boot into the game's start menu, or start straight into a game mode with a track, rider and quad; resolution, fullscreen and HD texture settings. |
 
 ## Running
 
@@ -28,9 +28,12 @@ cargo build --release -p atv-game -p atv-launcher
 
 ![Launcher](docs/launcher.png)
 
-It checks your game data with the same loader the game uses, lists the tracks
-and quads it finds, remembers your choices, and starts `atv2` for you. If the
-game fails to start, its last error lines show in the launcher.
+It checks your game data with the same loader the game uses, remembers your
+choices, and starts `atv2` for you. **Game mode** picks what Play starts:
+**Start menu** (the default) opens the game's title screen like the original,
+while Single Race, Time Trial, Open Freestyle, Arcade, a Freestyle Challenge
+or ATV Academy go straight in with the track, laps, rider and quad you pick.
+If the game fails to start, its last error lines show in the launcher.
 
 To update to the latest version later, close the game and run `update.bat`
 (Windows) from the repository folder: it pulls `main` from GitHub, keeps any
@@ -75,6 +78,41 @@ arrows and the number pad. The settings live in `options.cfg`.
 The pause menu is the original's: Audio, Camera and Controller (the Options
 pages, changed mid-race; the music and ambience follow at once), Return to
 Race, Restart and Quit Race.
+
+### Controllers
+
+Xbox, PlayStation (DualShock 4, DualSense), Switch Pro, 8BitDo and most
+other pads work when plugged in or paired. Buttons go by where they sit,
+so the table's A is the bottom face button on any pad (cross on a
+PlayStation pad, B on a Nintendo one). The menus' button pictures and the
+Controller pages' button names follow the pad last pressed: the original's
+Xbox, PS2 and GameCube pictures, with the GameCube letters standing for a
+Nintendo pad's. To always show one kind, put `pad_pictures = xbox`,
+`playstation` or `nintendo` in `options.cfg`.
+
+Each pad keeps its controller port (and so its player and its setup) for
+as long as the game runs: a pad unplugged and plugged back in returns to
+the same port, and a new pad takes the first free one. Unplugging a pad
+in use pauses the race until it's back, as the original does.
+
+**Steam Controller and Steam Deck:** add `atv2-launcher` (or `atv2`) to
+Steam with *Add a Non-Steam Game*, make sure Steam Input is on for it, and
+start it from Steam. Outside a Steam launch the Steam Controller is a
+mouse and keyboard, which the game can't use as a pad. Steam hands the
+game its controllers as Xbox pads through XInput, so when Steam starts the
+game it reads pads through XInput (the Steam Controller, and any pad Steam
+Input manages) and they work with the default layout; Steam's own
+configurator can remap them further. To choose, put `pad_reader = xinput`
+(always XInput) or `pad_reader = native` (never: PlayStation and Switch
+pads as Windows sees them, e.g. with Steam Input off for the game) in
+`options.cfg`. Pads Steam passes through show Xbox pictures; set
+`pad_pictures` if yours is a PlayStation or Switch pad.
+
+**Pads the game reads wrongly:** a pad missing from the built-in list (SDL's
+community controller database) can be given a mapping line in SDL's
+`gamecontrollerdb.txt` format, in a `gamecontrollerdb.txt` beside the game
+or in its config folder (beside `options.cfg`). Tools such as SDL2
+Gamepad Tool write these lines.
 
 ## Game modes
 
@@ -352,7 +390,11 @@ your local data folder (`%LOCALAPPDATA%\atv2\data\hd` on Windows,
 
 1. Download `realesrgan-ncnn-vulkan` for your OS from the
    [Real-ESRGAN releases](https://github.com/xinntao/Real-ESRGAN/releases)
-   and unzip it next to `atv2-launcher` (its own folder is fine).
+   and unzip it next to `atv2-launcher` (its own folder is fine), or put it
+   anywhere and set **Upscaler** in the launcher to its
+   `realesrgan-ncnn-vulkan` file (**Auto** goes back to looking for it).
+   **Pack folder** moves where the pack is built and read (**Default** goes
+   back to your local data folder).
 2. In the launcher, press **Build HD pack**. Tick "Also upscale tracks,
    quads and riders" for the 3D textures too (slower, a few hundred MB).
 3. Play. The game uses the pack whenever it is there; untick "Use HD

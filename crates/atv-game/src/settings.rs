@@ -13,7 +13,8 @@ use bevy::prelude::*;
 
 use atv_formats::{setup, GameSource};
 
-use crate::controller::{self, PadSetup, PORTS};
+use crate::controller::{self, PadSetup, PadStyle, PORTS};
+use crate::xinput::PadReader;
 
 /// Segments in the volume bars (`FrontEnd/SoundBar`).
 pub const VOLUME_STEPS: u8 = 16;
@@ -74,11 +75,18 @@ pub struct Settings {
     pub pads: [PadSetup; PORTS],
     /// The profile slot to load at start.
     pub profile: Option<usize>,
+    /// Button pictures and names for this make of pad whatever pad is in
+    /// use (`pad_pictures` in the file; for Steam Input, which shows every
+    /// pad to the game as an Xbox one). None: the pad in use's own.
+    pub pad_pictures: Option<PadStyle>,
+    /// Where pads are read from (`pad_reader`): XInput for Steam Input,
+    /// or natively. Read at start.
+    pub pad_reader: PadReader,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { music: VOLUME_STEPS, effects: VOLUME_STEPS, camera: CameraView::default(), pads: controller::default_setups(), profile: None }
+        Self { music: VOLUME_STEPS, effects: VOLUME_STEPS, camera: CameraView::default(), pads: controller::default_setups(), profile: None, pad_pictures: None, pad_reader: PadReader::Auto }
     }
 }
 
@@ -109,6 +117,8 @@ impl Settings {
                 "camera" => s.camera = CameraView::ALL.into_iter().find(|c| c.key() == v).unwrap_or(s.camera),
                 // Before each controller had its own.
                 "vibration" => s.pads.iter_mut().for_each(|p| p.vibration = v == "true"),
+                "pad_pictures" => s.pad_pictures = PadStyle::parse(v),
+                "pad_reader" => s.pad_reader = PadReader::parse(v).unwrap_or_default(),
                 "profile" => s.profile = v.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).filter(|&n| n < crate::career::PROFILES),
                 k => {
                     let pad = k.strip_prefix("pad").and_then(|r| r.split_once('_')).and_then(|(n, rest)| Some((n.parse::<usize>().ok()?.checked_sub(1)?, rest)));
@@ -125,6 +135,12 @@ impl Settings {
         let mut s = format!("music = {}\neffects = {}\ncamera = {}\n", self.music, self.effects, self.camera.key());
         for (n, p) in self.pads.iter().enumerate() {
             s += &p.to_text(n);
+        }
+        if self.pad_reader != PadReader::Auto {
+            s += &format!("pad_reader = {}\n", self.pad_reader.key());
+        }
+        if let Some(style) = self.pad_pictures {
+            s += &format!("pad_pictures = {}\n", style.key());
         }
         if let Some(n) = self.profile {
             s += &format!("profile = {}\n", n + 1);
@@ -204,7 +220,7 @@ mod tests {
         s.pads[2].layout = 2;
         s.pads[3].rebind(3, crate::controller::Action::Hop, 2, Some(crate::controller::Input::Key(KeyCode::KeyJ)));
         assert_eq!(Settings::parse(&s.to_text()), s);
-        let s = Settings { profile: Some(9), ..s };
+        let s = Settings { profile: Some(9), pad_pictures: Some(PadStyle::Nintendo), pad_reader: PadReader::Native, ..s };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("music = 99\njunk\ncamera = sideways\npad9_layout = 2"), Settings { music: VOLUME_STEPS, ..default() });
     }

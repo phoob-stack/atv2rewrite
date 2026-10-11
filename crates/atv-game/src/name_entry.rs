@@ -99,7 +99,7 @@ pub fn read_nav(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> Option<N
     } else if k(KeyCode::Escape) {
         Some(Nav::Back)
     } else {
-        read_nav_from(&ButtonInput::default(), pads, None)
+        read_nav_from(&ButtonInput::default(), pads.iter())
     }
 }
 

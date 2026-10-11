@@ -44,17 +44,19 @@ impl Build {
     }
 }
 
-/// The upscaler: the one the player picked, else one found next to the
-/// launcher or on the PATH.
+/// The upscaler: the one the player picked (none if it isn't there), else
+/// one found next to the launcher or on the PATH.
 pub fn upscaler(cfg: &Config) -> Option<Upscaler> {
-    if cfg.upscaler.is_file() {
-        return Some(Upscaler { exe: cfg.upscaler.clone() });
+    if !cfg.upscaler.as_os_str().is_empty() {
+        return cfg.upscaler.is_file().then(|| Upscaler { exe: cfg.upscaler.clone() });
     }
     Upscaler::find()
 }
 
-pub fn pack_dir() -> Option<PathBuf> {
-    atv_hd::default_dir()
+/// Where the pack is built and read: the player's folder, else the
+/// default one in their local data folder.
+pub fn pack_dir(cfg: &Config) -> Option<PathBuf> {
+    if cfg.hd_dir.as_os_str().is_empty() { atv_hd::default_dir() } else { Some(cfg.hd_dir.clone()) }
 }
 
 pub fn pack_size(dir: &Path) -> usize {
@@ -75,4 +77,42 @@ pub fn summary_text(s: &Summary, cancelled: bool) -> String {
         }
     }
     t
+}
+
+/// Deletes the pack's textures from `dir` and the folders they leave empty.
+/// Only the pack's own files go, as the player may have picked a folder
+/// with other things in it.
+pub fn delete_pack(dir: &Path) {
+    fn walk(d: &Path) {
+        let Ok(rd) = std::fs::read_dir(d) else { return };
+        for p in rd.flatten().map(|e| e.path()) {
+            if p.is_dir() {
+                walk(&p);
+                // Fails, as it should, unless the folder is now empty.
+                _ = std::fs::remove_dir(&p);
+            } else if p.extension().is_some_and(|x| x == "dds") {
+                _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+    _ = std::fs::remove_dir_all(dir.join(".work"));
+    walk(dir);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_keeps_other_files() {
+        let dir = std::env::temp_dir().join(format!("atv-launcher-hd-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("frontend/fonts")).unwrap();
+        std::fs::write(dir.join("frontend/fonts/a.dds"), b"x").unwrap();
+        std::fs::write(dir.join("frontend/b.dds"), b"x").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"keep").unwrap();
+        delete_pack(&dir);
+        assert!(!dir.join("frontend").exists());
+        assert!(dir.join("notes.txt").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
