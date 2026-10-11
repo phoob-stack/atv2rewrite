@@ -9,6 +9,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use bevy::asset::RenderAssetUsages;
+use bevy::input::gamepad::GamepadButton;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::ui::widget::NodeImageMode;
@@ -16,6 +17,8 @@ use bevy::window::PrimaryWindow;
 
 use atv_formats::bed::{Sprite, SpriteSheet};
 use atv_formats::GameSource;
+
+use crate::controller::PadStyle;
 
 /// Screen height the original UI was laid out for.
 pub const SCREEN_H: f32 = 480.0;
@@ -25,7 +28,35 @@ pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, (fit_ui_scale, refresh_menus, layout_bitmap_text.in_set(TextLayout)).chain().before(bevy::ui::UiSystems::Prepare));
+        app.add_systems(PostUpdate, (fit_ui_scale, refresh_menus, restyle_hints, layout_bitmap_text.in_set(TextLayout)).chain().before(bevy::ui::UiSystems::Prepare));
+    }
+}
+
+/// A pad button's picture in a row of button hints, drawn as on the pad
+/// last used (see [`UiAssets::button`]).
+#[derive(Component, Clone, Copy)]
+pub struct HintButton {
+    pub button: GamepadButton,
+    pub height: f32,
+}
+
+impl HintButton {
+    /// The picture, `height` units tall (drawn by [`restyle_hints`]).
+    pub fn new(button: GamepadButton, height: f32) -> (Node, ImageNode, Self) {
+        (Node::default(), ImageNode::default(), Self { button, height })
+    }
+}
+
+/// Draws new button hints, and redraws them all when a pad of another
+/// make is picked up.
+fn restyle_hints(ports: Option<Res<crate::controller::Ports>>, ui: Option<Res<UiAssets>>, mut hints: Query<(Ref<HintButton>, &mut Node, &mut ImageNode)>) {
+    let Some(ui) = ui else { return };
+    let style = ports.as_ref().map_or(PadStyle::Xbox, |p| p.last);
+    let all = ports.is_some_and(|p| p.is_changed());
+    for (hint, mut node, mut img) in &mut hints {
+        if all || hint.is_added() {
+            (*node, *img) = ui.button_node(style, hint.button, hint.height);
+        }
     }
 }
 
@@ -262,15 +293,23 @@ pub struct UiAssets {
     /// banner (no sheet on the disc; regions measured from the page).
     pub meter: Sheet,
     pub design: Sheet,
+    /// The front end's button pictures for Xbox, PlayStation and
+    /// Nintendo pads (the disc's Xbox, PS2 and GameCube sheets); see
+    /// [`UiAssets::button`].
     pub pad: Sheet,
+    pub pad_ps: Sheet,
+    pub pad_gc: Sheet,
     pub bio: Sheet,
     /// Options: the volume bar (`BAR_ON`, `BAR_OFF`), the tick box and the
     /// big Xbox pad picture.
     pub sound_bar: Sheet,
     pub checkbox: Sheet,
     /// The Trick Book's pad picture (`PAD`), the spots of its buttons
-    /// (`BUTTON0`-`BUTTON9`) and the glows that light them.
+    /// (`BUTTON0`-`BUTTON9`) and the glows that light them; the PS2's
+    /// and GameCube's for those pads (see [`UiAssets::trick_pad_for`]).
     pub trick_pad: Sheet,
+    pub trick_pad_ps: Sheet,
+    pub trick_pad_gc: Sheet,
     /// Point Distribution's bars (`HBAR8`, `ONEBAR`) and slider (`BLOB1`).
     pub points: Sheet,
     /// Name Your Rider's keyboard panel (`NAMEPANEL`) and name box
@@ -304,6 +343,49 @@ pub struct UiAssets {
 impl UiAssets {
     pub fn font(&self, id: FontId) -> &Font {
         &self.fonts[id as usize]
+    }
+
+    /// The picture of `b` on a `style` pad: its sheet and sprite. The
+    /// GameCube sheet's letters stand for a Nintendo pad's, by label
+    /// (Bevy's buttons go by place, so South is Nintendo's B). Buttons a
+    /// sheet lacks come from the Xbox one.
+    pub fn button(&self, style: PadStyle, b: GamepadButton) -> (&Sheet, &'static str) {
+        use GamepadButton as B;
+        let xbox = match b {
+            B::South => "controlbuttoncross",
+            B::East => "controlbuttoncircle",
+            B::West => "controlbuttonsquare",
+            B::North => "YButton",
+            B::Select => "controlbuttontriangle",
+            _ => "StartButton",
+        };
+        let other = match (style, b) {
+            (PadStyle::PlayStation, B::South | B::East | B::West) => Some((&self.pad_ps, xbox)),
+            (PadStyle::PlayStation, B::North) => Some((&self.pad_ps, "controlbuttontriangle")),
+            (PadStyle::Nintendo, B::South) => Some((&self.pad_gc, "controlbuttontriangle")),
+            (PadStyle::Nintendo, B::East) => Some((&self.pad_gc, "controlbuttoncross")),
+            (PadStyle::Nintendo, B::West) => Some((&self.pad_gc, "controlbuttonsquare")),
+            (PadStyle::Nintendo, B::North) => Some((&self.pad_gc, "controlbuttoncircle")),
+            (PadStyle::Nintendo, B::Start) => Some((&self.pad_gc, "StartButton")),
+            _ => None,
+        };
+        other.unwrap_or((&self.pad, xbox))
+    }
+
+    /// [`UiAssets::button`] as a node `height` units tall.
+    pub fn button_node(&self, style: PadStyle, b: GamepadButton, height: f32) -> (Node, ImageNode) {
+        let (sheet, name) = self.button(style, b);
+        let s = sheet.get(name).rect;
+        sheet.tex.region(s, height / s.height())
+    }
+
+    /// The Trick Book's pad picture for a `style` pad.
+    pub fn trick_pad_for(&self, style: PadStyle) -> &Sheet {
+        match style {
+            PadStyle::Xbox => &self.trick_pad,
+            PadStyle::PlayStation => &self.trick_pad_ps,
+            PadStyle::Nintendo => &self.trick_pad_gc,
+        }
     }
 
     pub fn background(&self, name: &str) -> Option<&UiTex> {
@@ -354,10 +436,14 @@ impl UiAssets {
             meter,
             design: l.sheet("FrontEnd/NewDesign")?,
             pad: l.sheet("FrontEnd/controlpadbuttonsXbox")?,
+            pad_ps: l.sheet_on_black("FrontEnd/controlpadbuttonsPS2")?,
+            pad_gc: l.sheet("FrontEnd/controlpadbuttonsGC")?,
             bio: l.sheet("FrontEnd/BioPanel")?,
             sound_bar: l.sheet("FrontEnd/SoundBar")?,
             checkbox: l.sheet("FrontEnd/checkbox")?,
             trick_pad: l.sheet("FrontEnd/TrickPad_XBox")?,
+            trick_pad_ps: l.sheet("FrontEnd/TrickPad_PS2")?,
+            trick_pad_gc: l.sheet("FrontEnd/TrickPad_GC")?,
             points: l.sheet("FrontEnd/PointsTpage")?,
             name_entry: l.sheet("FrontEnd/nameentrypanel")?,
             small_medals: l.sheet("FrontEnd/SmallMedals")?,
@@ -420,9 +506,25 @@ impl PageLoader<'_> {
 
     fn sheet(&mut self, path: &str) -> Result<Sheet> {
         let tex = self.tex(path)?;
+        self.with_sprites(path, tex)
+    }
+
+    fn with_sprites(&self, path: &str, tex: UiTex) -> Result<Sheet> {
         let bed = self.bed(path)?;
         let sprites = bed.sprites().map(|(n, s)| (n.to_ascii_lowercase(), to_texels(&s, tex.size))).collect();
         Ok(Sheet { tex, sprites })
+    }
+
+    /// A sheet drawn on black with no alpha (the PS2 button pictures, a
+    /// DXT1 page): the black faded out, so the buttons sit on the page.
+    fn sheet_on_black(&mut self, path: &str) -> Result<Sheet> {
+        let (w, h, mut px, scale) = self.pixels(path)?;
+        for p in px.as_chunks_mut::<4>().0 {
+            let bright = p[0].max(p[1]).max(p[2]);
+            p[3] = p[3].min((u32::from(bright) * 255 / 40).min(255) as u8);
+        }
+        let tex = self.add(w, h, px);
+        self.with_sprites(path, UiTex { size: tex.size / scale, px: scale, ..tex })
     }
 
     fn font(&mut self, path: &str) -> Result<Font> {
@@ -550,15 +652,16 @@ pub enum Nav {
 }
 
 pub fn read_nav(keys: &ButtonInput<KeyCode>, pads: &Query<&bevy::input::gamepad::Gamepad>) -> Option<Nav> {
-    read_nav_from(keys, pads, None)
+    read_nav_from(keys, pads.iter())
 }
 
-/// [`read_nav`] taking pad input from the `pad`-th pad only (the order
-/// split screen hands pads to players in); the keyboard always counts.
-pub fn read_nav_from(keys: &ButtonInput<KeyCode>, pads: &Query<&bevy::input::gamepad::Gamepad>, pad: Option<usize>) -> Option<Nav> {
+/// [`read_nav`] taking pad input from `pads` only (in split screen, a
+/// player's own pad); the keyboard always counts.
+pub fn read_nav_from<'a>(keys: &ButtonInput<KeyCode>, pads: impl IntoIterator<Item = &'a bevy::input::gamepad::Gamepad>) -> Option<Nav> {
     use bevy::input::gamepad::GamepadButton as B;
+    let pads: Vec<_> = pads.into_iter().collect();
     let k = |c: &[KeyCode]| c.iter().any(|c| keys.just_pressed(*c));
-    let p = |b: B| pads.iter().enumerate().any(|(n, p)| pad.is_none_or(|i| i == n) && p.just_pressed(b));
+    let p = |b: B| pads.iter().any(|p| p.just_pressed(b));
     if k(&[KeyCode::ArrowUp, KeyCode::KeyW]) || p(B::DPadUp) {
         Some(Nav::Up)
     } else if k(&[KeyCode::ArrowDown, KeyCode::KeyS]) || p(B::DPadDown) {

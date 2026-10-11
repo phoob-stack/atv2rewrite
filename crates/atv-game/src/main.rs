@@ -58,7 +58,7 @@ mod unlocks;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bevy::input::gamepad::{Gamepad, GamepadRumbleIntensity, GamepadRumbleRequest};
+use bevy::input::gamepad::{GamepadRumbleIntensity, GamepadRumbleRequest};
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
@@ -483,6 +483,7 @@ fn main() -> anyhow::Result<()> {
         }
     }
     let first = if args.direct { AppState::Loading } else { AppState::FrontEnd };
+    controller::load_mappings();
     let front_end = FrontEnd::at(args.screen.unwrap_or_default());
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -509,6 +510,8 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(career_rules)
         .insert_resource(career)
         .insert_resource(challenges)
+        .init_resource::<controller::Ports>()
+        .add_systems(PreUpdate, controller::track_ports.after(bevy::input::InputSystems))
         .add_plugins((ui::UiPlugin, hud::HudPlugin, frontend::FrontEndPlugin, freestyle::FreestylePlugin, opponents::OpponentsPlugin, audio::AudioPlugin, mud::MudPlugin, challenge::ChallengePlugin, mp::MpPlugin, knock::KnockPlugin, water::WaterPlugin, unlocks::UnlocksPlugin))
         .add_plugins(replay::ReplayPlugin)
         .add_plugins(demo::DemoPlugin)
@@ -867,7 +870,7 @@ pub(crate) fn read_boost(controls: &controller::Reader, airborne: bool, slot: Op
 fn drive(
     time: Res<Time>,
     args: Res<Args>,
-    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, Query<&Gamepad>, Res<Settings>),
+    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, controller::Pads, Res<Settings>),
     race: Option<ResMut<Race>>,
     player: Option<ResMut<Player>>,
     progress: Option<ResMut<RaceProgress>>,
@@ -1236,7 +1239,7 @@ fn lift_off_ground(collision: &TrackCollision, pivot: Vec3, eye: &mut Vec3) {
 
 /// C or the pad's Back button (unless remapped) steps through the follow
 /// cameras; the pick is kept, as if made in Options.
-fn cycle_camera(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, virt: Res<Time<Virtual>>, mut settings: ResMut<Settings>) {
+fn cycle_camera(keys: Res<ButtonInput<KeyCode>>, pads: controller::Pads, virt: Res<Time<Virtual>>, mut settings: ResMut<Settings>) {
     if virt.is_paused() {
         return;
     }
@@ -1248,8 +1251,8 @@ fn cycle_camera(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, virt: Re
 
 /// Vibration (on each controller that has it on in Options): a hard knock
 /// when the rider is thrown off and a thump on landing from a big jump. In
-/// split screen each player's own pad shakes (the pad order `read_input`
-/// uses); otherwise every pad does, since any of them drives.
+/// split screen each player's own pad shakes (the pad in their port);
+/// otherwise every pad does, since any of them drives.
 #[allow(clippy::too_many_arguments)]
 fn rumble(
     settings: Res<Settings>,
@@ -1257,7 +1260,7 @@ fn rumble(
     wreck: Option<Res<Wreck>>,
     sel: Res<Selection>,
     opponents: Option<Res<opponents::Opponents>>,
-    pads: Query<Entity, With<Gamepad>>,
+    ports: Res<controller::Ports>,
     mut requests: MessageWriter<GamepadRumbleRequest>,
     mut last: Local<[(bool, f32); mp::MAX_PLAYERS]>,
 ) {
@@ -1281,7 +1284,7 @@ fn rumble(
             continue;
         };
         let on = |n: usize| settings.pads.get(n).is_none_or(|p| p.vibration);
-        for (_, gamepad) in pads.iter().enumerate().filter(|(n, _)| (sel.players <= 1 || *n == slot) && on(*n)) {
+        for gamepad in (0..controller::PORTS).filter(|&n| (sel.players <= 1 || n == slot) && on(n)).filter_map(|n| ports.entity(n)) {
             requests.write(GamepadRumbleRequest::Add {
                 gamepad,
                 duration: std::time::Duration::from_secs_f32(secs),

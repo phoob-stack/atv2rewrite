@@ -76,6 +76,36 @@ The pause menu is the original's: Audio, Camera and Controller (the Options
 pages, changed mid-race; the music and ambience follow at once), Return to
 Race, Restart and Quit Race.
 
+### Controllers
+
+Xbox, PlayStation (DualShock 4, DualSense), Switch Pro, 8BitDo and most
+other pads work when plugged in or paired. Buttons go by where they sit,
+so the table's A is the bottom face button on any pad (cross on a
+PlayStation pad, B on a Nintendo one). The menus' button pictures and the
+Controller pages' button names follow the pad last pressed: the original's
+Xbox, PS2 and GameCube pictures, with the GameCube letters standing for a
+Nintendo pad's. To always show one kind, put `pad_pictures = xbox`,
+`playstation` or `nintendo` in `options.cfg`.
+
+Each pad keeps its controller port (and so its player and its setup) for
+as long as the game runs: a pad unplugged and plugged back in returns to
+the same port, and a new pad takes the first free one. Unplugging a pad
+in use pauses the race until it's back, as the original does.
+
+**Steam Controller and Steam Deck:** add `atv2-launcher` (or `atv2`) to
+Steam with *Add a Non-Steam Game*, make sure Steam Input is on for it, and
+start it from Steam. Steam then presents the controller to the game as an
+Xbox pad, so it works with the default layout, and Steam's own
+configurator can remap it further. Pads Steam passes through this way
+always show Xbox pictures; set `pad_pictures` if yours is a PlayStation or
+Switch pad.
+
+**Pads the game reads wrongly:** a pad missing from the built-in list (SDL's
+community controller database) can be given a mapping line in SDL's
+`gamecontrollerdb.txt` format, in a `gamecontrollerdb.txt` beside the game
+or in its config folder (beside `options.cfg`). Tools such as SDL2
+Gamepad Tool write these lines.
+
 ## Game modes
 
 - **Single Race**: pick rider, ATV, track and laps, then race five computer
