@@ -38,8 +38,10 @@ mod knock;
 mod loading;
 mod water;
 mod mp;
+mod name_entry;
 mod opponents;
 mod race;
+mod record_page;
 mod records;
 mod replay;
 mod respot;
@@ -498,7 +500,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(demo::DemoPlugin)
         .add_plugins(intro::IntroPlugin)
         .add_plugins(effects::EffectsPlugin)
-        .add_plugins(loading::LoadingPlugin)
+        .add_plugins((loading::LoadingPlugin, record_page::RecordPagePlugin))
         .add_plugins(records::RecordsPlugin)
         .add_plugins(ghost::GhostPlugin)
         .insert_state(first)
