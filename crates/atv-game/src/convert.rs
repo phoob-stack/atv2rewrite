@@ -32,6 +32,9 @@ pub struct Scene {
     pub roots: Vec<Entity>,
     pub world_meshes: usize,
     pub props: usize,
+    /// What Stadium 1's video screens show, when the track has any (see
+    /// [`crate::screens`]).
+    pub screens: Option<Handle<Image>>,
 }
 
 /// The sky dome; it is kept centred on the camera.
@@ -49,6 +52,9 @@ enum Look {
     Water,
     /// Translucent foam, wakes and spray.
     Foam,
+    /// Additive light (Stadium 1's lamp beams): adds texture × vertex
+    /// colour, scaled by their alphas, over what is behind.
+    Glow,
     /// Low-lying mist sheets; very faint.
     Mist,
     /// Baked shadow decal, darkens what is under it.
@@ -74,6 +80,10 @@ impl Look {
             Look::Water
         } else if flags & 0x4000 != 0 {
             Look::Foam
+        } else if flags & 0x18 != 0 {
+            // 0x8 adds (ONE, ONE), 0x10 adds by alpha (SRC_ALPHA, ONE),
+            // both without depth writes (0x1060b0 / 0x1060f0).
+            Look::Glow
         } else if flags & 0x2 != 0 {
             Look::Cutout
         } else {
@@ -84,7 +94,7 @@ impl Look {
     /// Whether vertex alpha is coverage for this look (otherwise it drives
     /// effects and is ignored).
     fn uses_vertex_alpha(self) -> bool {
-        matches!(self, Look::Water | Look::Foam | Look::Mist | Look::Shadow | Look::Overlay | Look::Dirt)
+        matches!(self, Look::Water | Look::Foam | Look::Glow | Look::Mist | Look::Shadow | Look::Overlay | Look::Dirt)
     }
 
     /// Vertex colour for this look. Lit surfaces get their light from the
@@ -157,6 +167,8 @@ pub struct Loader<'a> {
     pub ghost: Option<f32>,
     ghost_materials: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>>,
     solid_textures: HashMap<AssetId<Image>, Handle<Image>>,
+    /// The image standing in for the original's front buffer.
+    front_buffer: Option<Handle<Image>>,
 }
 
 /// What a track's ground does to the quads (`Tracks.xml` `mTyreType`,
@@ -448,6 +460,7 @@ impl<'a> Loader<'a> {
             ghost: None,
             ghost_materials: HashMap::new(),
             solid_textures: HashMap::new(),
+            front_buffer: None,
         }
     }
 
@@ -457,6 +470,11 @@ impl<'a> Loader<'a> {
         let key = format!("{}{}", name.to_ascii_lowercase(), if shadow { "#shadow" } else { "" });
         if let Some(t) = self.textures.get(&key) {
             return t.clone();
+        }
+        // The disc's `FrontBuffer` texture is a placeholder for the screen.
+        if name.eq_ignore_ascii_case("frontbuffer") && !shadow {
+            let img = self.front_buffer.get_or_insert_with(|| self.images.add(crate::screens::image())).clone();
+            return Some((img, false));
         }
         let loaded = self.texture_paths.get(&name.to_ascii_lowercase()).cloned().and_then(|path| {
             let (tex, _) = crate::hd::texture(self.game, &path).ok()?;
@@ -561,6 +579,7 @@ impl<'a> Loader<'a> {
         let alpha_mode = match look {
             Look::Water | Look::Foam | Look::Mist | Look::Shadow | Look::Overlay => AlphaMode::Blend,
             Look::Cutout => AlphaMode::Mask(0.5),
+            Look::Glow => AlphaMode::Add,
             Look::Baked | Look::Lit if has_alpha => AlphaMode::Mask(0.5),
             _ => AlphaMode::Opaque,
         };
@@ -568,7 +587,7 @@ impl<'a> Loader<'a> {
             base_color: if look == Look::Mist { Color::srgba(1.0, 1.0, 1.0, 0.3) } else { Color::WHITE },
             base_color_texture: tex.map(|t| t.0),
             unlit: !matches!(look, Look::Lit | Look::Rider | Look::Dirt),
-            fog_enabled: look != Look::Sky,
+            fog_enabled: !matches!(look, Look::Sky | Look::Glow),
             cull_mode: None,
             double_sided: true,
             alpha_mode,
@@ -867,7 +886,7 @@ impl<'a> Loader<'a> {
             self.spawn_model(commands, &model, holder, t, Look::Sky);
         }
 
-        Ok(Scene { world, roots, world_meshes, props })
+        Ok(Scene { world, roots, world_meshes, props, screens: self.front_buffer.clone() })
     }
 
     /// Spawns a loose model (the challenges' guide arrow) under its own
@@ -1006,5 +1025,20 @@ impl<'a> Loader<'a> {
             }
         }
         Ok(RiderRig { joints, offsets })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stadium_light_beams_glow() {
+        // ST_Rays (0x412): additive by alpha, though double-sided (0x2).
+        assert_eq!(Look::from_flags(0x412), Look::Glow);
+        assert_eq!(Look::from_flags(0x8), Look::Glow);
+        // Neon strips and hanging arrows stay cut out.
+        assert_eq!(Look::from_flags(0x82), Look::Cutout);
+        assert_eq!(Look::from_flags(0x486), Look::Cutout);
     }
 }

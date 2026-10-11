@@ -178,7 +178,11 @@ patch:      u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16];
 ```
 Mesh flags: 0x1 has patches, 0x2 alpha-tested (foliage, fences), 0x2000
 water (and some shadow decals, with 0x400), 0x4000 foam/wake, 0x8000 baked shadow decal. Material -1 is
-invisible collision-only geometry. `material2` is an overlay layer (grass
+invisible collision-only geometry. The original's mesh setup (0x106390)
+picks the blend from 0x4 (alpha blend), 0x8 (add ONE, ONE) and 0x10 (add
+SRC_ALPHA, ONE, Stadium 1's lamp beams), none writing depth; 0x2 turns
+off back-face culling. A material named `FrontBuffer` is the console's
+front buffer, so Stadium 1's video screens show the race. `material2` is an overlay layer (grass
 strips, tyre tracks, the checker on inflatable arches) drawn over the base
 with the second UV set, weighted by vertex alpha.
 

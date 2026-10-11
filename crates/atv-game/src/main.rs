@@ -47,6 +47,7 @@ mod replay;
 mod respot;
 mod results;
 mod rider;
+mod screens;
 mod settings;
 mod trickbook;
 mod ui;
@@ -504,6 +505,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins((loading::LoadingPlugin, record_page::RecordPagePlugin, results::ResultsPlugin))
         .add_plugins(records::RecordsPlugin)
         .add_plugins(ghost::GhostPlugin)
+        .add_plugins(screens::ScreensPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
@@ -739,6 +741,9 @@ fn setup(
         }
         _ => None,
     };
+    if let Some(image) = scene.screens.clone() {
+        screens::spawn(&mut commands, view.clone(), image, fixed.unwrap_or(cam), scoped.clone());
+    }
     match fixed {
         Some(t) => {
             let (yaw, pitch, _) = t.rotation.to_euler(EulerRot::YXZ);
@@ -1306,7 +1311,7 @@ fn rumble(
     }
 }
 
-fn follow_sky(cams: Query<(&Transform, Option<&mp::Split>), With<Camera3d>>, mut sky: Query<&mut Transform, (With<SkyDome>, Without<Camera3d>)>) {
+fn follow_sky(cams: Query<(&Transform, Option<&mp::Split>), (With<Camera3d>, Without<screens::ScreenCam>)>, mut sky: Query<&mut Transform, (With<SkyDome>, Without<Camera3d>)>) {
     // Player 1's view in split screen.
     let cam = cams.iter().find(|(_, s)| s.is_none_or(|s| s.0 == 0)).map(|c| c.0);
     let (Some(cam), Ok(mut sky)) = (cam, sky.single_mut()) else { return };
