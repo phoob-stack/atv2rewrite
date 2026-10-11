@@ -112,6 +112,8 @@ Race, Restart and Quit Race.
   Gold targets. Points come from tricks, multi-trick combos, flips and spins,
   big air, wheelies, endos and bicycles, the Stadium trick boxes (Cage Jump,
   Bus Leap, Hoopa...) and the first visit to each of the track's spots.
+  As in the original, the score on screen rolls up to the points you've
+  earned, and the clock only shows when there's a time limit.
 - **ATV Academy**: the original's training mode. Pick an ATV (with a
   profile loaded you ride its rider) and practise on Stadium 2, scoring as
   in Open Freestyle but with no time limit or medal targets, until you

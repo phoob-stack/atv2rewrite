@@ -746,6 +746,41 @@ enum FsReadout {
 #[derive(Component)]
 struct PopupLine(usize);
 
+/// The score on the HUD rolls up to the real one, as the original's
+/// (0x9ff60): each 1/30 s it gains a random amount under 5% of the gap,
+/// or under 3 points when that is more (0xaac50), and never passes it.
+#[derive(Component)]
+struct RollingScore {
+    shown: u32,
+    wait: f32,
+    seed: u32,
+}
+
+impl RollingScore {
+    const TICK: f32 = 1.0 / 30.0;
+
+    fn new() -> Self {
+        Self { shown: 0, wait: 0.0, seed: 1 }
+    }
+
+    fn step(&mut self, score: u32, dt: f32) -> u32 {
+        self.wait += dt;
+        while self.wait >= Self::TICK {
+            self.wait -= Self::TICK;
+            if self.shown >= score {
+                break;
+            }
+            let range = ((score - self.shown) as f32 * 0.05).max(3.0);
+            self.seed = self.seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let unit = ((self.seed >> 8) & 0xffff) as f32 / 65536.0;
+            self.shown += (unit * range) as u32;
+        }
+        // A restart drops the score; the shown one follows at once.
+        self.shown = self.shown.min(score);
+        self.shown
+    }
+}
+
 const POPUP_LINES: usize = 4;
 const POPUP_SECS: f32 = 2.2;
 
@@ -758,23 +793,27 @@ fn spawn_hud(mut commands: Commands, session: Res<Session>) {
                     .with_children(|c| {
                         c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
                             r.spawn(BitmapText::new(FontId::Small, 9.0, "SCORE"));
-                            r.spawn((BitmapText::new(FontId::Chrome, 22.0, "0"), FsReadout::Score));
+                            r.spawn((BitmapText::new(FontId::Chrome, 22.0, "0"), FsReadout::Score, RollingScore::new()));
                         });
                         c.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(1.0, 0.85, 0.3)), FsReadout::Target));
                         c.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(0.75, 0.85, 1.0)), FsReadout::Spots));
                     });
-                root.spawn(Node {
-                    position_type: PositionType::Absolute,
-                    right: px(24),
-                    top: px(18),
-                    align_items: AlignItems::FlexEnd,
-                    column_gap: px(6),
-                    ..default()
-                })
-                .with_children(|r| {
-                    r.spawn(BitmapText::new(FontId::Small, 8.0, if session.limit.is_some() { "TIME LEFT" } else { "TIME" }));
-                    r.spawn((BitmapText::new(FontId::Chrome, 18.0, "0:00.00"), FsReadout::Time));
-                });
+                // The clock only shows with a time limit (0xa0b40), so
+                // not in unlimited sessions or ATV Academy.
+                if session.limit.is_some() {
+                    root.spawn(Node {
+                        position_type: PositionType::Absolute,
+                        right: px(24),
+                        top: px(18),
+                        align_items: AlignItems::FlexEnd,
+                        column_gap: px(6),
+                        ..default()
+                    })
+                    .with_children(|r| {
+                        r.spawn(BitmapText::new(FontId::Small, 8.0, "TIME LEFT"));
+                        r.spawn((BitmapText::new(FontId::Chrome, 18.0, "0:00.00"), FsReadout::Time));
+                    });
+                }
             }
             // Trick call-outs, above the rider.
             root.spawn(Node {
@@ -797,13 +836,14 @@ fn spawn_hud(mut commands: Commands, session: Res<Session>) {
 fn update_hud(
     session: Option<Res<Session>>,
     progress: Option<Res<crate::race::RaceProgress>>,
-    mut readouts: Query<(&FsReadout, &mut BitmapText), Without<PopupLine>>,
+    time: Res<Time>,
+    mut readouts: Query<(&FsReadout, &mut BitmapText, Option<&mut RollingScore>), Without<PopupLine>>,
     mut lines: Query<(&PopupLine, &mut BitmapText), Without<FsReadout>>,
 ) {
     let (Some(s), Some(p)) = (session, progress) else { return };
-    for (r, mut t) in &mut readouts {
+    for (r, mut t, rolling) in &mut readouts {
         let text = match r {
-            FsReadout::Score => s.score.to_string(),
+            FsReadout::Score => rolling.map_or(s.score, |mut r| r.step(s.score, time.delta_secs())).to_string(),
             FsReadout::Time => fmt_time(s.time_left(p.clock).unwrap_or(p.clock)),
             FsReadout::Spots => format!("SPOTS {}/{}", s.spots_found(), s.spots.len()),
             FsReadout::Target => match s.medals {
@@ -841,6 +881,22 @@ fn update_hud(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shown_score_rolls_up_to_the_real_one() {
+        let mut r = RollingScore::new();
+        let first = r.step(1000, RollingScore::TICK);
+        assert!(first < 50, "under 5% of the gap a tick: {first}");
+        let mut last = first;
+        for _ in 0..300 {
+            let shown = r.step(1000, RollingScore::TICK);
+            assert!(shown >= last && shown <= 1000);
+            last = shown;
+        }
+        assert_eq!(last, 1000, "it gets there and stops");
+        assert_eq!(r.step(0, RollingScore::TICK), 0, "a restart drops it at once");
+        assert_eq!(r.step(10, 0.0), 0, "no time, no roll");
+    }
 
     #[test]
     fn stunt_names() {
