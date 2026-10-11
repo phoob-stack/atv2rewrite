@@ -818,16 +818,21 @@ in yellow and players in orange. The rewrite leaves the list out, since
 outside Career and Arcade it picks the computer riders only as the race
 spawns them.
 
-## A race's results page
+## Results pages
 
-0x3f260 builds a race's results (game types 0 and 3; Time Trial, Career,
-the freestyle modes and challenges have their own pages). `FrontEnd/
-ResultsOverlay`, an 8x256 strip of bands, is stretched over the screen:
-navy to 72 (in 640x480 screen units), clear to 101, a translucent teal band
-behind the column heads and light grey behind the rows, teal again from 301
-to 361 behind the bests box, clear, and navy from 404. "Race Results" (0x191) is the page
-title (0x472e0: y 56, scale 0.9 in the big font, grey 0.7 outlined in
-navy (0.098, 0.192, 0.262)). On y 120 go the column heads in
+0x83b30 picks the page by game type: 0x3f260 for Single Race and
+Multiplayer Single Race (types 0 and 6), 0x40080 for Time Trial (1),
+0x3f7a0 for Arcade (2), 0x3a900 for Career and Multiplayer Championship (3
+and 7), 0x40620 for Open Freestyle and Freestyle Battle (4 and 8), 0x55900
+for a challenge (5), and none for Training (9).
+
+On a race's page (0x3f260) `FrontEnd/ResultsOverlay`, an 8x256 strip of
+bands, is stretched over the screen: navy to 72 (in 640x480 screen units),
+clear to 101, a translucent teal band behind the column heads and light
+grey behind the rows, teal again from 301 to 361 behind the bests box,
+clear, and navy from 404. "Race Results" (0x191) is the page title
+(0x472e0: y 56, scale 0.9 in the big font, grey 0.7 outlined in navy
+(0.098, 0.192, 0.262)). On y 120 go the column heads in
 `MgrammeSmall` at 0.9: "Position" (0x17b) from x 30, "Time" (0x1f1)
 centred on 403 and "Points" (0x178) on 550. A row per racer follows at 0.7
 (DAT_001ba664), centred on y 150 + 10 * (8 - racers) and 20 apart: "(%d)
@@ -868,10 +873,26 @@ game types 4, 5, 8 and 9): yellow in the big font at 1.25, top-aligned on y
 156, over Yes (0x23a) on 276 and No (0x162), with A "Select" (0x1c2). Yes
 restarts the race; No quits (0x80790).
 
-The rewrite builds the page and Race Again for Single Race (`results.rs`); a
-rider who never reached the start line shows dashes for a time, where the
-original would divide by nothing. The other modes keep the rewrite's
-results menu for now.
+Time Trial (game type 1) has its own page (0x40080, filled by 0x3fbd0):
+"Time Trial" (0x1f2) outlined in dark blue (0.06, 0.09, 0.39) over
+`ResultsOverlay2`, the same bands without the one behind the bests box (none
+here). On the heads' line (y 120, grey, 0.9) go "Best Lap Times" (0x25)
+from x 25 and the rider's name right-aligned to 610. "Time" (0x1f1, orange,
+0.9) is centred on x 230 where a race's first row would be, which with the
+rider and the two ghost racers (0x9dcd0) counted is y 200. The laps follow
+at 0.7 in yellow, sorted fastest first and five at most: "%s %i" with "Lap"
+(0xdb) and the lap's number from x 50, the time centred on 230, rows 20
+apart from 30 below "Time". "Record" (0x19d) in orange follows with the
+track's lap record centred on 230 and its holder from x 320, on the fifth
+lap's row (the original draws both there when five laps are listed). The
+hints are X "Replay" (not in the demo) and A "Continue", which goes on as a
+race's does.
+
+The rewrite builds the race page and Race Again for Single Race, and the
+Time Trial page (`results.rs`). A rider who never reached the start line
+shows dashes for a time, where the original would divide by nothing; with
+five laps listed, Time Trial's record moves down a row. The other modes keep
+the rewrite's results menu for now.
 
 ## Track records
 

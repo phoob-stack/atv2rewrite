@@ -1126,6 +1126,11 @@ fn race_menus(
                 // Again (0x3f260, 0x34990).
                 let finishers = results::finishers(&p, session.as_deref(), &feats, &selection, &roster, &career, field.1);
                 results::spawn_page(&mut commands, &ui, &finishers, selection.players <= 1, overlay);
+            } else if selection.mode == Mode::TimeTrial {
+                // Time Trial's: the fastest laps and the lap record (0x40080).
+                let name = results::player_name(&selection, &roster, &career);
+                let record = records.as_deref().and_then(|r| r.get(&selection.track, records::Kind::Lap));
+                results::spawn_time_trial(&mut commands, &ui, &name, &p.lap_times, record, true, overlay);
             } else {
                 spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref(), &broken), overlay, "");
             }

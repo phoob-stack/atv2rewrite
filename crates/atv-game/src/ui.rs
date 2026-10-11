@@ -292,6 +292,9 @@ pub struct UiAssets {
     /// The results page's bands (`ResultsOverlay`), stretched the same way
     /// over the race.
     pub results_overlay: UiTex,
+    /// Time Trial's results bands (`ResultsOverlay2`): the same without the
+    /// band behind the race bests.
+    pub results_overlay2: UiTex,
     pub backgrounds: HashMap<String, UiTex>,
     pub tracks: HashMap<String, UiTex>,
     /// The Freestyle Challenges' pictures, by number.
@@ -366,6 +369,7 @@ impl UiAssets {
             loading: l.tex("FrontEnd/FELoading1")?,
             loading_overlay: l.tex("FrontEnd/LoadingOverlay")?,
             results_overlay: l.tex("FrontEnd/ResultsOverlay")?,
+            results_overlay2: l.tex("FrontEnd/ResultsOverlay2")?,
             backgrounds,
             tracks,
             challenges,
