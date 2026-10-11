@@ -74,7 +74,8 @@ Race, Restart and Quit Race.
   and rider that sets off with you every lap. A lap faster than the
   ghost's becomes the ghost. Each track keeps its ghost between sessions
   (`ghosts/<track>.ghost` in the config folder), on the rider and ATV that
-  set it, and the times show the track's lap record.
+  set it. The times show the track's lap record, your best lap and, as
+  in the original, your last three laps above the lap you're riding.
 - **Career**: the Amateur, Qualifying and Professional championships of
   `Setup/Career.xml`, five rounds each against seven computer riders, with
   race and trick points, skill points, gold medals and ATV unlocks; a top-3

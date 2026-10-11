@@ -70,6 +70,9 @@ enum Readout {
     /// Arcade: seconds left, and the round.
     TimeLeft,
     Round,
+    /// Time Trial: a row of the lap list (0x9fbd0), see
+    /// [`RaceProgress::recent_laps`].
+    LapRow(usize),
 }
 #[derive(Component)]
 struct BonusText;
@@ -243,8 +246,18 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
                 ..default()
             })
             .with_children(|c| {
-                let record = (sel.mode == Mode::TimeTrial).then_some(("RECORD", 11.0, Readout::Record));
-                for (label, size, readout) in [("TIME", 18.0, Readout::Time), ("LAP", 11.0, Readout::LapTime), ("BEST", 11.0, Readout::Best)].into_iter().chain(record) {
+                // Time Trial lists the record, the best lap and the last
+                // laps, the one being ridden at the bottom, with the
+                // "Current" label on the first row (0xa0660).
+                let rows: Vec<_> = if sel.mode == Mode::TimeTrial {
+                    [("TIME", 18.0, Readout::Time), ("RECORD", 11.0, Readout::Record), ("BEST", 11.0, Readout::Best)]
+                        .into_iter()
+                        .chain((0..4).map(|i| (if i == 0 { "CURRENT" } else { "" }, 11.0, Readout::LapRow(i))))
+                        .collect()
+                } else {
+                    vec![("TIME", 18.0, Readout::Time), ("LAP", 11.0, Readout::LapTime), ("BEST", 11.0, Readout::Best)]
+                };
+                for (label, size, readout) in rows {
                     c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
                         r.spawn(BitmapText::new(FontId::Small, 8.0, label));
                         r.spawn((BitmapText::new(FontId::Chrome, size, "0:00.00"), readout));
@@ -372,6 +385,7 @@ fn update_readouts(
         set_text(&mut t, &s);
     }
     let v = &player.0;
+    let laps = if sel.mode == Mode::TimeTrial { p.recent_laps() } else { Vec::new() };
     for (r, mut t) in &mut q {
         let s = match r {
             // The dial face reads KPH.
@@ -398,6 +412,17 @@ fn update_readouts(
                 fmt_time(left)
             }
             Readout::Round => continue,
+            Readout::LapRow(i) => match laps.get(*i) {
+                Some(&(time, current)) => {
+                    // The lap being ridden is yellow.
+                    let c = if current { Color::srgb(1.0, 1.0, 0.0) } else { Color::WHITE };
+                    if t.color != c {
+                        t.color = c;
+                    }
+                    fmt_time(time)
+                }
+                None => String::new(),
+            },
         };
         set_text(&mut t, &s);
     }
