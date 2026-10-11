@@ -200,8 +200,10 @@ first one made carries on any progress from before profiles
 **Track records**, as in the original: every track keeps its best lap (not
 on the stadiums), longest jump, biggest air, best wheelie and best
 bicycle. They start as `Setup/Tracks.xml` has them, and the results of any
-race or freestyle session (not a challenge) show the ones you broke, which
-are saved in `records.cfg` in the config folder under your profile's name.
+race or freestyle session (not a challenge) show the ones you broke. When
+you leave the results, the record page lists them and asks for your name,
+with your profile's name already typed in. The records are saved under that
+name in `records.cfg` in the config folder.
 The track select shows the highlighted track's records on three panels
 with the holders' faces, each turning to the next record every few
 seconds.

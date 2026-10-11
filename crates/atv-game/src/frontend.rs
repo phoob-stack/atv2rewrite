@@ -36,6 +36,7 @@ use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::ui::{fullscreen, placed, read_nav_from, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::mp::MpChamp;
+use crate::name_entry::{self, NameEntry};
 use crate::records::{self, TrackRecords};
 use crate::trickbook::{self, TrickDemo};
 use crate::unlocks;
@@ -265,10 +266,6 @@ const OPTIONS: [(&str, Option<Screen>); 6] = [
 
 /// Name Your Rider's keys (0x51390): three rows of characters, then
 /// delete, space and OK.
-const KEY_ROWS: [&str; 3] = ["ABCDEFGHIJKLMN", "OPQRSTUVWXYZ", "1234567890-\"*"];
-const KEY_WORDS: [&str; 3] = ["DEL", "SPACE", "OK"];
-/// The longest name the original takes.
-const NAME_LEN: usize = 12;
 const NO_PROFILES: &str = "THERE HAVE BEEN NO PLAYER PROFILES LOADED, YOU'LL HAVE TO CREATE ONE NOW.";
 const ENTER_NAME: &str = "PLEASE ENTER YOUR NAME";
 
@@ -307,11 +304,9 @@ pub struct FrontEnd {
     slot: usize,
     profile_from: Screen,
     profiles: Vec<Option<Career>>,
-    /// Name Your Rider: the new profile's rider, its name so far and the
-    /// key highlighted (row, column).
+    /// Name Your Rider: the new profile's rider and its name so far.
     new_rider: String,
-    name: String,
-    key: (usize, usize),
+    entry: NameEntry,
     /// Cheats entered as a name, for the next profile made or loaded.
     cheats: u32,
     /// A message box over the screen (title, text) until it's closed.
@@ -493,7 +488,7 @@ fn navigate(
     let mut typed = false;
     for k in typing.read() {
         if naming && k.state == ButtonState::Pressed {
-            typed |= type_key(&mut fe, k);
+            typed |= fe.entry.type_key(k);
         }
     }
     if typed {
@@ -502,7 +497,7 @@ fn navigate(
     }
     // In split screen each player picks their rider and ATV with their own pad.
     let picking = fe.players > 1 && matches!(fe.screen, Screen::Rider | Screen::Quad);
-    let nav = if fe.screen == Screen::ProfileName { name_nav(&keys, &pads) } else { read_nav_from(&keys, &pads, picking.then_some(fe.picking)) };
+    let nav = if fe.screen == Screen::ProfileName { name_entry::read_nav(&keys, &pads) } else { read_nav_from(&keys, &pads, picking.then_some(fe.picking)) };
     let Some(nav) = nav else { return };
     if fe.built != Some(fe.screen) {
         return;
@@ -1055,8 +1050,7 @@ fn navigate(
                         return;
                     }
                     fe.new_rider = r.model.clone();
-                    fe.name.clear();
-                    fe.key = (0, 0);
+                    fe.entry = NameEntry::default();
                     fe.screen = Screen::ProfileName;
                 }
                 Nav::Back if fe.profiles.iter().any(Option::is_some) => fe.screen = Screen::ProfileSelect,
@@ -1065,30 +1059,14 @@ fn navigate(
             }
         }
         Screen::ProfileName => {
-            let row_len = |r: usize| KEY_ROWS.get(r).map_or(KEY_WORDS.len(), |k| k.chars().count());
-            let (r, c) = fe.key;
             match nav {
-                Nav::Left => fe.key.1 = (c + row_len(r) - 1) % row_len(r),
-                Nav::Right => fe.key.1 = (c + 1) % row_len(r),
-                Nav::Up | Nav::Down => {
-                    // To the key across from this one.
-                    let to = if nav == Nav::Up { (r + 3) % 4 } else { (r + 1) % 4 };
-                    fe.key = (to, ((2 * c + 1) * row_len(to) / (2 * row_len(r))).min(row_len(to) - 1));
-                }
-                Nav::Accept if r < KEY_ROWS.len() => {
-                    let ch = KEY_ROWS[r].chars().nth(c).unwrap_or(' ');
-                    push_char(&mut fe, ch);
-                }
-                Nav::Accept if c == 0 => {
-                    fe.name.pop();
-                }
-                Nav::Accept if c == 1 => push_char(&mut fe, ' '),
-                Nav::Accept | Nav::Start => {
-                    let name = fe.name.trim().to_string();
+                Nav::Back => fe.screen = Screen::ProfileRider,
+                _ if fe.entry.nav(nav) => {
+                    let name = fe.entry.name.trim().to_string();
                     if let Some((bits, msg)) = unlocks::cheat(&name) {
                         // The cheat goes to the next profile made or loaded.
                         fe.cheats |= bits;
-                        fe.name.clear();
+                        fe.entry.name.clear();
                         fe.popup = Some(("CHEAT".into(), msg.into()));
                     } else if name.is_empty() {
                         fe.popup = Some((String::new(), ENTER_NAME.into()));
@@ -1097,8 +1075,7 @@ fn navigate(
                         fe.screen = profiles_done(&fe);
                     }
                 }
-                Nav::Back => fe.screen = Screen::ProfileRider,
-                Nav::Extra => {}
+                _ => {}
             }
             fe.built = None;
         }
@@ -1186,50 +1163,6 @@ fn new_arcade(fe: &mut FrontEnd, career: &mut Career, roster: &Roster, sel: &Sel
     fe.arcade_round = 0;
     career.arcade_field = Some(ArcadeField::new(roster, &arcade_rider(career, sel), 0));
     fe.screen = Screen::ArcadeStatus;
-}
-
-/// A key typed on Name Your Rider: true when it typed or deleted.
-fn type_key(fe: &mut FrontEnd, k: &KeyboardInput) -> bool {
-    if k.key_code == KeyCode::Backspace {
-        fe.name.pop();
-        return true;
-    }
-    let Some(text) = &k.text else { return false };
-    let mut typed = false;
-    for c in text.chars().map(|c| c.to_ascii_uppercase()) {
-        if c == ' ' || KEY_ROWS.iter().any(|r| r.contains(c)) {
-            push_char(fe, c);
-            typed = true;
-        }
-    }
-    typed
-}
-
-fn push_char(fe: &mut FrontEnd, c: char) {
-    if fe.name.chars().count() < NAME_LEN && !(c == ' ' && fe.name.is_empty()) {
-        fe.name.push(c);
-    }
-}
-
-/// Moves on Name Your Rider, where letters, space and backspace type: the
-/// arrows, Enter for OK, Escape to go back, and the pads as usual.
-fn name_nav(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>) -> Option<Nav> {
-    let k = |c: KeyCode| keys.just_pressed(c);
-    if k(KeyCode::ArrowUp) {
-        Some(Nav::Up)
-    } else if k(KeyCode::ArrowDown) {
-        Some(Nav::Down)
-    } else if k(KeyCode::ArrowLeft) {
-        Some(Nav::Left)
-    } else if k(KeyCode::ArrowRight) {
-        Some(Nav::Right)
-    } else if k(KeyCode::Enter) || k(KeyCode::NumpadEnter) {
-        Some(Nav::Start)
-    } else if k(KeyCode::Escape) {
-        Some(Nav::Back)
-    } else {
-        read_nav_from(&ButtonInput::default(), pads, None)
-    }
 }
 
 /// The championship menu: carrying on with one in progress, then the four.
@@ -1528,44 +1461,13 @@ fn rebuild(
             }
         }
         Screen::ProfileName => {
-            let gold = Color::srgb(1.0, 0.85, 0.3);
             if let Some(r) = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&fe.new_rider)) {
                 kids.push(hint(&mut commands, &ui, &r.name, 76.0));
             }
             // The name in its box, then the keyboard.
-            let small = ui.name_entry.get("SMALLNAMEPANEL").rect;
-            let (bw, bs) = (320.0, 320.0 / small.width());
-            let (bx, by) = ((SCREEN_W - bw) / 2.0, 96.0);
-            kids.push(commands.spawn(placed(ui.name_entry.node("SMALLNAMEPANEL", bs), bx, by)).id());
-            let menu_font = ui.font(FontId::Menu);
-            let w = menu_font.width(&fe.name, 18.0);
-            let tx = (SCREEN_W - w) / 2.0;
-            let ty = by + (small.height() * bs - 18.0) / 2.0;
-            kids.push(commands.spawn((BitmapText::new(FontId::Menu, 18.0, fe.name.clone()), ui_at(tx, ty))).id());
-            if fe.name.chars().count() < NAME_LEN {
-                kids.push(commands.spawn((BitmapText::new(FontId::Menu, 18.0, "_").color(gold), ui_at(tx + w + 2.0, ty), Blink)).id());
-            }
-            let panel = ui.name_entry.get("NAMEPANEL").rect;
-            let (pw, ps) = (540.0, 540.0 / panel.width());
-            let (px0, py0) = ((SCREEN_W - pw) / 2.0, 156.0);
-            kids.push(commands.spawn(placed(ui.name_entry.node("NAMEPANEL", ps), px0, py0)).id());
-            let row_h = (panel.height() * ps - 24.0) / 4.0;
-            let mut rows: Vec<Vec<String>> = KEY_ROWS.iter().map(|r| r.chars().map(String::from).collect()).collect();
-            rows.push(KEY_WORDS.iter().map(|w| w.to_string()).collect());
-            for (r, keys) in rows.iter().enumerate() {
-                let words = r == KEY_ROWS.len();
-                let step = if words { 150.0 } else { 36.0 };
-                let x_mid = SCREEN_W / 2.0 - step * (keys.len() - 1) as f32 / 2.0;
-                for (c, key) in keys.iter().enumerate() {
-                    let on = fe.key == (r, c);
-                    let size = if on { 20.0 } else { 16.0 };
-                    let kw = menu_font.width(key, size);
-                    let y = py0 + 12.0 + r as f32 * row_h + (row_h - size) / 2.0;
-                    let text = BitmapText::new(FontId::Menu, size, key.clone()).color(if on { gold } else { Color::WHITE });
-                    kids.push(commands.spawn((text, ui_at(x_mid + step * c as f32 - kw / 2.0, y))).id());
-                }
-            }
-            kids.push(hint(&mut commands, &ui, "TYPE A NAME OR PICK THE LETTERS  -  ENTER WHEN DONE", py0 + panel.height() * ps + 14.0));
+            let (keyboard, bottom) = name_entry::spawn(&mut commands, &ui, &fe.entry, 96.0, 156.0);
+            kids.extend(keyboard);
+            kids.push(hint(&mut commands, &ui, "TYPE A NAME OR PICK THE LETTERS  -  ENTER WHEN DONE", bottom + 14.0));
         }
         Screen::Quad => {
             let names: Vec<String> = roster.quads.iter().map(|q| q.name.to_uppercase()).collect();

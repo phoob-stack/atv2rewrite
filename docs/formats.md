@@ -803,8 +803,12 @@ again. After the results, each human with records gets the record page
 broken by player %d!" in split screen (0x15d), or "Stadium record ..."
 (0x15b, 0x15a) for game types 4, 5, 8 and 9 (the freestyle ones and
 training), a row per record with its long value, then "Please enter your
-name" (0x176) and the name entry. The state machine skips it for
-challenges and training (game types 5 and 9, 0x8006e).
+name" (0x176) and the name entry, holding the name the record was set
+with. OK (`ID_NAME_ENTRY_OK`, 0x4e160) writes the name into each of that
+player's records. The state machine skips it for challenges and training
+(game types 5 and 9, 0x8006e). It comes when the results' button is
+pressed (0x7fe40 starts the record state for player 0), one player after
+another (0x80890), and then the game carries on.
 
 The stunt manager measures the jumps (0x61a00, run from 0x62b20 while the
 racer isn't crashed). With no wheel touching it takes off: the quad's x and z
@@ -830,10 +834,12 @@ from the longest jump and the third from the biggest air. Every 2.5 s
 track's picture, since its track list is on the left.
 
 The rewrite keeps the records in `records.cfg` in the config folder and
-shows those broken among the results rather than on their own page, with no
-name entry: the holder is the profile's name, or the rider's when there's no
-profile or in split screen. It also leaves out a jump that ends in a crash
-or a respot.
+lists those broken among the results too. Its results and race menu are one
+screen, so the record page comes when an item on it is picked, and that item
+goes ahead after the last page. A record is first set with the profile's
+name, or the rider's when there's no profile or in split screen. That name
+stands if the box is left as it is or emptied. The rewrite also leaves out a
+jump that ends in a crash or a respot.
 
 Open Freestyle's medal targets are records as well. The system save's
 records hold, for each of the seven time limits, three entries of the same

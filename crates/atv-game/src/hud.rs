@@ -16,6 +16,7 @@ use crate::freestyle::{limit_label, Session, MEDALS, TIME_LIMITS};
 use crate::frontend::{self, FrontEnd, Roster, Screen};
 use crate::opponents::{Opponents, Standings};
 use crate::race::{fmt_time, RaceProgress};
+use crate::record_page::RecordPages;
 use crate::records::{self, Broken, Feats, TrackRecords};
 use crate::replay;
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
@@ -722,10 +723,17 @@ fn race_menus(
         ResMut<Settings>,
         (Option<ResMut<TrackRecords>>, Res<Feats>, Option<Res<crate::demo::Demo>>),
     ),
-    (defs, course, overlay, mut mp_champ, replay): (Res<challenge::Defs>, Option<Res<challenge::Course>>, Query<Entity, With<mp::Overlay>>, ResMut<mp::MpChamp>, Option<Res<replay::Playback>>),
+    (defs, course, overlay, mut mp_champ, replay, mut pages): (
+        Res<challenge::Defs>,
+        Option<Res<challenge::Course>>,
+        Query<Entity, With<mp::Overlay>>,
+        ResMut<mp::MpChamp>,
+        Option<Res<replay::Playback>>,
+        Option<ResMut<RecordPages>>,
+    ),
 ) {
-    // The replay has the controls while it plays.
-    if replay.is_some() {
+    // The replay and the record page have the controls while they're up.
+    if replay.is_some() || pages.as_deref().is_some_and(RecordPages::open) {
         return;
     }
     let overlay = overlay.iter().next();
@@ -813,17 +821,23 @@ fn race_menus(
             // The track records broken, except in a challenge or by the
             // demo's computer rider (0x8006e), then Open Freestyle's medal
             // records taken (0x7ff60).
+            let limit = TIME_LIMITS.iter().position(|&l| l == selection.time_limit).filter(|_| selection.mode == Mode::Freestyle);
             let broken = match records.as_mut() {
                 Some(r) if selection.mode != Mode::Challenge && demo.is_none() => {
                     let entries = record_entries(&p, session.as_deref(), &feats, &selection, &roster, &career, field.1);
                     let mut b = r.check(&selection.track, &entries);
-                    if selection.mode == Mode::Freestyle
-                        && let Some(limit) = TIME_LIMITS.iter().position(|&l| l == selection.time_limit)
-                    {
+                    if let Some(limit) = limit {
                         b.extend(r.check_medals(limit, &entries));
                     }
                     if !b.is_empty() {
                         r.save();
+                    }
+                    // Leaving the results, each player who broke one names
+                    // it on the record page.
+                    let name = |n: usize| entries.iter().find(|e| e.player == n).map_or(String::new(), |e| e.name.clone());
+                    let stadium = session.as_deref().is_some_and(|s| s.freestyle);
+                    if let Some(pages) = RecordPages::new(&selection.track, limit, selection.players > 1, stadium, &b, name) {
+                        commands.insert_resource(pages);
                     }
                     b
                 }
@@ -840,7 +854,9 @@ fn race_menus(
         }
         return;
     };
-    let Some(nav) = nav else { return };
+    // The record pages are done: the results menu's item picked goes ahead.
+    let resumed = pages.as_mut().and_then(|p| p.resume());
+    let Some(nav) = resumed.as_ref().map(|_| Nav::Accept).or(nav) else { return };
     let close = |commands: &mut Commands, virt: &mut Time<Virtual>| {
         commands.entity(e).despawn();
         virt.unpause();
@@ -882,7 +898,9 @@ fn race_menus(
     match nav {
         Nav::Up | Nav::Down => list.step(nav),
         Nav::Start | Nav::Back if !menu.results => close(&mut commands, &mut virt),
-        Nav::Accept => match list.current() {
+        Nav::Accept => match resumed.as_deref().unwrap_or(list.current()) {
+            // Leaving the results: the record pages first (0x7fe40).
+            item if menu.results && pages.as_mut().is_some_and(|p| p.hold(item)) => {}
             item @ ("AUDIO" | "CAMERA" | "CONTROLLER") => {
                 let page = [PausePage::Audio, PausePage::Camera, PausePage::Controller].into_iter().find(|p| p.item() == item).unwrap_or(PausePage::Audio);
                 commands.entity(e).despawn();

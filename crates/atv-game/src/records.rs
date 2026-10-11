@@ -10,7 +10,8 @@
 //! the results page 0x3ef60): the best lap, except on the stadiums, and the
 //! longest jump, biggest air, best wheelie and best bicycle of the race.
 //! A record broken takes the player's profile name, or in split screen the
-//! player's own (0x88820). Challenges and training aren't checked (0x8006e).
+//! player's own (0x88820), until the name typed on the record page
+//! (`record_page.rs`). Challenges and training aren't checked (0x8006e).
 //!
 //! A jump is measured as the original's stunt manager measures it (0x61a00,
 //! 0x62b20): it takes off when no wheel touches, from where the quad is
@@ -302,6 +303,19 @@ impl TrackRecords {
         }
         broken.sort_by_key(|b| b.kind.index());
         broken
+    }
+
+    /// Puts the name typed on the record page on a record just broken
+    /// (0x4e160 writes it into each of the player's): one of `track`'s, or
+    /// a medal record of the time limit `limit`.
+    pub fn rename(&mut self, track: &str, limit: Option<usize>, broken: &Broken, name: &str) {
+        let record = match Kind::MEDALS.iter().position(|&k| k == broken.kind) {
+            Some(slot) => limit.and_then(|l| self.medals.get_mut(&l)).map(|t| &mut t[slot]),
+            None => self.set.get_mut(&(track.to_ascii_lowercase(), broken.kind)),
+        };
+        if let Some(r) = record {
+            r.name = name.to_string();
+        }
     }
 
     /// `<track> <kind> = <value> <rider> <quad> <name>` for each record
@@ -634,6 +648,22 @@ mod tests {
         back.parse(&text);
         assert_eq!(back.medals(0), r.medals(0));
         assert!(back.medals(1).is_none());
+    }
+
+    #[test]
+    fn records_broken_take_the_name_typed() {
+        let mut r = records();
+        let broken = r.check("Dunes1", &[entry(1, Some(81.25), 33.5)]);
+        for b in &broken {
+            r.rename("dunes1", None, b, "ACE");
+        }
+        assert_eq!(r.get("Dunes1", Kind::Lap).unwrap().name, "ACE");
+        assert_eq!(r.get("Dunes1", Kind::LongestJump).unwrap().name, "ACE");
+        let broken = r.check_medals(0, &[scored(1, 350), scored(2, 250)]);
+        r.rename("stadium2", Some(0), &broken[1], "SECOND");
+        assert_eq!(board(&r)[0].1, "P1");
+        assert_eq!(board(&r)[1].1, "Dana Creech");
+        assert_eq!(board(&r)[2].1, "SECOND");
     }
 
     #[test]
