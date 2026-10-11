@@ -480,9 +480,23 @@ left alone.
 - Options pages (`Frontend.xml` `Options*` screens): Audio has Music and
   Sound Effects volume as 16-segment bars (`FrontEnd/SoundBar`: `BAR_ON`
   over `BAR_OFF`); Camera picks one of the three follow cameras; Control
-  Config shows `FrontEnd/BigPad_Xbox` (top and front views of the Duke pad;
-  `BigPad_Overlay_Xbox` holds the leader lines for its labels) and a
-  Vibration tick box (`FrontEnd/checkbox`: `OFF`, `ON`). Replays,
+  Config (0x49d20) has a row per controller port, a row every 0.3 of the
+  screen down from y 0.3: "Controller n" (string 131) at (-0.2, y+0.25),
+  a Vibration toggle (`ID_CTRL_BUTTON`, string 550, 0.85 x 0.115 at
+  (-0.3, y+0.1)), `FrontEnd/TrickPad_XBox` `JUSTPAD` at (0.35, y) 0.32 x
+  0.3 and its layout, "Layout n" (string 255), at (0.5, y+0.15). A
+  toggles vibration and left/right step the layout through three
+  (0x4a1f0); the race's copy (0x4a560) leaves the layout out. Each
+  player's `Shocks` and `BtnLayout` are saved under `Player%d` (0x12c80).
+  The layouts are a 3 x 21 table at 0x1d2128 (0x87d90 reads it): each
+  entry is 0x80000000 + a button mask (0x10 A, 0x20 B, 0x08 X, 0x04 Y,
+  0x40 Black, 0x1000 White, 0x400 LT, 0x800 RT, 0x80/0x2000/0x4000/0x8000
+  d-pad up/down/left/right, 0x01 Back, 0x02 Start, 0x100/0x200 stick
+  clicks; 0xd13f0) and/or 0x40000000 + a stick direction in bits 16-23
+  (0xd1700). Layout 1 drives on A/X, 2 on the right stick, 3 on RT/LT
+  with Y to hop; actions 11-15 are the trick buttons (0x52a40). The
+  trick pad's `BUTTON4`-`BUTTON7` are Y, B, A, X, `BUTTON8`/`9` the
+  left/right shoulders and `BUTTON0`-`3` the d-pad. Replays,
   Language and Credits pages exist too; the disc has no credits text.
   Profiles opens Available Profiles (see Profiles below). The Options menu
   (0x492d0) lists Audio, Controller, Camera, Replays (greyed), Profiles

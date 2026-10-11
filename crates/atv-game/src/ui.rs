@@ -281,7 +281,6 @@ pub struct UiAssets {
     pub small_medals: Sheet,
     /// Profile Select's numbers 1 to 10, eight to a row of 64-texel tiles.
     pub profile_numbers: UiTex,
-    pub big_pad: UiTex,
     pub logo: UiTex,
     pub mugs: UiTex,
     pub loading: UiTex,
@@ -363,7 +362,6 @@ impl UiAssets {
             name_entry: l.sheet("FrontEnd/nameentrypanel")?,
             small_medals: l.sheet("FrontEnd/SmallMedals")?,
             profile_numbers: l.tex("FrontEnd/ProfileNumbers")?,
-            big_pad: l.tex("FrontEnd/BigPad_Xbox")?,
             logo: l.tex("FrontEnd/ATVLogoBIG")?,
             mugs: l.tex("FrontEnd/RiderMugs")?,
             loading: l.tex("FrontEnd/FELoading1")?,

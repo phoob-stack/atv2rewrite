@@ -12,18 +12,20 @@
 
 use std::sync::Arc;
 
-use bevy::input::gamepad::{Gamepad, GamepadButton};
+use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
 
 use atv_formats::setup;
 use atv_formats::GameSource;
 use atv_sim::Vehicle;
 
+use crate::controller::{self, Action};
 use crate::boost::Boost;
 use crate::crash::{Cause, Way, Wreck};
 use crate::opponents::Opponents;
 use crate::race::RaceProgress;
 use crate::rider::{Clip, ONE_SHOT_FPS};
+use crate::settings::Settings;
 use crate::{Args, Player, Race};
 
 /// Where a kick lands: this far out to the side and ahead of the quad,
@@ -146,16 +148,11 @@ pub fn strike_point(v: &Vehicle, right: bool) -> Vec3 {
     v.position + v.right() * if right { SIDE } else { -SIDE } + v.forward() * AHEAD
 }
 
-/// The attack button: LB on the pad, E on the keyboard, or for player 2
-/// in split screen the number pad's 6. On the ground only: LB is a trick
-/// button in the air.
-pub fn read_attack(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, slot: Option<usize>) -> bool {
-    let key = match slot {
-        None | Some(0) => keys.pressed(KeyCode::KeyE),
-        Some(1) => keys.pressed(KeyCode::Numpad6),
-        Some(_) => false,
-    };
-    key || pads.iter().enumerate().any(|(n, pad)| slot.is_none_or(|s| s == n) && pad.pressed(GamepadButton::LeftTrigger))
+/// The attack button: LB on the pad or E, or for player 2 in split
+/// screen the number pad's 6, unless remapped. On the ground only: LB is
+/// a trick button in the air.
+pub fn read_attack(controls: &controller::Reader, slot: Option<usize>) -> bool {
+    controls.pressed(slot, Action::Kick, false)
 }
 
 /// What one rider is doing this step, for the kicking.
@@ -173,8 +170,7 @@ struct Seat {
 pub fn kicks(
     time: Res<Time>,
     args: Res<Args>,
-    keys: Res<ButtonInput<KeyCode>>,
-    pads: Query<&Gamepad>,
+    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, Query<&Gamepad>, Res<Settings>),
     (rules, clips): (Option<Res<FightRules>>, Option<Res<FightClips>>),
     (race, progress): (Option<Res<Race>>, Option<Res<RaceProgress>>),
     (player, fighter, boost, wreck): (Option<Res<Player>>, Option<ResMut<Fighter>>, Option<ResMut<Boost>>, Option<ResMut<Wreck>>),
@@ -186,6 +182,7 @@ pub fn kicks(
         return;
     };
     let dt = time.delta_secs();
+    let controls = controller::Reader::new(&keys, &pads, &settings.pads);
     let mut opp = opponents;
     let split = race.players > 1;
     let racers = opp.as_mut().map_or(&mut [][..], |o| &mut o.racers[..]);
@@ -225,7 +222,7 @@ pub fn kicks(
         let side = nearest.map(|(_, d)| d.dot(s.right));
         let want = match s.human {
             Some(slot) => {
-                let held = read_attack(&keys, &pads, slot);
+                let held = read_attack(&controls, slot);
                 let pressed = held && !f.held;
                 f.held = held;
                 pressed.then(|| side.is_none_or(|d| d > 0.0))

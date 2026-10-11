@@ -59,6 +59,15 @@ cargo run --release -p atv-tool -- race --track Dunes1 --riders 4 --laps 2   # A
 | Pause | Escape | Start |
 | Tricks (in the air) | 1 / 2 / 3 / 4 + direction | X / Y / LB / RB + left stick or D-pad |
 
+These are layout 1, the default. Options > Controller is the original's
+Control Configuration page: each of the four controllers has its own
+vibration switch and one of the original's three layouts (2 drives on the
+right stick, 3 on the triggers with Y to hop), or Custom. Y on a
+controller's row opens its actions, where any of them can take two pad
+inputs and two keys, and Reset To Default puts layout 1 back. Split-screen
+players each use their own controller's setup; player 2's keys are the
+arrows and the number pad. The settings live in `options.cfg`.
+
 The pause menu is the original's: Audio, Camera and Controller (the Options
 pages, changed mid-race; the music and ambience follow at once), Return to
 Race, Restart and Quit Race.

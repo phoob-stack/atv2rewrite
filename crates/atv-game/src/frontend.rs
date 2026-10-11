@@ -3,7 +3,8 @@
 //! and title each screen uses comes from the disc's `Setup/Frontend.xml`.
 //! Arcade skips track select (it races `Setup/Arcade.xml`'s rounds);
 //! Open Freestyle picks a time limit on it instead of laps. Options holds
-//! the Audio, Camera and Controller pages (see [`crate::settings`]).
+//! the Audio, Camera and Controller pages (see [`crate::settings`] and
+//! [`crate::controller`]).
 //! Career picks a championship, then rider and ATV, and comes back to the
 //! championship's status page between rounds (see [`crate::career`]); the
 //! Custom championship picks its tracks, laps and points split first.
@@ -32,9 +33,10 @@ use crate::arcade::{self, ArcadeField};
 use crate::freestyle::{self, limit_label, TrickDef, MEDALS, TIME_LIMITS};
 use crate::career::{self, Career, Champ, CustomSetup, Plan, Profile, Run, PROFILES};
 use crate::challenge;
+use crate::controller::{self, Action, Input, PadInput, PORTS};
 use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
-use crate::ui::{fullscreen, placed, read_nav_from, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
+use crate::ui::{fullscreen, placed, read_nav_from, set_text, spawn_menu_rows, two_tone, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::mp::MpChamp;
 use crate::name_entry::{self, NameEntry};
 use crate::records::{self, TrackRecords};
@@ -224,6 +226,8 @@ pub enum Screen {
     Audio,
     Camera,
     Controller,
+    /// One controller's actions, to rebind (the Custom layout).
+    Remap,
     CareerChamp,
     CareerStatus,
     CareerComplete,
@@ -312,6 +316,22 @@ pub struct FrontEnd {
     cheats: u32,
     /// A message box over the screen (title, text) until it's closed.
     popup: Option<(String, String)>,
+    /// The Controller page's row (the controller port), and the remap
+    /// page's cursor.
+    pad_row: usize,
+    remap: Remap,
+}
+
+/// The remap page's cursor: an action's row (one past the actions is
+/// Reset To Default) and its column (two pad inputs, then two keys), and
+/// whether it waits for the new input.
+#[derive(Default)]
+struct Remap {
+    row: usize,
+    col: usize,
+    waiting: bool,
+    /// Sticks held while waiting, so only a new push counts.
+    held: Vec<PadInput>,
 }
 
 impl FrontEnd {
@@ -363,8 +383,6 @@ struct RecordMug(usize);
 /// The lit part of a volume bar: 0 music, 1 sound effects.
 #[derive(Component)]
 struct VolumeBar(usize);
-#[derive(Component)]
-struct VibrationBox;
 
 const MUG: f32 = 50.0;
 /// The track select's three record panels (0x519d0, 0x51920), right of
@@ -494,6 +512,23 @@ fn navigate(
     }
     if typed {
         fe.built = None;
+        return;
+    }
+    // The remap page waiting for a button or key takes the next one.
+    if fe.screen == Screen::Remap && fe.remap.waiting && fe.built == Some(fe.screen) {
+        let port = fe.pad_row;
+        let cancel = keys.just_pressed(KeyCode::Escape) || pads.iter().any(|p| p.just_pressed(bevy::input::gamepad::GamepadButton::Start));
+        let got = controller::captured(&keys, &pads, &mut fe.remap.held);
+        let pad_col = fe.remap.col < 2;
+        let fits = got.filter(|i| matches!(i, Input::Pad(_)) == pad_col);
+        if cancel || fits.is_some() {
+            if let (Some(input), Some(&action)) = (fits.filter(|_| !cancel), Action::ALL.get(fe.remap.row)) {
+                settings.pads[port].rebind(port, action, fe.remap.col, Some(input));
+                settings.save();
+            }
+            fe.remap.waiting = false;
+            fe.built = None;
+        }
         return;
     }
     // In split screen each player picks their rider and ATV with their own pad.
@@ -755,14 +790,64 @@ fn navigate(
             }
             _ => {}
         },
-        Screen::Controller => match nav {
-            Nav::Accept | Nav::Left | Nav::Right => settings.vibration = !settings.vibration,
-            Nav::Start | Nav::Back => {
-                settings.save();
-                fe.screen = Screen::Options;
+        // As the original's page (0x4a1f0): A toggles the controller's
+        // vibration and left and right step its layout; Y opens its
+        // actions to rebind.
+        Screen::Controller => {
+            let row = fe.pad_row;
+            match nav {
+                Nav::Up => fe.pad_row = (row + PORTS - 1) % PORTS,
+                Nav::Down => fe.pad_row = (row + 1) % PORTS,
+                Nav::Accept => settings.pads[row].vibration = !settings.pads[row].vibration,
+                Nav::Left | Nav::Right => settings.pads[row].step_layout(nav == Nav::Right),
+                Nav::Extra => {
+                    fe.remap = Remap::default();
+                    fe.screen = Screen::Remap;
+                }
+                Nav::Start | Nav::Back => {
+                    settings.save();
+                    fe.screen = Screen::Options;
+                    return;
+                }
             }
-            _ => {}
-        },
+            if matches!(nav, Nav::Accept | Nav::Left | Nav::Right) {
+                settings.save();
+            }
+            fe.built = None;
+        }
+        Screen::Remap => {
+            let port = fe.pad_row;
+            let rows = Action::ALL.len() + 1;
+            let r = &mut fe.remap;
+            match nav {
+                Nav::Up => r.row = (r.row + rows - 1) % rows,
+                Nav::Down => r.row = (r.row + 1) % rows,
+                Nav::Left => r.col = (r.col + 3) % 4,
+                Nav::Right => r.col = (r.col + 1) % 4,
+                Nav::Accept => match Action::ALL.get(r.row) {
+                    Some(_) => {
+                        r.waiting = true;
+                        // Sticks already pushed don't count.
+                        controller::captured(&keys, &pads, &mut r.held);
+                    }
+                    None => {
+                        settings.pads[port].reset(port);
+                        settings.save();
+                    }
+                },
+                Nav::Extra => {
+                    if let Some(&action) = Action::ALL.get(r.row) {
+                        settings.pads[port].rebind(port, action, r.col, None);
+                        settings.save();
+                    }
+                }
+                Nav::Start | Nav::Back => {
+                    fe.screen = Screen::Controller;
+                    return;
+                }
+            }
+            fe.built = None;
+        }
         Screen::CareerChamp => match nav {
             Nav::Up | Nav::Down => {
                 if let Some(l) = list.as_mut() {
@@ -1297,7 +1382,7 @@ fn rebuild(
         Screen::Options => ("Options", "OPTIONS"),
         Screen::Audio => ("Options_Sound", "OPTIONS"),
         Screen::Camera => ("Options_Camera", "OPTIONS"),
-        Screen::Controller => ("Options_Controller", "OPTIONS"),
+        Screen::Controller | Screen::Remap => ("Options_Controller", "OPTIONS"),
         Screen::CareerChamp => ("Career_Newgame", "CAREER"),
         Screen::CareerStatus => (career.run.as_ref().map_or("Career_Status_Amateur", |r| r.champ.status_screen()), "CAREER"),
         Screen::CareerComplete => ("Career_Complete", "CAREER"),
@@ -1548,12 +1633,12 @@ fn rebuild(
             kids.push(hint(&mut commands, &ui, "PRESS C OR BACK IN A RACE TO CHANGE CAMERA", 300.0));
         }
         Screen::Controller => {
-            let list = MenuList::new(&["VIBRATION"], 220.0).with_row(40.0);
-            kids.push(menu(&mut commands, &ui, list, 150.0, 80.0));
-            let (n, img) = ui.checkbox.node("ON", 0.5);
-            kids.push(commands.spawn((placed((n, img), 400.0, 84.0), VibrationBox)).id());
-            kids.push(controls_table(&mut commands, &ui));
+            for port in 0..PORTS {
+                kids.push(controller_row(&mut commands, &ui, &settings, port, fe.pad_row == port));
+            }
+            kids.push(hint(&mut commands, &ui, "LEFT AND RIGHT CHANGE THE LAYOUT", 404.0));
         }
+        Screen::Remap => kids.extend(remap_page(&mut commands, &ui, &settings, fe.pad_row, &fe.remap)),
         Screen::CareerChamp => {
             let items = champ_items(&career);
             let names: Vec<&str> = items.iter().map(|(n, _)| n.as_str()).collect();
@@ -1663,11 +1748,12 @@ fn rebuild(
                 let (x, y) = (360.0, 76.0);
                 kids.extend(trickbook::heading(&mut commands, def, locked, (x, y)));
                 kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, "ACTIVATION").color(plain), ui_at(x, y + 76.0))).id());
-                for (i, (dev, names)) in [("PAD", &trickbook::PAD_NAMES), ("KEYS", &trickbook::KEY_NAMES)].into_iter().enumerate() {
+                let (pad_names, key_names) = controller::trick_names(&settings.pads[0]);
+                for (i, (dev, names)) in [("PAD", &pad_names), ("KEYS", &key_names)].into_iter().enumerate() {
                     let t = format!("{dev}  {}", trickbook::activation(def, names));
                     kids.push(commands.spawn((BitmapText::new(FontId::Small, 8.0, t), ui_at(x, y + 92.0 + 15.0 * i as f32))).id());
                 }
-                kids.push(trickbook::pad_picture(&mut commands, &ui, def, locked, (x - 6.0, y + 122.0), 0.9));
+                kids.push(trickbook::pad_picture(&mut commands, &ui, def, controller::trick_pad(&settings.pads[0]), locked, (x - 6.0, y + 122.0), 0.9));
                 // The page count under the rider, between arrows.
                 let count = format!("{} OF {}", fe.trick + 1, roster.book.len());
                 let w = ui.font(FontId::Small).width(&count, 9.0);
@@ -1826,7 +1912,10 @@ fn rebuild(
         Screen::Main => &[("controlbuttoncross", "SELECT")],
         Screen::Audio | Screen::Camera => &[("controlbuttoncross", "OK")],
         Screen::CareerChamp => &[("controlbuttoncross", "SELECT"), ("controlbuttoncircle", "BACK")],
-        Screen::Controller => &[("controlbuttoncross", "CHANGE"), ("controlbuttoncircle", "BACK")],
+        Screen::Controller => &[("controlbuttoncross", "TOGGLE"), ("YButton", "EDIT LAYOUT"), ("controlbuttoncircle", "BACK")],
+        Screen::Remap if fe.remap.waiting => &[],
+        Screen::Remap if fe.remap.row == Action::ALL.len() => &[("controlbuttoncross", "RESET"), ("controlbuttoncircle", "BACK")],
+        Screen::Remap => &[("controlbuttoncross", "CHANGE"), ("YButton", "CLEAR"), ("controlbuttoncircle", "BACK")],
         Screen::CareerStatus => &[("controlbuttoncross", "RACE"), ("YButton", "TRICK BOOK"), ("controlbuttoncircle", "BACK")],
         Screen::Rider | Screen::Track => &[("controlbuttoncross", "SELECT"), ("YButton", "TRICK BOOK"), ("controlbuttoncircle", "BACK")],
         Screen::TrickBook => &[("controlbuttoncircle", "BACK")],
@@ -2049,46 +2138,160 @@ fn hint(commands: &mut Commands, ui: &UiAssets, text: &str, top: f32) -> Entity 
     commands.spawn((BitmapText::new(FontId::Small, 8.0, text).color(Color::srgb(0.75, 0.82, 0.95)), ui_at((SCREEN_W - w) / 2.0, top))).id()
 }
 
-/// The controls, pad and keyboard, beside the front of the big pad.
-/// The controls, as the Controller pages list them: action, pad, keys.
-pub(crate) const CONTROLS: [(&str, &str, &str); 12] = [
-    ("ACCELERATE", "RT OR A", "W OR UP"),
-    ("BRAKE AND REVERSE", "LT OR X", "S OR DOWN"),
-    ("STEER", "LEFT STICK", "A D OR LEFT RIGHT"),
-    ("LEAN", "LEFT STICK", "I K"),
-    ("PRE-LOAD AND HOP", "B OR RB", "SPACE"),
-    ("SPEED BOOST", "Y", "SHIFT"),
-    ("KICK", "LB", "E"),
-    ("TRICKS IN THE AIR", "X Y LB RB", "1 2 3 4"),
-    ("CHANGE CAMERA", "BACK", "C"),
-    ("PAUSE", "START", "ESCAPE"),
-    ("BACK ON TRACK", "", "R"),
-    ("RESTART", "", "BACKSPACE"),
-];
+/// Text colours of the Controller pages: headings, the cursor, the rest.
+const GOLD: Color = Color::srgb(1.0, 0.85, 0.3);
+const PALE: Color = Color::srgb(0.75, 0.82, 0.95);
 
-fn controls_table(commands: &mut Commands, ui: &UiAssets) -> Entity {
-    let grey = Color::srgb(0.75, 0.82, 0.95);
+/// One controller's row on the Controller page, where the original's
+/// 0x49d20 puts it (a row every 0.3 of the screen's height down from 0.3):
+/// "CONTROLLER n" over its vibration toggle, and its pad with the layout's
+/// name on it.
+fn controller_row(commands: &mut Commands, ui: &UiAssets, settings: &Settings, port: usize, on: bool) -> Entity {
+    // The original's screen space: x and y from -1 to 1, y up.
+    let y0 = 0.3 - 0.3 * port as f32;
+    let sx = |x: f32| (x + 1.0) * SCREEN_W / 2.0;
+    let sy = |y: f32| (1.0 - y) * SCREEN_H / 2.0;
+    let setup = &settings.pads[port];
     commands
-        .spawn(Node { position_type: PositionType::Absolute, left: px(24), top: px(140), column_gap: px(14), align_items: AlignItems::Center, ..default() })
-        .with_children(|t| {
-            // The front of the pad is the bottom of the page.
-            let front = Rect::new(20.0, 280.0, 340.0, 512.0);
-            let scale = ui.big_pad.size.x / 512.0;
-            t.spawn(ui.big_pad.region(Rect::from_corners(front.min * scale, front.max * scale), 0.62 / scale));
-            t.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(9), ..default() }).with_children(|c| {
-                for (i, (action, pad, keys)) in [("", "PAD", "KEYBOARD")].into_iter().chain(CONTROLS).enumerate() {
-                    c.spawn(Node { column_gap: px(8), ..default() }).with_children(|r| {
-                        for (text, width, color) in [(action, 128.0, Color::WHITE), (pad, 88.0, grey), (keys, 116.0, grey)] {
-                            let color = if i == 0 { Color::srgb(1.0, 0.85, 0.3) } else { color };
-                            r.spawn(Node { width: px(width), ..default() }).with_children(|cell| {
-                                cell.spawn(BitmapText::new(FontId::Small, 7.0, text).color(color));
-                            });
-                        }
-                    });
+        .spawn(Node { position_type: PositionType::Absolute, left: px(0), top: px(0), width: px(SCREEN_W), height: px(SCREEN_H), ..default() })
+        .with_children(|r| {
+            // The label: big text at scale 0.5 (x1.385 for the big font),
+            // centred on x = -0.2.
+            let label = format!("CONTROLLER {}", port + 1);
+            let size = 24.84 * 0.5 * 1.385;
+            let w = ui.font(FontId::Inside).width(&label, size);
+            let colour = if on { Color::WHITE } else { Color::srgb(0.7, 0.7, 0.7) };
+            r.spawn(ui_at(sx(-0.2) - w / 2.0, sy(y0 + 0.25) - size / 2.0)).with_child(two_tone(size, label, colour, Color::srgb(0.25, 0.37, 0.37)));
+            // The vibration toggle: a 0.85 by 0.115 button centred on
+            // (-0.3, y0 + 0.1), lit while the row is picked, and its tick.
+            let (bw, bh) = (0.85 * SCREEN_W / 2.0, 0.115 * SCREEN_H / 2.0 * 1.25);
+            let (left, top) = (sx(-0.3) - bw / 2.0, sy(y0 + 0.1) - bh / 2.0);
+            r.spawn(Node { width: px(bw), height: px(bh), justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..ui_at(left, top) })
+                .with_children(|b| {
+                    if on {
+                        let (mut bar, img) = ui.design.node("MENU_SELECT", 1.0);
+                        bar.position_type = PositionType::Absolute;
+                        bar.width = percent(100);
+                        bar.height = percent(100);
+                        b.spawn((bar, img));
+                    }
+                    b.spawn(BitmapText::new(FontId::Menu, 12.0, "VIBRATION").color(if on { Color::WHITE } else { Color::srgb(0.72, 0.78, 0.9) }));
+                });
+            let (n, img) = ui.checkbox.node(if setup.vibration { "ON" } else { "OFF" }, 0.4);
+            r.spawn(placed((n, img), left + bw + 10.0, top - 4.0));
+            // The pad: the trick pad page's JUSTPAD at (0.35, y0), 0.32 by
+            // 0.3, and the layout on it at (0.5, y0 + 0.15).
+            let pad = ui.trick_pad.get("JUSTPAD").rect;
+            let ph = 0.3 * SCREEN_H / 2.0;
+            let scale = ph / pad.height();
+            let (mut n, mut img) = ui.trick_pad.node("JUSTPAD", scale);
+            if !on {
+                img.color = Color::srgb(0.6, 0.6, 0.6);
+            }
+            n.position_type = PositionType::Absolute;
+            n.left = px(sx(0.35));
+            n.top = px(sy(y0) - ph);
+            r.spawn((n, img));
+            let layout = setup.layout_label();
+            let size = 11.0;
+            let w = ui.font(FontId::Inside).width(&layout, size);
+            let mut arrows = ui_at(sx(0.5) - w / 2.0 - 16.0, sy(y0 + 0.15) - size / 2.0);
+            arrows.align_items = AlignItems::Center;
+            arrows.column_gap = px(6);
+            r.spawn(arrows).with_children(|a| {
+                let (n, mut img) = ui.design.node("DARKLRARROW", 0.45);
+                img.flip_x = true;
+                if on {
+                    a.spawn((n, img));
+                } else {
+                    a.spawn((n, img, Visibility::Hidden));
+                }
+                // Outlined in black, to read on the pad.
+                a.spawn(two_tone(size, layout, if on { GOLD } else { PALE }, Color::BLACK));
+                let (n, img) = ui.design.node("DARKLRARROW", 0.45);
+                if on {
+                    a.spawn((n, img));
+                } else {
+                    a.spawn((n, img, Visibility::Hidden));
                 }
             });
         })
         .id()
+}
+
+/// Column widths of the remap page: action, two pad inputs, two keys.
+const REMAP_COLS: [f32; 5] = [146.0, 98.0, 98.0, 88.0, 88.0];
+const REMAP_ROW: f32 = 15.5;
+
+/// The remap page: a controller's actions with their pad buttons and
+/// keys, the cursor's cell lit, then Reset To Default.
+fn remap_page(commands: &mut Commands, ui: &UiAssets, settings: &Settings, port: usize, cur: &Remap) -> Vec<Entity> {
+    let setup = &settings.pads[port];
+    let bindings = setup.bindings(port);
+    let mut kids = Vec::new();
+    let head = format!("CONTROLLER {}  -  {}", port + 1, setup.layout_label());
+    kids.push(commands.spawn((BitmapText::new(FontId::Menu, 14.0, head), ui_at(40.0, 78.0))).id());
+    let table = commands
+        .spawn(Node { position_type: PositionType::Absolute, left: px(36), top: px(104), flex_direction: FlexDirection::Column, ..default() })
+        .with_children(|t| {
+            let heads = ["", "PAD", "", "KEYBOARD", ""];
+            t.spawn(Node { height: px(REMAP_ROW), ..default() }).with_children(|r| {
+                for (text, w) in heads.iter().zip(REMAP_COLS) {
+                    r.spawn(Node { width: px(w), padding: UiRect::left(px(4)), ..default() }).with_child(BitmapText::new(FontId::Small, 7.0, *text).color(GOLD));
+                }
+            });
+            for (i, (action, b)) in Action::ALL.iter().zip(bindings).enumerate() {
+                let cells = [
+                    b.pad[0].map_or("-", controller::pad_name),
+                    b.pad[1].map_or("-", controller::pad_name),
+                    b.keys[0].map_or("-", controller::key_name),
+                    b.keys[1].map_or("-", controller::key_name),
+                ];
+                t.spawn(Node { height: px(REMAP_ROW), align_items: AlignItems::Center, ..default() }).with_children(|r| {
+                    let row_on = cur.row == i;
+                    r.spawn(Node { width: px(REMAP_COLS[0]), padding: UiRect::left(px(4)), ..default() })
+                        .with_child(BitmapText::new(FontId::Small, 7.0, action.label()).color(if row_on { Color::WHITE } else { PALE }));
+                    for (c, text) in cells.into_iter().enumerate() {
+                        let on = row_on && cur.col == c;
+                        let mut cell = r.spawn(Node {
+                            width: px(REMAP_COLS[c + 1] - 4.0),
+                            height: px(REMAP_ROW - 2.0),
+                            margin: UiRect::right(px(4)),
+                            padding: UiRect::left(px(4)),
+                            align_items: AlignItems::Center,
+                            ..default()
+                        });
+                        if on {
+                            cell.insert(BackgroundColor(Color::srgba(0.3, 0.45, 0.6, 0.6)));
+                        }
+                        cell.with_children(|c| {
+                            if on && cur.waiting {
+                                c.spawn((BitmapText::new(FontId::Small, 7.0, "PRESS..."), Blink));
+                            } else {
+                                c.spawn(BitmapText::new(FontId::Small, 7.0, text).color(if on { GOLD } else if text == "-" { Color::srgba(0.75, 0.82, 0.95, 0.4) } else { PALE }));
+                            }
+                        });
+                    }
+                });
+            }
+        })
+        .id();
+    kids.push(table);
+    // Reset To Default, as a menu item under the table.
+    let e = menu(commands, ui, MenuList::new(&["RESET TO DEFAULT"], 260.0).with_row(30.0), (SCREEN_W - 260.0) / 2.0, 372.0);
+    if cur.row != Action::ALL.len() {
+        // Not picked: no bar behind it.
+        commands.entity(e).remove::<MenuList>();
+    }
+    kids.push(e);
+    let text = match Action::ALL.get(cur.row) {
+        Some(a) if cur.waiting && cur.col < 2 => format!("PRESS A PAD BUTTON FOR {}  -  START CANCELS", a.label()),
+        Some(a) if cur.waiting => format!("PRESS A KEY FOR {}  -  ESCAPE CANCELS", a.label()),
+        _ if setup.layout == controller::CUSTOM => "CHANGES ARE SAVED TO THE CUSTOM LAYOUT".to_string(),
+        _ => "CHANGING AN ACTION MAKES THIS THE CUSTOM LAYOUT".to_string(),
+    };
+    kids.push(hint(commands, ui, &text, 408.0));
+    kids
 }
 
 fn update_options(
@@ -2096,22 +2299,14 @@ fn update_options(
     settings: Res<Settings>,
     ui: Option<Res<UiAssets>>,
     mut bars: Query<(&VolumeBar, &mut Node)>,
-    mut boxes: Query<&mut ImageNode, With<VibrationBox>>,
 ) {
-    let Some(ui) = ui else { return };
-    if !matches!(fe.screen, Screen::Audio | Screen::Controller) {
+    if ui.is_none() || fe.screen != Screen::Audio {
         return;
     }
     for (b, mut n) in &mut bars {
         let w = px(lit_width(if b.0 == 0 { settings.music } else { settings.effects }));
         if n.width != w {
             n.width = w;
-        }
-    }
-    for mut img in &mut boxes {
-        let rect = ui.checkbox.tex.image_rect(ui.checkbox.get(if settings.vibration { "ON" } else { "OFF" }).rect);
-        if img.rect != Some(rect) {
-            img.rect = Some(rect);
         }
     }
 }

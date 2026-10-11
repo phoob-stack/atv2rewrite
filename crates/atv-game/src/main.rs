@@ -23,6 +23,7 @@ mod audio;
 mod boost;
 mod career;
 mod challenge;
+mod controller;
 mod convert;
 mod crash;
 mod demo;
@@ -56,7 +57,7 @@ mod unlocks;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton, GamepadRumbleIntensity, GamepadRumbleRequest};
+use bevy::input::gamepad::{Gamepad, GamepadRumbleIntensity, GamepadRumbleRequest};
 use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
@@ -73,6 +74,7 @@ use atv_sim::ai::RacingLine;
 use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 
+use controller::Action;
 use convert::{SkyDome, WheelVisual};
 use crash::{Cause, CrashClips, Wreck};
 use freestyle::{Session, StuntClips};
@@ -830,75 +832,32 @@ fn baked_level(world: &atv_formats::row::World, at: Vec3) -> f32 {
     if n == 0.0 { 1.0 } else { (sum / n).clamp(0.35, 1.2) }
 }
 
-/// Keys for each player in split screen: throttle, brake, left, right,
-/// lean back, lean forward, hop.
-const PLAYER_KEYS: [[KeyCode; 7]; 2] = [
-    [KeyCode::KeyW, KeyCode::KeyS, KeyCode::KeyA, KeyCode::KeyD, KeyCode::KeyR, KeyCode::KeyF, KeyCode::Space],
-    [KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::ArrowLeft, KeyCode::ArrowRight, KeyCode::Numpad8, KeyCode::Numpad5, KeyCode::ShiftRight],
-];
-
-/// `airborne`: the pad's X and RB are trick buttons in the air, so they
-/// don't brake or pre-load there. `slot`: in split screen, the player
-/// (0-based), who has their own keys (players 1 and 2) and their own pad
-/// (the slot-th one); alone, every key and pad drives.
-fn read_input(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, airborne: bool, slot: Option<usize>) -> Input {
-    let key = |k: KeyCode| -> f32 { if keys.pressed(k) { 1.0 } else { 0.0 } };
-    let mut i = match slot {
-        None => Input {
-            throttle: key(KeyCode::ArrowUp).max(key(KeyCode::KeyW)),
-            brake: key(KeyCode::ArrowDown).max(key(KeyCode::KeyS)),
-            steer: key(KeyCode::ArrowRight).max(key(KeyCode::KeyD)) - key(KeyCode::ArrowLeft).max(key(KeyCode::KeyA)),
-            lean: key(KeyCode::KeyI) - key(KeyCode::KeyK),
-            jump: keys.pressed(KeyCode::Space),
-        },
-        Some(n) => match PLAYER_KEYS.get(n) {
-            Some(k) => Input {
-                throttle: key(k[0]),
-                brake: key(k[1]),
-                steer: key(k[3]) - key(k[2]),
-                lean: key(k[4]) - key(k[5]),
-                jump: keys.pressed(k[6]),
-            },
-            None => Input::default(),
-        },
-    };
-    for (_, pad) in pads.iter().enumerate().filter(|(n, _)| slot.is_none_or(|s| s == *n)) {
-        let stick_x = pad.get(GamepadAxis::LeftStickX).unwrap_or(0.0);
-        let stick_y = pad.get(GamepadAxis::LeftStickY).unwrap_or(0.0);
-        let dead = |v: f32| if v.abs() < 0.15 { 0.0 } else { v };
-        i.steer = (i.steer + dead(stick_x)).clamp(-1.0, 1.0);
-        i.lean = (i.lean + dead(stick_y)).clamp(-1.0, 1.0);
-        i.throttle = i.throttle.max(pad.get(GamepadButton::RightTrigger2).unwrap_or(0.0));
-        i.throttle = i.throttle.max(if pad.pressed(GamepadButton::South) { 1.0 } else { 0.0 });
-        i.brake = i.brake.max(pad.get(GamepadButton::LeftTrigger2).unwrap_or(0.0));
-        if !airborne {
-            i.brake = i.brake.max(if pad.pressed(GamepadButton::West) { 1.0 } else { 0.0 });
-            i.jump |= pad.pressed(GamepadButton::RightTrigger);
-        }
-        i.jump |= pad.pressed(GamepadButton::East);
+/// The driving controls (see [`controller::Reader`]). `airborne`: the
+/// trick buttons don't brake or pre-load there. `slot`: in split screen,
+/// the player (0-based), with their own keys and pad; alone, every pad and
+/// player 1's keys drive.
+fn read_input(controls: &controller::Reader, airborne: bool, slot: Option<usize>) -> Input {
+    let level = |a: Action| controls.level(slot, a, airborne);
+    Input {
+        throttle: level(Action::Accelerate),
+        brake: level(Action::Brake),
+        steer: (level(Action::SteerRight) - level(Action::SteerLeft)).clamp(-1.0, 1.0),
+        lean: (level(Action::LeanForward) - level(Action::LeanBack)).clamp(-1.0, 1.0),
+        jump: controls.pressed(slot, Action::Hop, airborne),
     }
-    i
 }
 
 /// The speed boost button: Y on the pad (on the ground; it's a trick
-/// button in the air), Shift on the keyboard, or for player 2 in split
-/// screen the number pad's 0.
-pub(crate) fn read_boost(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, airborne: bool, slot: Option<usize>) -> bool {
-    let key = match slot {
-        None => keys.any_pressed([KeyCode::ShiftLeft, KeyCode::ShiftRight]),
-        Some(0) => keys.pressed(KeyCode::ShiftLeft),
-        Some(1) => keys.pressed(KeyCode::Numpad0),
-        Some(_) => false,
-    };
-    key || (!airborne && pads.iter().enumerate().any(|(n, pad)| slot.is_none_or(|s| s == n) && pad.pressed(GamepadButton::North)))
+/// button in the air) or Shift, unless remapped.
+pub(crate) fn read_boost(controls: &controller::Reader, airborne: bool, slot: Option<usize>) -> bool {
+    controls.pressed(slot, Action::Boost, airborne)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn drive(
     time: Res<Time>,
     args: Res<Args>,
-    keys: Res<ButtonInput<KeyCode>>,
-    pads: Query<&Gamepad>,
+    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, Query<&Gamepad>, Res<Settings>),
     race: Option<ResMut<Race>>,
     player: Option<ResMut<Player>>,
     progress: Option<ResMut<RaceProgress>>,
@@ -912,6 +871,8 @@ fn drive(
     water: Option<Res<water::Water>>,
 ) {
     let (Some(mut race), Some(mut player), Some(mut progress), Some(mut session)) = (race, player, progress, session) else { return };
+    let ctl = controller::Reader::new(&keys, &pads, &settings.pads);
+    let slot = (race.players > 1).then_some(0);
     let dt = time.delta_secs();
     let v = &mut player.0;
     progress.tick(dt);
@@ -942,8 +903,8 @@ fn drive(
         held = progress.finished.is_none() && boost.as_ref().is_some_and(|b| b.on || b.meter >= 1.0);
         trk::steer_towards(v, race.checkpoints[next])
     } else {
-        held = read_boost(&keys, &pads, !v.grounded(), (race.players > 1).then_some(0));
-        read_input(&keys, &pads, !v.grounded(), (race.players > 1).then_some(0))
+        held = read_boost(&ctl, !v.grounded(), slot);
+        read_input(&ctl, !v.grounded(), slot)
     };
     if held {
         input.throttle = 1.0;
@@ -1005,7 +966,7 @@ fn drive(
     if let Some(c) = controls.as_mut() {
         c.0 = input;
     }
-    let (mut buttons, mut dir) = freestyle::read_tricks(&keys, &pads, (race.players > 1).then_some(0));
+    let (mut buttons, mut dir) = freestyle::read_tricks(&ctl, slot);
     if args.autodrive && session.active.is_none() && !v.grounded() {
         // The autopilot shows off a different trick every so often.
         let k = (session.time * 0.7) as usize;
@@ -1040,7 +1001,7 @@ fn drive(
     race.upside_down = if v.up().y < 0.2 { race.upside_down + dt } else { 0.0 };
     let fell = v.position.y < race.safe.0.y - 40.0;
     let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
-    if keys.just_pressed(KeyCode::KeyR) || (!crashed && race.upside_down > 2.5) || fell {
+    if ctl.just_pressed(slot, Action::Respot) || (!crashed && race.upside_down > 2.5) || fell {
         ask_respot(&mut race);
     } else if let Some((p, r)) = opponents.as_mut().filter(|_| demo.is_some() && !crashed).and_then(|o| o.respot_player()) {
         // The demo's computer rider gives up where the others would.
@@ -1054,7 +1015,7 @@ fn drive(
         }
         put_back(&mut race, v, opponents.as_deref());
     }
-    if keys.just_pressed(KeyCode::Backspace) && demo.is_none() {
+    if ctl.just_pressed(None, Action::Restart) && demo.is_none() {
         // The quick restart: as Restart on the pause menu, so the computer
         // riders, the score and the clocks start over too.
         restart.set(AppState::Loading);
@@ -1252,22 +1213,22 @@ fn follow_quad(time: &Time, race: &Race, follow: &FollowCam, v: &Vehicle, t: &mu
     t.rotation = cam.facing;
 }
 
-/// C or the pad's Back button steps through the follow cameras; the pick
-/// is kept, as if made in Options.
+/// C or the pad's Back button (unless remapped) steps through the follow
+/// cameras; the pick is kept, as if made in Options.
 fn cycle_camera(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, virt: Res<Time<Virtual>>, mut settings: ResMut<Settings>) {
     if virt.is_paused() {
         return;
     }
-    if keys.just_pressed(KeyCode::KeyC) || pads.iter().any(|p| p.just_pressed(GamepadButton::Select)) {
+    if controller::Reader::new(&keys, &pads, &settings.pads).just_pressed(None, Action::Camera) {
         settings.camera = settings.camera.next();
         settings.save();
     }
 }
 
-/// Vibration (when it's on in Options): a hard knock when the rider is
-/// thrown off and a thump on landing from a big jump. In split screen each
-/// player's own pad shakes (the pad order `read_input` uses); otherwise
-/// every pad does, since any of them drives.
+/// Vibration (on each controller that has it on in Options): a hard knock
+/// when the rider is thrown off and a thump on landing from a big jump. In
+/// split screen each player's own pad shakes (the pad order `read_input`
+/// uses); otherwise every pad does, since any of them drives.
 #[allow(clippy::too_many_arguments)]
 fn rumble(
     settings: Res<Settings>,
@@ -1290,9 +1251,6 @@ fn rumble(
         }
     }
     let before = std::mem::replace(&mut *last, now);
-    if !settings.vibration {
-        return;
-    }
     for (slot, (&(crashed, air), &(was_crashed, was_air))) in now.iter().zip(&before).enumerate() {
         let (strength, secs) = if crashed && !was_crashed {
             (1.0, 0.45)
@@ -1301,7 +1259,8 @@ fn rumble(
         } else {
             continue;
         };
-        for (_, gamepad) in pads.iter().enumerate().filter(|(n, _)| sel.players <= 1 || *n == slot) {
+        let on = |n: usize| settings.pads.get(n).is_none_or(|p| p.vibration);
+        for (_, gamepad) in pads.iter().enumerate().filter(|(n, _)| (sel.players <= 1 || *n == slot) && on(*n)) {
             requests.write(GamepadRumbleRequest::Add {
                 gamepad,
                 duration: std::time::Duration::from_secs_f32(secs),
