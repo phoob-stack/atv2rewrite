@@ -19,6 +19,15 @@ impl Entry {
     pub fn num(&self, key: &str) -> Option<f32> {
         self.get(key)?.trim().parse().ok()
     }
+
+    /// A `Tracks.xml` entry's computer riders' best (`worst` false) or
+    /// worst lap time. The prototype gives `mAIBestLapTime`/`mAIWorstLapTime`;
+    /// retail gives `<AI><Pro BestLapTime WorstLapTime/><Amateur .../></AI>`,
+    /// and the Pro times, first in the file, are the ones [`entries`] keeps.
+    pub fn ai_lap_time(&self, worst: bool) -> Option<f32> {
+        let (old, new) = if worst { ("mAIWorstLapTime", "WorstLapTime") } else { ("mAIBestLapTime", "BestLapTime") };
+        self.num(old).or_else(|| self.num(new))
+    }
 }
 
 /// Every top-level entry, in file order.
@@ -162,5 +171,22 @@ mod tests {
         assert_eq!((c[0].name.as_str(), c[0].get("Professional")), ("Doug_Gust", Some("1")));
         assert_eq!(c[1].get("Open"), None);
         assert!(super::children(xml, "Other").is_empty());
+    }
+
+    #[test]
+    fn ai_lap_times_both_layouts() {
+        let xml = r#"<Root>
+   <Dunes1 mAIBestLapTime="94" mAIWorstLapTime="99"/>
+   <Dunes2 mLength="1789">
+      <Fastest_Lap Record="90.63"/>
+      <AI>
+         <Pro BestLapTime="70" WorstLapTime="76"/>
+         <Amateur BestLapTime="82" WorstLapTime="88"/>
+      </AI>
+   </Dunes2>
+</Root>"#;
+        let e = super::entries(xml);
+        assert_eq!((e[0].ai_lap_time(false), e[0].ai_lap_time(true)), (Some(94.0), Some(99.0)));
+        assert_eq!((e[1].ai_lap_time(false), e[1].ai_lap_time(true)), (Some(70.0), Some(76.0)));
     }
 }

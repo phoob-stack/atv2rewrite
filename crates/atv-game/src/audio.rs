@@ -185,8 +185,13 @@ fn bank(game: &GameSource, name: &str) -> Vec<Arc<Pcm>> {
 }
 
 /// A music section (`MUSIC\DUNES1` -> `/Music/Dunes1.wav` on the disc).
+/// The retail Sound.xml names `<AREA>2`/`<AREA>3` sections its disc doesn't
+/// ship (only the long `<AREA>1` track); like the original, play what's there.
 fn music(game: &GameSource, name: &str) -> Option<Arc<Pcm>> {
     let path = format!("/{}.wav", name.replace('\\', "/"));
+    if !game.exists(&path) {
+        return None;
+    }
     match game.read(&path).map_err(|e| e.to_string()).and_then(|b| wav::decode(&b).map_err(|e| e.to_string())) {
         Ok(p) => Some(Arc::new(p)),
         Err(e) => {

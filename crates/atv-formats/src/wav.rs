@@ -87,7 +87,7 @@ impl Ima {
     }
 }
 
-fn xbox_adpcm(data: &[u8], channels: usize, block_align: usize) -> Result<Vec<i16>> {
+pub(crate) fn xbox_adpcm(data: &[u8], channels: usize, block_align: usize) -> Result<Vec<i16>> {
     if block_align != 36 * channels {
         return Err(Error::Format(format!("Xbox ADPCM block of {block_align} bytes for {channels} channels")));
     }
