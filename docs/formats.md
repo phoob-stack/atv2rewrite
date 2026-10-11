@@ -856,6 +856,14 @@ limit's three with the medal, "%d Points" (0x178) and the holder's name
 `freestyle <minutes or unlimited> <gold|silver|bronze> = ...` lines once a
 limit's have changed.
 
+The freestyle HUD (0x9fe50, update 0x9ff60, draw 0xa0b40) shows "Time"
+(string 0xe2) only in a challenge or with a time limit (time index not 6),
+and "Score" (0xe1) in game types 4 and 8. The score on it rolls up: each
+1/30 s, while it is under the session's score, it gains a random amount
+(0xaac50) below 5% of the gap, or below 3 when that is more, and is held
+at the real score. The rewrite takes the same steps per 1/30 s of time
+(the original takes at most one a frame).
+
 ## Time Trial's ghost
 
 Only Time Trial (game type 1) makes the ghost object (0x9dd60, 0x110 bytes,
