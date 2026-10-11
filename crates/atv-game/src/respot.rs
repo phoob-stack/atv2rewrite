@@ -23,6 +23,10 @@
 //! with another racer within 10 m of the spot, racer i of n goes i/n of the
 //! way across the corridor from its left edge, so player 1, the first,
 //! goes to the left edge.
+//!
+//! A respot isn't sudden (0x25f20, 0x267f0): the racer fades out over half
+//! a second, is put back, then blinks back in over three seconds, and
+//! asking for another respot meanwhile does nothing.
 
 use bevy::prelude::*;
 
@@ -52,6 +56,74 @@ const DEAD_END: i32 = -2;
 /// With another racer this near the respot point, metres, the quad goes to
 /// the edge of the corridor (0x1c3160, squared).
 const CROWDED: f32 = 10.0;
+/// Seconds fading out before the respot (0x25f20), and blinking after it
+/// (a sixth of the time to half, 0x1b7940 and 0x1cd214).
+const FADE_OUT: f32 = 0.5;
+const BLINK: f32 = 3.0;
+/// The blink: `(sin(34π × t/6 + 3π/2) + 1) / 2` (0x1b793c, 0x1b7938), so
+/// from clear to solid nine times, the last as it ends.
+const BLINK_RATE: f32 = 34.0 * std::f32::consts::PI / 6.0;
+
+/// Where a respot is up to (the racer's state at +0x2c).
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub enum Fade {
+    #[default]
+    None,
+    /// Fading out, seconds left.
+    Out(f32),
+    /// Blinking, seconds since the racer was put back.
+    Blink(f32),
+}
+
+impl Fade {
+    /// Asks for a respot; false when one is already under way.
+    pub fn ask(&mut self) -> bool {
+        let idle = *self == Fade::None;
+        if idle {
+            *self = Fade::Out(FADE_OUT);
+        }
+        idle
+    }
+
+    /// Moves it on; true when the racer must be put back now.
+    pub fn step(&mut self, dt: f32) -> bool {
+        match *self {
+            Fade::None => false,
+            Fade::Out(left) if left > dt => {
+                *self = Fade::Out(left - dt);
+                false
+            }
+            Fade::Out(_) => {
+                *self = Fade::Blink(0.0);
+                true
+            }
+            Fade::Blink(t) => {
+                *self = if t + dt < BLINK { Fade::Blink(t + dt) } else { Fade::None };
+                false
+            }
+        }
+    }
+
+    /// How solid the racer is drawn.
+    pub fn alpha(&self) -> f32 {
+        match *self {
+            Fade::None => 1.0,
+            Fade::Out(left) => left / FADE_OUT,
+            Fade::Blink(t) => 0.5 - 0.5 * (t * BLINK_RATE).cos(),
+        }
+    }
+}
+
+/// Shows player 1's quad and rider while the respot has them at least half
+/// solid. The original draws them see-through (it sets the model's colour,
+/// 0x267f0), but the rewrite's textures keep gloss in their alpha, so here
+/// they blink out instead.
+pub fn show_fade(race: Option<Res<crate::Race>>, mut quads: Query<&mut Visibility, With<crate::QuadBody>>) {
+    let shown = race.is_none_or(|r| r.fade.alpha() >= 0.5);
+    for mut vis in &mut quads {
+        vis.set_if_neq(if shown { Visibility::Inherited } else { Visibility::Hidden });
+    }
+}
 
 /// A `Respot` box.
 #[derive(Debug, Clone, Copy)]
@@ -441,6 +513,29 @@ mod tests {
         let (p, rot) = m.respot(&ground(), &[at(87.0, 3.0)]);
         let left = rot * Vec3::NEG_X;
         assert!((p - to_sim([79.0, 0.6, 0.0]) - left * 6.0).length() < 0.01, "{p}");
+    }
+
+    #[test]
+    fn respots_fade_out_and_blink_back() {
+        let mut f = Fade::default();
+        assert!(f.ask());
+        assert!(!f.ask());
+        let dt = 1.0 / 64.0;
+        let steps = (0..100).position(|_| f.step(dt)).unwrap();
+        assert_eq!(steps, 31);
+        // Clear as it's put back, then solid nine times.
+        assert!(f.alpha() < 0.01);
+        assert!(!f.ask());
+        let mut solid = 0;
+        let mut last = 0.0;
+        while f != Fade::None {
+            f.step(dt);
+            let a = f.alpha();
+            solid += (a > 0.9 && last <= 0.9) as u32;
+            last = a;
+        }
+        assert_eq!(solid, 9);
+        assert!(f.ask());
     }
 
     #[test]

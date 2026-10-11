@@ -218,6 +218,8 @@ struct Race {
     respots: u32,
     /// The original's automatic respots and warnings (races only).
     marshal: Option<respot::Marshal>,
+    /// Where a respot of player 1 is up to.
+    fade: respot::Fade,
 }
 
 #[derive(Resource)]
@@ -487,7 +489,7 @@ fn main() -> anyhow::Result<()> {
         .add_systems(FixedUpdate, (drive, career::dnf_cutoff, challenge::follow_course).chain().run_if(in_state(AppState::Race)))
         .add_systems(
             Update,
-            (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, cycle_camera, chase_camera, fly_camera, follow_sky, rumble)
+            (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, respot::show_fade, cycle_camera, chase_camera, fly_camera, follow_sky, rumble)
                 .chain()
                 .run_if(in_state(AppState::Race)),
         )
@@ -761,6 +763,7 @@ fn setup(
         upside_down: 0.0,
         respots: 0,
         marshal,
+        fade: respot::Fade::None,
     });
     commands.insert_resource(Player(vehicle));
     commands.init_resource::<Controls>();
@@ -948,8 +951,7 @@ fn drive(
         v.in_water = wet;
         if crashed {
             if w.advance_in(crash_clips.as_deref(), &race.collision, water.as_deref(), wet, dt) {
-                w.fall = None;
-                put_back(&mut race, v, opponents.as_deref());
+                ask_respot(&mut race);
             }
         } else if progress.started() {
             let crash = if wet { Some((Cause::Water, crash::way_over(v, None))) } else { w.check(v, before, &race.collision, dt) };
@@ -984,7 +986,7 @@ fn drive(
     let next = race.next_checkpoint % gates.max(1);
     let racing = progress.racing();
     if race.marshal.as_mut().is_some_and(|m| racing && !crashed && m.watch(v.position, v.forward(), next, gates, dt)) {
-        put_back(&mut race, v, opponents.as_deref());
+        ask_respot(&mut race);
     }
     if let Some(m) = race.marshal.as_ref() {
         if racing {
@@ -1004,20 +1006,31 @@ fn drive(
     let fell = v.position.y < race.safe.0.y - 40.0;
     let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
     if keys.just_pressed(KeyCode::KeyR) || (!crashed && race.upside_down > 2.5) || fell {
-        if let Some(w) = wreck.as_mut() {
-            w.fall = None;
-        }
-        put_back(&mut race, v, opponents.as_deref());
+        ask_respot(&mut race);
     } else if let Some((p, r)) = opponents.as_mut().filter(|_| demo.is_some() && !crashed).and_then(|o| o.respot_player()) {
         // The demo's computer rider gives up where the others would.
         let ground = race.collision.raycast(p + Vec3::Y * 3.0, Vec3::NEG_Y, 20.0).map_or(p.y, |h| h.point.y);
         v.reset(p.with_y(ground + 0.6), r);
         race.upside_down = 0.0;
     }
+    if race.fade.step(dt) {
+        if let Some(w) = wreck.as_mut() {
+            w.fall = None;
+        }
+        put_back(&mut race, v, opponents.as_deref());
+    }
     if keys.just_pressed(KeyCode::Backspace) && demo.is_none() {
         // The quick restart: as Restart on the pause menu, so the computer
         // riders, the score and the clocks start over too.
         restart.set(AppState::Loading);
+    }
+}
+
+/// Asks for player 1 to be put back once faded out, unless that's already
+/// under way; the original counts the respot as it's asked for (0x25f20).
+fn ask_respot(race: &mut Race) {
+    if race.fade.ask() {
+        race.respots += 1;
     }
 }
 
@@ -1035,7 +1048,6 @@ fn put_back(race: &mut Race, v: &mut Vehicle, opponents: Option<&opponents::Oppo
         v.reset(p + Vec3::Y * 0.5, r);
     }
     race.upside_down = 0.0;
-    race.respots += 1;
 }
 
 fn sync_quad(
