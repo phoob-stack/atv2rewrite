@@ -254,11 +254,12 @@ pub enum Screen {
     ProfileName,
 }
 
-/// The Options menu's rows, and the page each opens.
+/// The Options menu's rows, in the original's order (0x492d0), and the
+/// page each opens. Replays and Credits are greyed there too.
 const OPTIONS: [(&str, Option<Screen>); 6] = [
     ("AUDIO", Some(Screen::Audio)),
-    ("CAMERA", Some(Screen::Camera)),
     ("CONTROLLER", Some(Screen::Controller)),
+    ("CAMERA", Some(Screen::Camera)),
     ("REPLAYS", None),
     ("PROFILES", Some(Screen::ProfileSelect)),
     ("CREDITS", None),
