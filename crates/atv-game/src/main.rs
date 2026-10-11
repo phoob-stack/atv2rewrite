@@ -798,7 +798,7 @@ fn setup(
     commands.init_resource::<Controls>();
     if let Some(c) = course {
         if let Some(arrow) = loader.spawn_loose(&mut commands, "arrow", "Generic") {
-            commands.entity(arrow).insert((challenge::GuideArrow, scoped.clone()));
+            commands.entity(arrow).insert((challenge::GuideArrow, hud::HudRoot, scoped.clone()));
         }
         commands.insert_resource(c);
     }

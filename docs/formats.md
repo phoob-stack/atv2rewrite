@@ -558,7 +558,20 @@ left alone.
   `ALLTRACKS` 0x8, `ALLTRICKS` 0x10 (skill points to the maximum),
   `ALLCHAMPS` 0x20 (Qualifying, Professional and Custom open), `ALLCHALS`
   0x40 (all twelve challenges open) and `NOHUD` 0x80. Each shows the
-  `ID_CHEAT_PAGE` box ("Cheat" and its own string, 0x6f-0x75).
+  `ID_CHEAT_PAGE` box ("Cheat" and its own string, 0x6e-0x75). Names
+  entered on Name Your Rider build up on the page (0x18e50, OR) and the
+  profile made there takes them as its `mCheat` (0x19000, 0x9b7c0);
+  loading a profile applies its own again (0x9b980), so nothing clears
+  NOHUD short of a new profile.
+- NOHUD: each view's HUD manager (0xa4990, made by 0x82930) keeps
+  `mCheat & 0x80` at +0xdc and its draw (0xa5140) then draws none of its
+  children: `Speedo` (0xa3320), the `Arrow` (0x9e580, one player, not
+  tracks 15 and 16), the mode panel (race 0x9f840, Time Trial 0x9fa60,
+  freestyle 0x9fe50), the place panel (0xa1230), `TrickMessage`
+  (0xa4100), `ScreenMessage` (0xa2580), `Countdown` (0x9f430, the 3-2-1
+  sprites) and `ArcadeTimer` (0x9e2d0). The race menus are other pages
+  and still show. The attract demo's page (0x3c980) keeps the same flag
+  at +0xb0 and its draw (0x3ce40) then shows nothing either.
 - Profiles (ten slots, 0x16340; the frontend state machines at 0x9b430
   on): `Profile_Select` (`ID_PROFILE_SELECTION_PAGE`, page 0x2b) shows
   `FrontEnd/ProfileNumbers` (1-10, eight 64-texel tiles a row) as a picture

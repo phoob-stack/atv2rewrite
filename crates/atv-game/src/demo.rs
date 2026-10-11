@@ -143,7 +143,7 @@ fn pick(roster: &Roster, sel: &Selection, seed: &mut u32) -> Option<(Selection, 
 /// over every view.
 fn spawn_page(mut commands: Commands, ui: Option<Res<UiAssets>>, sel: Res<Selection>, overlay: Query<Entity, With<Overlay>>) {
     let Some(ui) = ui else { return };
-    let mut page = commands.spawn((fullscreen(), DespawnOnExit(AppState::Race), Pickable::IGNORE, ShowInIntro));
+    let mut page = commands.spawn((fullscreen(), crate::hud::HudRoot, DespawnOnExit(AppState::Race), Pickable::IGNORE, ShowInIntro));
     if let Ok(cam) = overlay.single() {
         page.insert(UiTargetCamera(cam));
     }
