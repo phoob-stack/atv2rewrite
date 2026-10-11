@@ -11,7 +11,8 @@
 //!
 //! Without `--track` the game opens on its front end; with it, it goes
 //! straight into a race (`--frontend` shows the menus anyway, preselected).
-//! `--mode` picks the mode (`--minutes` is Open Freestyle's limit, 0 for
+//! `--mode` picks the mode (by default a single race, or Open Freestyle on
+//! the Stadium, which has no laps; `--minutes` is Open Freestyle's limit, 0 for
 //! none; arcade races its rounds' tracks, `--round` starts on one; career
 //! with `--round` races the saved championship's next round; training is
 //! ATV Academy, always on Stadium 2).
@@ -109,6 +110,8 @@ struct Args {
     hd: Option<PathBuf>,
     use_hd: bool,
     mode: Mode,
+    /// Whether `--mode` (or `--challenge`) picked the mode.
+    mode_given: bool,
     /// Open Freestyle's limit in minutes (None = unlimited).
     minutes: Option<u32>,
     /// Arcade round to start on (0-based).
@@ -283,6 +286,7 @@ fn parse_args() -> anyhow::Result<Args> {
         hd: None,
         use_hd: true,
         mode: Mode::SingleRace,
+        mode_given: false,
         minutes: Some(3),
         round: 0,
         // The original's default field (`mNumAIPlayers` in user.xml).
@@ -329,6 +333,7 @@ fn parse_args() -> anyhow::Result<Args> {
                 });
             }
             "--mode" => {
+                a.mode_given = true;
                 a.mode = match val().to_ascii_lowercase().as_str() {
                     "race" | "single" => Mode::SingleRace,
                     "timetrial" | "time" => Mode::TimeTrial,
@@ -348,6 +353,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--challenge" => {
                 a.challenge = val().parse::<usize>()?.clamp(1, challenge::COUNT);
                 a.mode = Mode::Challenge;
+                a.mode_given = true;
                 a.direct = true;
             }
             "--players" => a.players = val().parse::<usize>()?.clamp(1, mp::MAX_PLAYERS),
@@ -392,10 +398,14 @@ fn parse_args() -> anyhow::Result<Args> {
 }
 
 fn main() -> anyhow::Result<()> {
-    let args = parse_args()?;
+    let mut args = parse_args()?;
     let game = Game(Arc::new(GameSource::open(&args.game)?));
     hd::init(args.hd.clone(), args.use_hd);
     let roster = Roster::load(&game.0);
+    if args.direct && !args.mode_given && !roster.info(&args.track).circuit {
+        // As the launcher starts the Stadium: no laps to race round.
+        args.mode = Mode::Freestyle;
+    }
     let career_rules = career::Rules::load(&game.0);
     let challenges = challenge::Defs::load(&game.0);
     let mut selection = Selection {
@@ -1198,12 +1208,11 @@ fn follow_quad(time: &Time, race: &Race, follow: &FollowCam, v: &Vehicle, t: &mu
     if dist > 0.01 {
         let dir = to_cam / dist;
         if let Some(hit) = race.collision.raycast(pivot, dir, dist + 0.4) {
-            eye = pivot + dir * (hit.t - 0.4).max(0.3);
+            // Never past the hit, even right by the rider.
+            eye = pivot + dir * (hit.t - 0.4).max(hit.t * 0.5);
         }
     }
-    if let Some(ground) = race.collision.raycast(eye + Vec3::Y, Vec3::NEG_Y, 1.5) {
-        eye.y = eye.y.max(ground.point.y + 0.5);
-    }
+    lift_off_ground(&race.collision, pivot, &mut eye);
     t.translation = eye;
     let look = at(follow.look + Vec3::Y * LOOK_RAISE);
     if (look - eye).length_squared() > 1e-4 {
@@ -1211,6 +1220,18 @@ fn follow_quad(time: &Time, race: &Race, follow: &FollowCam, v: &Vehicle, t: &mu
         cam.facing = cam.facing.slerp(want, ease(follow.rot_stiffness[air])).normalize();
     }
     t.rotation = cam.facing;
+}
+
+/// Keeps the camera half a metre over the ground under it, unless that
+/// would take it out of the rider's sight: over the top of a roof the
+/// rider is under (Stadium 1's low start tunnels).
+fn lift_off_ground(collision: &TrackCollision, pivot: Vec3, eye: &mut Vec3) {
+    let Some(ground) = collision.raycast(*eye + Vec3::Y, Vec3::NEG_Y, 1.5) else { return };
+    let lifted = eye.with_y(eye.y.max(ground.point.y + 0.5));
+    let to = lifted - pivot;
+    if lifted != *eye && collision.raycast(pivot, to.normalize_or_zero(), to.length()).is_none() {
+        *eye = lifted;
+    }
 }
 
 /// C or the pad's Back button (unless remapped) steps through the follow
@@ -1328,5 +1349,33 @@ fn auto_screenshot(
             exit.write(AppExit::Success);
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A flat square at `y`, 20 m across.
+    fn slab(y: f32) -> [[Vec3; 3]; 2] {
+        let c = |x: f32, z: f32| Vec3::new(x, y, z);
+        [[c(-10.0, -10.0), c(10.0, -10.0), c(10.0, 10.0)], [c(-10.0, -10.0), c(10.0, 10.0), c(-10.0, 10.0)]]
+    }
+
+    #[test]
+    fn camera_stays_under_a_low_roof() {
+        // A floor and a roof 3 m up, 0.4 m thick: the camera, pulled in
+        // just under the roof, mustn't hop onto its top.
+        let tris = [slab(0.0), slab(3.0), slab(3.4)].concat();
+        let c = TrackCollision::new(tris, 4.0);
+        let pivot = Vec3::new(0.0, 1.2, 0.0);
+        let mut eye = Vec3::new(0.0, 2.9, 3.0);
+        lift_off_ground(&c, pivot, &mut eye);
+        assert_eq!(eye, Vec3::new(0.0, 2.9, 3.0));
+        // In the open it still keeps clear of the ground.
+        let c = TrackCollision::new(slab(0.0).to_vec(), 4.0);
+        let mut eye = Vec3::new(0.0, 0.1, 3.0);
+        lift_off_ground(&c, pivot, &mut eye);
+        assert_eq!(eye, Vec3::new(0.0, 0.5, 3.0));
     }
 }
