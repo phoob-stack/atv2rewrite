@@ -128,8 +128,10 @@ Race, Restart and Quit Race.
 - **Multiplayer**: split-screen Single Race for two to four players (two
   split left and right on a widescreen window, as the original in
   widescreen, or top and bottom on a 4:3 one; three or four take a quarter
-  each), with computer
-  riders making the field up to four. Each player picks a rider (one
+  each), with computer riders making the field up to four. Every player's
+  view has the full race HUD with their own figures (gauge, place, laps,
+  lap meter, countdown and banners), shrunk to fit a half-height or
+  quarter view. Each player picks a rider (one
   another player has is greyed out) and an ATV in turn. Player 1 drives
   with WASD (lean R/F, preload Space, boost left Shift, kick E) or the first pad, player 2 with the
   arrow keys (lean Numpad 8/5, preload right Shift, boost Numpad 0, kick Numpad 6) or the second pad, and

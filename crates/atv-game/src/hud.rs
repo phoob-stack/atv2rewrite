@@ -7,14 +7,24 @@
 //! original's Audio, Camera and Controller pages. Freestyle's score
 //! readouts are in `freestyle`.
 //!
+//! In split screen every player's view has the HUD, with their own quad's
+//! figures, as the original gives each view its own HUD manager (0x82930,
+//! one per view). A view less than 480 units tall (a top or bottom half,
+//! or a quarter) shows it shrunk to fit, as if 480 units tall.
+//!
 //! A profile with the NOHUD cheat races with none of it, as the original's
 //! HUD manager draws nothing then (0xa4990 keeps `mCheat & 0x80`, 0xa5140
 //! skips its gauge, panels, arrow, countdown and messages): every
 //! [`HudRoot`] is hidden. The menus stay, and the attract demo's page goes
 //! too (0x3c980, 0x3ce40).
 
+use bevy::app::{HierarchyPropagatePlugin, Propagate};
+use bevy::ecs::system::SystemParam;
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
+use bevy::window::PrimaryWindow;
+
+use atv_sim::Vehicle;
 
 use crate::boost::Boost;
 use crate::career::{self, Award, Career, Run};
@@ -29,7 +39,7 @@ use crate::records::{self, Broken, Feats, TrackRecords};
 use crate::replay;
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::unlocks;
-use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets};
+use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H};
 use crate::{AppState, Mode, Player, Selection};
 
 pub struct HudPlugin;
@@ -42,13 +52,15 @@ impl Plugin for HudPlugin {
         // challenge's intro page is up.
         let no_intro = not(resource_exists::<crate::intro::Intro>);
         let no_briefing = not(resource_exists::<crate::challenge::Briefing>);
-        app.add_systems(OnEnter(AppState::Race), spawn_hud.run_if(no_demo.clone()))
+        app.add_plugins(HierarchyPropagatePlugin::<HudOf>::new(PreUpdate))
+            .add_systems(OnEnter(AppState::Race), spawn_hud.after(crate::setup).run_if(no_demo.clone()))
             .add_systems(OnExit(AppState::Race), unpause)
             .add_systems(
                 Update,
                 (update_gauge, update_readouts, update_panel, update_meter, update_banners, race_menus.run_if(no_demo).run_if(no_intro).run_if(no_briefing))
                     .run_if(in_state(AppState::Race)),
             )
+            .add_systems(PostUpdate, fit_views.before(bevy::ui::UiSystems::Prepare).run_if(in_state(AppState::Race)))
             .add_systems(
                 PostUpdate,
                 hide_hud
@@ -73,6 +85,109 @@ fn hide_hud(mut huds: Query<&mut Visibility, With<HudRoot>>) {
     }
 }
 
+/// Whose figures a HUD element shows: the player of its split-screen view,
+/// 0-based (0 is player 1). Put on a HUD's root as `Propagate(HudOf(..))`,
+/// it reaches every element in it.
+#[derive(Component, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct HudOf(pub usize);
+
+/// A HUD drawn on one split-screen view, fitted to it by [`fit_views`].
+#[derive(Component)]
+pub struct ViewHud;
+
+/// Shrinks each view's HUD to fit a view less than 480 units tall: it's
+/// laid out on a screen 480 units tall and as wide as the view's shape
+/// makes it, then scaled down about the view's middle.
+fn fit_views(
+    window: Query<&Window, With<PrimaryWindow>>,
+    ui_scale: Res<UiScale>,
+    cams: Query<&Camera>,
+    mut huds: Query<(&UiTargetCamera, &mut Node, &mut UiTransform), With<ViewHud>>,
+) {
+    let Ok(window) = window.single() else { return };
+    let units = window.scale_factor() * ui_scale.0;
+    for (target, mut node, mut t) in &mut huds {
+        let Some(size) = cams.get(target.entity()).ok().and_then(|c| c.viewport.as_ref()).map(|v| v.physical_size.as_vec2() / units) else { continue };
+        let scale = (size.y / SCREEN_H).min(1.0);
+        let (w, h) = (size.x / scale, size.y / scale);
+        let (left, top) = ((size.x - w) / 2.0, (size.y - h) / 2.0);
+        if node.width != px(w) || node.height != px(h) || node.left != px(left) || node.top != px(top) {
+            node.width = px(w);
+            node.height = px(h);
+            node.left = px(left);
+            node.top = px(top);
+        }
+        if t.scale != Vec2::splat(scale) {
+            t.scale = Vec2::splat(scale);
+        }
+    }
+}
+
+/// One player's figures for their HUD.
+struct Figures<'a> {
+    vehicle: &'a Vehicle,
+    progress: &'a RaceProgress,
+    boost: Option<&'a Boost>,
+    session: Option<&'a Session>,
+    /// Players 2 to 4: their quad among the racers.
+    racer: Option<usize>,
+}
+
+/// Every player's figures: player 1's from the race's own resources, the
+/// other split-screen players' from their racers.
+#[derive(SystemParam)]
+struct Riders<'w> {
+    player: Option<Res<'w, Player>>,
+    progress: Option<Res<'w, RaceProgress>>,
+    boost: Option<Res<'w, Boost>>,
+    session: Option<Res<'w, Session>>,
+    opponents: Option<Res<'w, Opponents>>,
+    standings: Option<Res<'w, Standings>>,
+}
+
+impl Riders<'_> {
+    /// The figures of the player on view `slot`.
+    fn of(&self, slot: usize) -> Option<Figures<'_>> {
+        if slot == 0 {
+            return Some(Figures {
+                vehicle: &self.player.as_deref()?.0,
+                progress: self.progress.as_deref()?,
+                boost: self.boost.as_deref(),
+                session: self.session.as_deref(),
+                racer: None,
+            });
+        }
+        let opp = self.opponents.as_deref()?;
+        let i = opp.racers.iter().position(|r| r.human == Some(slot + 1))?;
+        let r = &opp.racers[i];
+        Some(Figures { vehicle: &r.vehicle, progress: &r.progress, boost: Some(&r.boost), session: r.session.as_ref(), racer: Some(i) })
+    }
+
+    /// Someone's place and how far round the lap they are (0..1), by
+    /// rider: 0 player 1, then each racer from 1.
+    fn on_meter(&self, rider: usize) -> Option<(usize, f32)> {
+        let s = self.standings.as_deref();
+        if rider == 0 {
+            let p = self.progress.as_deref()?;
+            let f = if p.finished.is_some() { 1.0 } else { p.lap_fraction.clamp(0.0, 1.0) };
+            return Some((s.filter(|s| s.racers > 1).map_or(1, |s| s.player), f));
+        }
+        s?.opponents.get(rider - 1).map(|&(place, f)| (place, f.clamp(0.0, 1.0)))
+    }
+
+    /// A player's place, 1-based.
+    fn place(&self, f: &Figures) -> usize {
+        self.on_meter(f.racer.map_or(0, |i| i + 1)).map_or(1, |m| m.0)
+    }
+
+    /// Everyone's trick score but this player's.
+    fn other_scores(&self, f: &Figures) -> Vec<u32> {
+        let p1 = f.racer.is_some().then(|| self.session.as_deref().map_or(0, |s| s.score));
+        let racers = self.opponents.iter().flat_map(|o| o.racers.iter().enumerate());
+        p1.into_iter().chain(racers.filter(|(i, _)| f.racer != Some(*i)).filter_map(|(_, r)| r.session.as_ref().map(|s| s.score))).collect()
+    }
+}
+
 /// The HUD panels' colours: labels and figures (0x1df8e8 and 0x1df850,
 /// 0x1df8e0 and 0x1df844; the original shades each down to a darker one,
 /// 0x1df8d0/0x1df834 and 0x1df8c8/0x1df840).
@@ -86,8 +201,11 @@ const GAUGE: f32 = 0.8;
 const NEEDLE_AT_1K: f32 = -134.0;
 const NEEDLE_PER_1K: f32 = 22.1;
 
-#[derive(Component)]
-struct NeedleHub;
+/// The needle's pivot, and the revs it shows (it lags the real ones).
+#[derive(Component, Default)]
+struct NeedleHub {
+    shown: f32,
+}
 #[derive(Component)]
 struct PreloadArc;
 /// The speed boost meter: the disc in the small dial, filling clockwise.
@@ -128,8 +246,9 @@ struct BonusText;
 struct MeterPin {
     top: f32,
     length: f32,
-    /// A computer rider's marker (index into the racers), or the player's.
-    opponent: Option<usize>,
+    /// Another rider's marker (0 player 1, then each racer from 1), or the
+    /// HUD's own player's.
+    rider: Option<usize>,
     scale: f32,
 }
 /// The number on a lap meter marker for places the sheet has no art for.
@@ -172,8 +291,26 @@ impl PausePage {
     }
 }
 
-fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Selection>, roster: Res<Roster>) {
+/// Puts the HUD on player 1's screen, or on each player's view in split
+/// screen.
+fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Selection>, roster: Res<Roster>, opponents: Option<Res<Opponents>>, cams: Query<(Entity, &mp::Split)>) {
     let Some(ui) = assets else { return };
+    let mut views: Vec<(usize, Option<Entity>)> = cams
+        .iter()
+        .filter(|(_, s)| s.0 == 0 || opponents.as_deref().is_some_and(|o| o.human(s.0 + 1).is_some()))
+        .map(|(cam, s)| (s.0, Some(cam)))
+        .collect();
+    views.sort_by_key(|v| v.0);
+    if views.is_empty() {
+        views.push((0, None));
+    }
+    for (slot, cam) in views {
+        spawn_view_hud(&mut commands, &ui, &sel, &roster, slot, cam);
+    }
+}
+
+/// One player's HUD, on their view's camera in split screen.
+fn spawn_view_hud(commands: &mut Commands, ui: &UiAssets, sel: &Selection, roster: &Roster, slot: usize, cam: Option<Entity>) {
     let racing = !matches!(sel.mode, Mode::Freestyle | Mode::Challenge | Mode::Training);
     let rounds = roster.arcade.len();
     let hud = &ui.hud;
@@ -183,14 +320,16 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
     let hub = local(dial.pivot.unwrap_or(dial.rect.center()));
     let needle = hud.get("NEEDLE");
     let needle_pivot = needle.pivot.unwrap_or(Vec2::new(needle.rect.center().x, needle.rect.max.y));
-    let slot = hud.get("DIAL_PRELOAD").rect;
+    let preload = hud.get("DIAL_PRELOAD").rect;
     let boost_slot = hud.get("DIAL_BOOST").rect;
     let dot = hud.get("WEIRD_DOT").rect;
     let dial_size = dial.rect.size() * GAUGE;
 
-    commands
-        .spawn((fullscreen(), HudRoot, DespawnOnExit(AppState::Race), Pickable::IGNORE))
-        .with_children(|root| {
+    let mut root = commands.spawn((fullscreen(), HudRoot, Propagate(HudOf(slot)), DespawnOnExit(AppState::Race), Pickable::IGNORE));
+    if let Some(cam) = cam {
+        root.insert((UiTargetCamera(cam), ViewHud, UiTransform::default()));
+    }
+    root.with_children(|root| {
             // Rev gauge, bottom right.
             root.spawn(Node {
                 position_type: PositionType::Absolute,
@@ -202,8 +341,8 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
             })
             .with_children(|g| {
                 g.spawn(placed(hud.node("DIAL", GAUGE), 0.0, 0.0));
-                let p = local(slot.min);
-                let (mut n, _) = hud.tex.region(slot, GAUGE);
+                let p = local(preload.min);
+                let (mut n, _) = hud.tex.region(preload, GAUGE);
                 n.position_type = PositionType::Absolute;
                 n.left = px(p.x);
                 n.top = px(p.y);
@@ -234,7 +373,7 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
                 g.spawn((
                     Node { position_type: PositionType::Absolute, left: px(hub.x), top: px(hub.y), ..default() },
                     UiTransform::from_rotation(Rot2::degrees(NEEDLE_AT_1K - NEEDLE_PER_1K)),
-                    NeedleHub,
+                    NeedleHub::default(),
                 ))
                 .with_children(|h| {
                     let off = (needle.rect.min - needle_pivot) * GAUGE;
@@ -250,7 +389,7 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
 
             if !racing {
                 // Freestyle has its own readouts and no laps.
-                spawn_messages(root, &ui);
+                spawn_messages(root, ui);
                 return;
             }
             // Top left: Time Trial's lap; a race's panel (0xa1930) with the
@@ -352,11 +491,11 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
                     c.spawn(placed(m.node("flag", ms * 1.2), 15.0 - f.x / 2.0, -f.y - 2.0));
                     // Each rider's marker shows their place; the computer
                     // riders' are smaller and under the player's.
-                    for (opponent, scale) in (0..7).map(|i| (Some(i), 0.16)).chain([(None, 0.24)]) {
+                    for (rider, scale) in (0..8).map(|i| (Some(i), 0.16)).chain([(None, 0.24)]) {
                         let p = ui.positions.get("P1").rect.size() * scale;
                         let (n, img) = ui.positions.node("P1", scale);
-                        let pin = MeterPin { top: -p.y / 2.0, length, opponent, scale };
-                        let vis = if opponent.is_some() { Visibility::Hidden } else { Visibility::Inherited };
+                        let pin = MeterPin { top: -p.y / 2.0, length, rider, scale };
+                        let vis = if rider.is_some() { Visibility::Hidden } else { Visibility::Inherited };
                         let mut n = placed((n, img), 15.0 - p.x / 2.0, length - p.y / 2.0);
                         n.0.border_radius = BorderRadius::MAX;
                         n.0.justify_content = JustifyContent::Center;
@@ -365,7 +504,7 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
                     }
                 });
 
-            spawn_messages(root, &ui);
+            spawn_messages(root, ui);
         });
 }
 
@@ -399,28 +538,28 @@ fn centred(x: f32, y: f32, w: f32) -> Node {
     Node { position_type: PositionType::Absolute, left: px(x - w / 2.0), top: px(y), width: px(w), justify_content: JustifyContent::Center, ..default() }
 }
 
-#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn update_gauge(
-    player: Option<Res<Player>>,
+    riders: Riders,
     ui: Option<Res<UiAssets>>,
-    boost: Option<Res<Boost>>,
-    mut needle: Query<&mut UiTransform, With<NeedleHub>>,
-    mut arc: Query<(&mut ImageNode, &mut Visibility), (With<PreloadArc>, Without<BoostDisc>)>,
-    mut disc: Query<(&mut ImageNode, &mut Visibility), With<BoostDisc>>,
-    (mut shown, mut pulse): (Local<f32>, Local<f32>),
+    mut needle: Query<(&mut UiTransform, &mut NeedleHub, &HudOf)>,
+    mut arc: Query<(&mut ImageNode, &mut Visibility, &HudOf), (With<PreloadArc>, Without<BoostDisc>)>,
+    mut disc: Query<(&mut ImageNode, &mut Visibility, &HudOf), With<BoostDisc>>,
+    mut pulse: Local<f32>,
     time: Res<Time>,
 ) {
-    let (Some(player), Some(ui)) = (player, ui) else { return };
-    let v = &player.0;
+    let Some(ui) = ui else { return };
     // A little needle lag, like a real gauge.
     let k = 1.0 - (-14.0 * time.delta_secs()).exp();
-    *shown += (v.revs.clamp(0.0, 8600.0) - *shown) * k;
-    if let Ok(mut t) = needle.single_mut() {
-        t.rotation = Rot2::degrees(NEEDLE_AT_1K + (*shown / 1000.0 - 1.0) * NEEDLE_PER_1K);
+    for (mut t, mut hub, hud) in &mut needle {
+        let Some(f) = riders.of(hud.0) else { continue };
+        hub.shown += (f.vehicle.revs.clamp(0.0, 8600.0) - hub.shown) * k;
+        t.rotation = Rot2::degrees(NEEDLE_AT_1K + (hub.shown / 1000.0 - 1.0) * NEEDLE_PER_1K);
     }
-    if let Ok((mut img, mut vis)) = arc.single_mut() {
+    for (mut img, mut vis, hud) in &mut arc {
+        let Some(f) = riders.of(hud.0) else { continue };
         let n = ui.preload_steps.len();
-        let step = (v.preload.clamp(0.0, 1.0) * n as f32).round() as usize;
+        let step = (f.vehicle.preload.clamp(0.0, 1.0) * n as f32).round() as usize;
         vis.set_if_neq(if step == 0 { Visibility::Hidden } else { Visibility::Inherited });
         if step > 0 && img.image != ui.preload_steps[step - 1] {
             img.image = ui.preload_steps[step - 1].clone();
@@ -432,7 +571,8 @@ fn update_gauge(
     if *pulse > std::f32::consts::PI {
         *pulse -= std::f32::consts::PI;
     }
-    if let (Ok((mut img, mut vis)), Some(b)) = (disc.single_mut(), boost) {
+    for (mut img, mut vis, hud) in &mut disc {
+        let Some(b) = riders.of(hud.0).and_then(|f| f.boost) else { continue };
         let n = ui.boost_steps.len();
         let step = (b.meter.clamp(0.0, 1.0) * n as f32).ceil() as usize;
         vis.set_if_neq(if step == 0 { Visibility::Hidden } else { Visibility::Inherited });
@@ -444,23 +584,22 @@ fn update_gauge(
 }
 
 fn update_readouts(
-    player: Option<Res<Player>>,
-    progress: Option<Res<RaceProgress>>,
+    riders: Riders,
     (records, sel): (Option<Res<TrackRecords>>, Res<Selection>),
-    mut q: Query<(&Readout, &mut BitmapText), Without<BonusText>>,
-    mut bonus: Query<&mut BitmapText, With<BonusText>>,
+    mut q: Query<(&Readout, &HudOf, &mut BitmapText), Without<BonusText>>,
+    mut bonus: Query<(&mut BitmapText, &HudOf), With<BonusText>>,
 ) {
-    let (Some(player), Some(p)) = (player, progress) else { return };
-    if let (Ok(mut t), Some(a)) = (bonus.single_mut(), p.arcade.as_ref()) {
-        let s = match a.last_bonus {
+    for (mut t, hud) in &mut bonus {
+        let Some(p) = riders.of(hud.0).map(|f| f.progress) else { continue };
+        let s = match p.arcade.as_ref().and_then(|a| a.last_bonus) {
             Some((at, secs)) if p.clock - at < 2.0 => format!("+{}", fmt_time(secs)),
             _ => String::new(),
         };
         set_text(&mut t, &s);
     }
-    let v = &player.0;
-    let laps = if sel.mode == Mode::TimeTrial { p.recent_laps() } else { Vec::new() };
-    for (r, mut t) in &mut q {
+    for (r, hud, mut t) in &mut q {
+        let Some(f) = riders.of(hud.0) else { continue };
+        let (v, p) = (f.vehicle, f.progress);
         let s = match r {
             // The dial face reads KPH.
             Readout::Speed => format!("{:.0}", v.velocity.length() * 3.6),
@@ -486,7 +625,7 @@ fn update_readouts(
                 fmt_time(left)
             }
             Readout::Round => continue,
-            Readout::LapRow(i) => match laps.get(*i) {
+            Readout::LapRow(i) => match p.recent_laps().get(*i) {
                 Some(&(time, current)) => {
                     // The lap being ridden is yellow.
                     let c = if current { Color::srgb(1.0, 1.0, 0.0) } else { FIGURE };
@@ -512,33 +651,40 @@ fn update_readouts(
 fn update_panel(
     time: Res<Time>,
     sel: Res<Selection>,
-    (session, standings, opponents): (Option<Res<Session>>, Option<Res<Standings>>, Option<Res<Opponents>>),
-    mut trick_place: Local<(f32, usize)>,
-    mut figures: Query<(&PanelReadout, &mut BitmapText, Option<&mut RollingScore>)>,
+    riders: Riders,
+    mut trick_place: Local<[(f32, usize); mp::MAX_PLAYERS]>,
+    mut figures: Query<(&PanelReadout, &HudOf, &mut BitmapText, Option<&mut RollingScore>)>,
     mut lead_row: Query<&mut Visibility, With<LeadRow>>,
 ) {
-    let standings = standings.as_deref().filter(|s| s.racers > 1);
-    let place = standings.map_or(1, |s| s.player);
-    let score = session.as_deref().map_or(0, |s| s.score);
     let champ = sel.mode == Mode::Career;
     if champ {
-        trick_place.0 -= time.delta_secs();
-        if trick_place.0 <= 0.0 || session.as_ref().is_some_and(|s| s.is_added()) {
-            trick_place.0 = 1.0;
-            let ahead = opponents.iter().flat_map(|o| &o.racers).filter_map(|r| r.session.as_ref()).filter(|s| s.score > score).count();
-            trick_place.1 = 1 + ahead;
+        let fresh = riders.session.as_ref().is_some_and(|s| s.is_added());
+        for (slot, tp) in trick_place.iter_mut().enumerate() {
+            tp.0 -= time.delta_secs();
+            if tp.0 > 0.0 && !fresh {
+                continue;
+            }
+            tp.0 = 1.0;
+            if let Some(f) = riders.of(slot) {
+                let score = f.session.map_or(0, |s| s.score);
+                tp.1 = 1 + riders.other_scores(&f).into_iter().filter(|&o| o > score).count();
+            }
         }
     }
-    let lead = standings.filter(|_| sel.players <= 1).map(|s| s.lead);
+    let lead = riders.standings.as_deref().filter(|s| s.racers > 1 && sel.players <= 1).map(|s| s.lead);
     for mut vis in &mut lead_row {
         vis.set_if_neq(if lead.is_some() { Visibility::Inherited } else { Visibility::Hidden });
     }
-    for (readout, mut t, rolling) in &mut figures {
+    for (readout, hud, mut t, rolling) in &mut figures {
+        let Some(f) = riders.of(hud.0) else { continue };
+        let place = riders.place(&f);
+        let score = f.session.map_or(0, |s| s.score);
         let text = match readout {
             PanelReadout::Position => ordinal(place),
             PanelReadout::Score => {
                 let shown = rolling.map_or(score, |mut r| r.step(score, time.delta_secs()));
-                if champ { format!("{shown} ({})", ordinal(trick_place.1.max(1))) } else { shown.to_string() }
+                let tp = trick_place.get(hud.0).map_or(1, |tp| tp.1.max(1));
+                if champ { format!("{shown} ({})", ordinal(tp)) } else { shown.to_string() }
             }
             PanelReadout::Lead => {
                 let c = if place == 1 { LABEL } else { FIGURE };
@@ -559,11 +705,11 @@ fn lead_text(metres: f32) -> String {
 
 #[allow(clippy::type_complexity)]
 fn update_meter(
-    progress: Option<Res<RaceProgress>>,
-    standings: Option<Res<Standings>>,
+    riders: Riders,
     ui: Option<Res<UiAssets>>,
     mut pins: Query<(
         &MeterPin,
+        &HudOf,
         &Children,
         &mut Node,
         &mut ImageNode,
@@ -572,28 +718,17 @@ fn update_meter(
     )>,
     mut labels: Query<&mut BitmapText, With<PinLabel>>,
 ) {
-    let (Some(p), Some(ui)) = (progress, ui) else {
+    let Some(ui) = ui else {
         return;
     };
-    let mine = if p.finished.is_some() {
-        1.0
-    } else {
-        p.lap_fraction.clamp(0.0, 1.0)
-    };
-    for (pin, children, mut n, mut img, mut bg, mut vis) in &mut pins {
-        let (place, f) = match (pin.opponent, standings.as_deref()) {
-            (None, s) => (s.filter(|s| s.racers > 1).map_or(1, |s| s.player), mine),
-            (Some(i), Some(s)) => match s.opponents.get(i) {
-                Some(&(place, f)) => (place, f.clamp(0.0, 1.0)),
-                None => {
-                    vis.set_if_neq(Visibility::Hidden);
-                    continue;
-                }
-            },
-            (Some(_), None) => {
-                vis.set_if_neq(Visibility::Hidden);
-                continue;
-            }
+    for (pin, hud, children, mut n, mut img, mut bg, mut vis) in &mut pins {
+        // The HUD's own player has the big marker; the small ones are
+        // everyone else.
+        let own = riders.of(hud.0).map(|f| f.racer.map_or(0, |i| i + 1));
+        let rider = pin.rider.or(own).filter(|_| pin.rider.is_none() || pin.rider != own);
+        let Some((place, f)) = rider.and_then(|r| riders.on_meter(r)) else {
+            vis.set_if_neq(Visibility::Hidden);
+            continue;
         };
         vis.set_if_neq(Visibility::Inherited);
         // The sheet only has badges for 1st to 4th (its P5-P8 cells are
@@ -605,7 +740,7 @@ fn update_meter(
             n.width = px(rect.width() * pin.scale);
             n.height = px(rect.height() * pin.scale);
         }
-        let alpha = if pin.opponent.is_some() { 0.75 } else { 1.0 };
+        let alpha = if pin.rider.is_some() { 0.75 } else { 1.0 };
         let (tint, disc) = if badge {
             (Color::srgba(1.0, 1.0, 1.0, alpha), Color::NONE)
         } else {
@@ -728,20 +863,23 @@ pub fn ordinal(n: usize) -> String {
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn update_banners(
-    progress: Option<Res<RaceProgress>>,
-    session: Option<Res<Session>>,
+    riders: Riders,
     ui: Option<Res<UiAssets>>,
-    mut countdown: Query<(&mut ImageNode, &mut Node, &mut UiTransform, &mut Visibility), With<Countdown>>,
-    mut banner: Query<&mut Visibility, (With<CheckpointBanner>, Without<Countdown>)>,
-    mut wrong: Query<(&mut BitmapText, &mut Visibility), (With<WrongWay>, Without<Countdown>, Without<CheckpointBanner>, Without<SplitText>, Without<LapBanner>)>,
-    mut split: Query<&mut BitmapText, (With<SplitText>, Without<LapBanner>, Without<WrongWay>)>,
-    mut lap: Query<&mut BitmapText, (With<LapBanner>, Without<SplitText>, Without<WrongWay>)>,
+    mut countdown: Query<(&mut ImageNode, &mut Node, &mut UiTransform, &mut Visibility, &HudOf), With<Countdown>>,
+    mut banner: Query<(&mut Visibility, &HudOf), (With<CheckpointBanner>, Without<Countdown>)>,
+    mut wrong: Query<(&mut BitmapText, &mut Visibility, &HudOf), (With<WrongWay>, Without<Countdown>, Without<CheckpointBanner>, Without<SplitText>, Without<LapBanner>)>,
+    mut split: Query<(&mut BitmapText, &HudOf), (With<SplitText>, Without<LapBanner>, Without<WrongWay>)>,
+    mut lap: Query<(&mut BitmapText, &HudOf), (With<LapBanner>, Without<SplitText>, Without<WrongWay>)>,
     menus: Query<(), With<RaceMenu>>,
 ) {
-    let (Some(p), Some(ui)) = (progress, ui) else { return };
+    let Some(ui) = ui else { return };
     let quiet = !menus.is_empty();
+    // Split screen: a player home waits for the others (`WAITING_FOR_REST`).
+    let split_screen = riders.opponents.as_deref().is_some_and(|o| o.racers.iter().any(|r| r.human.is_some()));
+    let all_home = riders.progress.as_deref().is_some_and(|p1| mp::all_home(p1, riders.opponents.as_deref()));
     // 3, 2, 1 for a second each, then GO for one more.
-    if let Ok((mut img, mut node, mut t, mut vis)) = countdown.single_mut() {
+    for (mut img, mut node, mut t, mut vis, hud) in &mut countdown {
+        let Some(p) = riders.of(hud.0).map(|f| f.progress) else { continue };
         let c = p.countdown;
         let (name, phase) = if c > 2.0 {
             (Some("three"), 3.0 - c)
@@ -773,25 +911,31 @@ fn update_banners(
             }
         }
     }
-    let recent = |at: Option<f32>, secs: f32| at.is_some_and(|t| p.clock - t < secs);
-    let lap_done = recent(p.last_lap, 2.5) && p.finished.is_none();
-    if let Ok(mut vis) = banner.single_mut() {
-        vis.set_if_neq(if (recent(p.last_checkpoint, 1.5) || lap_done) && !quiet { Visibility::Inherited } else { Visibility::Hidden });
+    let recent = |p: &RaceProgress, at: Option<f32>, secs: f32| at.is_some_and(|t| p.clock - t < secs);
+    let lap_done = |p: &RaceProgress| recent(p, p.last_lap, 2.5) && p.finished.is_none();
+    for (mut vis, hud) in &mut banner {
+        let Some(p) = riders.of(hud.0).map(|f| f.progress) else { continue };
+        vis.set_if_neq(if (recent(p, p.last_checkpoint, 1.5) || lap_done(p)) && !quiet { Visibility::Inherited } else { Visibility::Hidden });
     }
-    if let Ok(mut t) = split.single_mut() {
+    for (mut t, hud) in &mut split {
+        let Some(p) = riders.of(hud.0).map(|f| f.progress) else { continue };
+        let lap_done = lap_done(p);
         let s = if quiet {
             String::new()
         } else if lap_done {
             p.lap_times.last().map(|&l| fmt_time(l)).unwrap_or_default()
-        } else if recent(p.last_checkpoint, 1.5) {
+        } else if recent(p, p.last_checkpoint, 1.5) {
             fmt_time(p.lap_time())
         } else {
             String::new()
         };
         set_text(&mut t, &s);
     }
-    let time_up = session.as_ref().is_some_and(|s| s.freestyle && s.over(p.clock));
-    if let Ok(mut t) = lap.single_mut() {
+    for (mut t, hud) in &mut lap {
+        let Some(f) = riders.of(hud.0) else { continue };
+        let p = f.progress;
+        let lap_done = lap_done(p);
+        let time_up = f.session.is_some_and(|s| s.freestyle && s.over(p.clock));
         let s = if quiet {
             String::new()
         } else if time_up {
@@ -800,6 +944,8 @@ fn update_banners(
             "OUT OF TIME".to_string()
         } else if p.dnf {
             "DID NOT FINISH".to_string()
+        } else if p.finished.is_some() && split_screen && !all_home {
+            "WAITING FOR OTHER COMPETITORS".to_string()
         } else if p.finished.is_some() {
             "FINISHED".to_string()
         } else if lap_done && p.lap() == p.laps {
@@ -811,7 +957,8 @@ fn update_banners(
         };
         set_text(&mut t, &s);
     }
-    if let Ok((mut t, mut vis)) = wrong.single_mut() {
+    for (mut t, mut vis, hud) in &mut wrong {
+        let Some(p) = riders.of(hud.0).map(|f| f.progress) else { continue };
         // The original's warnings, held steady (0x902f0).
         let text = p.warning.clone().or_else(|| (p.wrong_way > crate::respot::WRONG_WAY).then(|| "WRONG WAY".to_string())).filter(|_| p.racing());
         if let Some(text) = &text {
