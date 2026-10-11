@@ -1,5 +1,6 @@
 //! The Options menu's settings: music and sound effects volume, the race
-//! camera and vibration, and the player profile last loaded (see
+//! camera, each controller's layout and vibration (see
+//! [`crate::controller`]), and the player profile last loaded (see
 //! [`crate::career::Profile`]). They are remembered between runs in the player's
 //! config folder as a plain `key = value` file, beside the launcher's.
 //!
@@ -11,6 +12,8 @@ use std::path::PathBuf;
 use bevy::prelude::*;
 
 use atv_formats::{setup, GameSource};
+
+use crate::controller::{self, PadSetup, PORTS};
 
 /// Segments in the volume bars (`FrontEnd/SoundBar`).
 pub const VOLUME_STEPS: u8 = 16;
@@ -67,14 +70,15 @@ pub struct Settings {
     pub music: u8,
     pub effects: u8,
     pub camera: CameraView,
-    pub vibration: bool,
+    /// Each controller port's layout and vibration.
+    pub pads: [PadSetup; PORTS],
     /// The profile slot to load at start.
     pub profile: Option<usize>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { music: VOLUME_STEPS, effects: VOLUME_STEPS, camera: CameraView::default(), vibration: true, profile: None }
+        Self { music: VOLUME_STEPS, effects: VOLUME_STEPS, camera: CameraView::default(), pads: controller::default_setups(), profile: None }
     }
 }
 
@@ -103,16 +107,25 @@ impl Settings {
                 "music" => s.music = v.parse::<u8>().map_or(s.music, |n| n.min(VOLUME_STEPS)),
                 "effects" => s.effects = v.parse::<u8>().map_or(s.effects, |n| n.min(VOLUME_STEPS)),
                 "camera" => s.camera = CameraView::ALL.into_iter().find(|c| c.key() == v).unwrap_or(s.camera),
-                "vibration" => s.vibration = v == "true",
+                // Before each controller had its own.
+                "vibration" => s.pads.iter_mut().for_each(|p| p.vibration = v == "true"),
                 "profile" => s.profile = v.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).filter(|&n| n < crate::career::PROFILES),
-                _ => {}
+                k => {
+                    let pad = k.strip_prefix("pad").and_then(|r| r.split_once('_')).and_then(|(n, rest)| Some((n.parse::<usize>().ok()?.checked_sub(1)?, rest)));
+                    if let Some((n, rest)) = pad.filter(|(n, _)| *n < PORTS) {
+                        s.pads[n].parse_line(rest, v);
+                    }
+                }
             }
         }
         s
     }
 
     pub fn to_text(&self) -> String {
-        let mut s = format!("music = {}\neffects = {}\ncamera = {}\nvibration = {}\n", self.music, self.effects, self.camera.key(), self.vibration);
+        let mut s = format!("music = {}\neffects = {}\ncamera = {}\n", self.music, self.effects, self.camera.key());
+        for (n, p) in self.pads.iter().enumerate() {
+            s += &p.to_text(n);
+        }
         if let Some(n) = self.profile {
             s += &format!("profile = {}\n", n + 1);
         }
@@ -186,11 +199,19 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let s = Settings { music: 3, effects: 16, camera: CameraView::VeryClose, vibration: false, profile: None };
+        let mut s = Settings { music: 3, effects: 16, camera: CameraView::VeryClose, profile: None, ..default() };
+        s.pads[1].vibration = false;
+        s.pads[2].layout = 2;
+        s.pads[3].rebind(3, crate::controller::Action::Hop, 2, Some(crate::controller::Input::Key(KeyCode::KeyJ)));
         assert_eq!(Settings::parse(&s.to_text()), s);
         let s = Settings { profile: Some(9), ..s };
         assert_eq!(Settings::parse(&s.to_text()), s);
-        assert_eq!(Settings::parse("music = 99\njunk\ncamera = sideways"), Settings { music: VOLUME_STEPS, ..default() });
+        assert_eq!(Settings::parse("music = 99\njunk\ncamera = sideways\npad9_layout = 2"), Settings { music: VOLUME_STEPS, ..default() });
+    }
+
+    #[test]
+    fn old_vibration_switch_covers_every_controller() {
+        assert!(Settings::parse("vibration = false").pads.iter().all(|p| !p.vibration));
     }
 
     #[test]

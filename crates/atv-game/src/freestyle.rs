@@ -17,7 +17,6 @@
 
 use std::sync::Arc;
 
-use bevy::input::gamepad::{Gamepad, GamepadAxis, GamepadButton};
 use bevy::prelude::*;
 
 use atv_formats::row::World;
@@ -27,6 +26,7 @@ use atv_sim::track as trk;
 use atv_sim::Vehicle;
 
 use crate::race::fmt_time;
+use crate::controller::{self, Action};
 use crate::rider::Clip;
 use crate::hud::{FIGURE, LABEL};
 use crate::ui::{set_text, BitmapText, FontId, UiAssets};
@@ -44,12 +44,10 @@ pub fn limit_label(limit: Option<u32>) -> String {
     }
 }
 
-/// Trick buttons, as a mask: the disc's D, A, B and E buttons in order of
-/// the tricks' level (1 to 4). The three two-button combos are levels 5-7.
-pub const TRICK_KEYS: [[KeyCode; 2]; 4] =
-    [[KeyCode::Digit1, KeyCode::Numpad1], [KeyCode::Digit2, KeyCode::Numpad2], [KeyCode::Digit3, KeyCode::Numpad3], [KeyCode::Digit4, KeyCode::Numpad4]];
-pub const TRICK_PAD: [GamepadButton; 4] = [GamepadButton::West, GamepadButton::North, GamepadButton::LeftTrigger, GamepadButton::RightTrigger];
-
+/// A trick's buttons, as a mask: the disc's D, A, B and E buttons in
+/// order of the tricks' level (1 to 4), [`Action::TRICKS`] (X, Y, LB and
+/// RB, or 1 to 4, unless remapped). The three two-button combos are
+/// levels 5-7.
 fn combo_mask(combo: &str) -> Option<u8> {
     Some(match combo.trim().to_ascii_lowercase().as_str() {
         "keydheld" => 0b0001,
@@ -678,39 +676,20 @@ impl Session {
     }
 }
 
-/// Held trick buttons and the stick direction, from keyboard and pads.
-/// `slot`: in split screen, the player (0-based): player 1 has the number
-/// row and WASD, player 2 the number pad and the arrows, and each has their
-/// own pad; alone, every key and pad counts.
-pub fn read_tricks(keys: &ButtonInput<KeyCode>, pads: &Query<&Gamepad>, slot: Option<usize>) -> (u8, Option<Dir>) {
-    let (buttons, [right, left, up, down]): (Vec<KeyCode>, [&[KeyCode]; 4]) = match slot {
-        None => (TRICK_KEYS.iter().flatten().copied().collect(), [
-            &[KeyCode::ArrowRight, KeyCode::KeyD],
-            &[KeyCode::ArrowLeft, KeyCode::KeyA],
-            &[KeyCode::ArrowUp, KeyCode::KeyW, KeyCode::KeyI],
-            &[KeyCode::ArrowDown, KeyCode::KeyS, KeyCode::KeyK],
-        ]),
-        Some(0) => (TRICK_KEYS.iter().map(|k| k[0]).collect(), [&[KeyCode::KeyD], &[KeyCode::KeyA], &[KeyCode::KeyW], &[KeyCode::KeyS]]),
-        Some(1) => (TRICK_KEYS.iter().map(|k| k[1]).collect(), [&[KeyCode::ArrowRight], &[KeyCode::ArrowLeft], &[KeyCode::ArrowUp], &[KeyCode::ArrowDown]]),
-        Some(_) => (Vec::new(), [&[], &[], &[], &[]]),
-    };
-    let pads = || pads.iter().enumerate().filter(|(n, _)| slot.is_none_or(|s| s == *n)).map(|(_, p)| p);
+/// Held trick buttons and the stick direction, from keyboard and pads
+/// (see [`crate::controller`]). The direction is the steering and leaning
+/// inputs, and on the keyboard accelerate and brake too. `slot`: in split
+/// screen, the player (0-based); alone, every pad and player 1's keys.
+pub fn read_tricks(controls: &controller::Reader, slot: Option<usize>) -> (u8, Option<Dir>) {
     let mut mask = 0u8;
-    for (i, pad_button) in TRICK_PAD.iter().enumerate() {
-        let key = TRICK_KEYS[i].iter().any(|k| buttons.contains(k) && keys.pressed(*k));
-        if key || pads().any(|p| p.pressed(*pad_button)) {
+    for (i, &a) in Action::TRICKS.iter().enumerate() {
+        if controls.pressed(slot, a, true) {
             mask |= 1 << i;
         }
     }
-    let key = |k: &[KeyCode]| if k.iter().any(|k| keys.pressed(*k)) { 1.0 } else { 0.0 };
-    let mut x: f32 = key(right) - key(left);
-    let mut y: f32 = key(up) - key(down);
-    for pad in pads() {
-        // The stick, or the d-pad the Trick Book's pad picture lights.
-        let d = |b: GamepadButton| if pad.pressed(b) { 1.0 } else { 0.0 };
-        x += pad.get(GamepadAxis::LeftStickX).unwrap_or(0.0) + d(GamepadButton::DPadRight) - d(GamepadButton::DPadLeft);
-        y += pad.get(GamepadAxis::LeftStickY).unwrap_or(0.0) + d(GamepadButton::DPadUp) - d(GamepadButton::DPadDown);
-    }
+    let level = |a: Action| controls.level(slot, a, true);
+    let x = level(Action::SteerRight) - level(Action::SteerLeft);
+    let y = level(Action::LeanForward).max(controls.key_level(slot, Action::Accelerate)) - level(Action::LeanBack).max(controls.key_level(slot, Action::Brake));
     let dir = if x.abs().max(y.abs()) < 0.5 {
         None
     } else if x.abs() > y.abs() {

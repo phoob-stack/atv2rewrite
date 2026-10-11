@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 
+use crate::controller::PadInput;
 use crate::freestyle::{Dir, TrickDef};
 use crate::rider::{Clip, Rider};
 use crate::ui::{placed, BitmapText, FontId, UiAssets};
@@ -55,8 +56,12 @@ pub fn book(tricks: &[TrickDef]) -> Vec<usize> {
     order
 }
 
-/// The trick buttons' names on a pad and on the keyboard, in mask order.
+/// The trick buttons' names on a pad and on the keyboard, in mask order,
+/// with the first layout (the Trick Book names player 1's own, see
+/// [`crate::controller::trick_names`]).
+#[cfg(test)]
 pub const PAD_NAMES: [&str; 4] = ["X", "Y", "LB", "RB"];
+#[cfg(test)]
 pub const KEY_NAMES: [&str; 4] = ["1", "2", "3", "4"];
 
 /// "Y + LB + UP": the buttons to hold and the direction to push.
@@ -72,16 +77,34 @@ pub fn activation(def: &TrickDef, names: &[&str; 4]) -> String {
     parts.join(" + ")
 }
 
-/// Where each trick button sits on the `TrickPad_XBox` picture: X and Y on
-/// the face, LB and RB on the top view's shoulders.
-const PAD_SPOTS: [&str; 4] = ["BUTTON7", "BUTTON4", "BUTTON8", "BUTTON9"];
+/// Where a pad button sits on the `TrickPad_XBox` picture: Y, B, A and X
+/// on the face, the shoulders on the top view, and the d-pad. Others (and
+/// sticks) have no spot.
+fn pad_spot(p: PadInput) -> Option<&'static str> {
+    use bevy::input::gamepad::GamepadButton as B;
+    let PadInput::Button(b) = p else { return None };
+    Some(match b {
+        B::North => "BUTTON4",
+        B::East => "BUTTON5",
+        B::South => "BUTTON6",
+        B::West => "BUTTON7",
+        B::LeftTrigger | B::LeftTrigger2 => "BUTTON8",
+        B::RightTrigger | B::RightTrigger2 => "BUTTON9",
+        B::DPadUp => "BUTTON0",
+        B::DPadDown => "BUTTON1",
+        B::DPadLeft => "BUTTON2",
+        B::DPadRight => "BUTTON3",
+        _ => return None,
+    })
+}
 
 /// How much larger than drawn on the disc the lit buttons' glows are.
 const GLOW: f32 = 1.3;
 
 /// The trick pad picture with the trick's buttons and its direction on the
-/// d-pad lit (as 0x52a40 lights them), `scale` units per texel.
-pub fn pad_picture(commands: &mut Commands, ui: &UiAssets, def: &TrickDef, locked: bool, (left, top): (f32, f32), scale: f32) -> Entity {
+/// d-pad lit (as 0x52a40 lights them), `scale` units per texel. `buttons`:
+/// the pad's trick buttons, in mask order.
+pub fn pad_picture(commands: &mut Commands, ui: &UiAssets, def: &TrickDef, buttons: [Option<PadInput>; 4], locked: bool, (left, top): (f32, f32), scale: f32) -> Entity {
     let sheet = &ui.trick_pad;
     let pad = sheet.get("PAD").rect;
     let dim = Color::srgb(0.45, 0.45, 0.45);
@@ -103,8 +126,9 @@ pub fn pad_picture(commands: &mut Commands, ui: &UiAssets, def: &TrickDef, locke
             if locked {
                 return;
             }
-            let lit = (0..4).filter(|b| def.buttons & (1 << b) != 0).map(|b| (PAD_SPOTS[b], b >= 2)).chain([(dir, false)]);
-            for (at, shoulder) in lit {
+            let lit = (0..4).filter(|b| def.buttons & (1 << b) != 0).filter_map(|b| buttons[b].and_then(pad_spot)).chain([dir]);
+            for at in lit {
+                let shoulder = matches!(at, "BUTTON8" | "BUTTON9");
                 let name = if shoulder { "SHOULDER1" } else { "BUTTON" };
                 // Bigger and gold, so they show on the dark pad.
                 let size = sheet.get(name).rect.size() * scale * GLOW;

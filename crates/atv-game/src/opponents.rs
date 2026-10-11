@@ -369,8 +369,7 @@ fn drive_opponents(
     progress: Option<Res<RaceProgress>>,
     opponents: Option<ResMut<Opponents>>,
     standings: Option<ResMut<Standings>>,
-    keys: Res<ButtonInput<KeyCode>>,
-    pads: Query<&Gamepad>,
+    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, Query<&Gamepad>, Res<crate::settings::Settings>),
     args: Res<crate::Args>,
     (session, crash_clips, boost_rules): (Option<Res<Session>>, Option<Res<CrashClips>>, Option<Res<BoostRules>>),
 ) {
@@ -380,6 +379,7 @@ fn drive_opponents(
         return;
     };
     let dt = time.delta_secs();
+    let controls = crate::controller::Reader::new(&keys, &pads, &settings.pads);
     let opp = &mut *opp;
     let cps = &race.checkpoints;
     let n = cps.len();
@@ -437,8 +437,8 @@ fn drive_opponents(
                 // A player drives until the flag; the AI brings them home
                 // (and drives for them with --autodrive).
                 Some(n) if r.progress.finished.is_none() && !args.autodrive => {
-                    held = crate::read_boost(&keys, &pads, !r.vehicle.grounded(), Some(n - 1));
-                    crate::read_input(&keys, &pads, !r.vehicle.grounded(), Some(n - 1))
+                    held = crate::read_boost(&controls, !r.vehicle.grounded(), Some(n - 1));
+                    crate::read_input(&controls, !r.vehicle.grounded(), Some(n - 1))
                 }
                 _ => {
                     // Computer riders (and the autopilot) spend a full meter.
@@ -475,7 +475,7 @@ fn drive_opponents(
         let live = r.progress.started() && !time_up && r.progress.finished.is_none();
         match (r.session.as_mut(), r.human) {
             (Some(s), Some(n)) => {
-                let (mut buttons, mut dir) = freestyle::read_tricks(&keys, &pads, Some(n - 1));
+                let (mut buttons, mut dir) = freestyle::read_tricks(&controls, Some(n - 1));
                 if args.autodrive && s.active.is_none() && !r.vehicle.grounded() {
                     // The autopilot shows off, as for player 1.
                     let k = (s.time * 0.7) as usize + n;

@@ -29,6 +29,7 @@ use atv_sim::Vehicle;
 use crate::boost::Boost;
 use crate::career::{self, Award, Career, Run};
 use crate::challenge::{self, Outcome};
+use crate::controller;
 use crate::mp;
 use crate::freestyle::{limit_label, RollingScore, Session, MEDALS, TIME_LIMITS};
 use crate::frontend::{self, FrontEnd, Roster, Screen};
@@ -1219,6 +1220,8 @@ fn race_menus(
                 if page == PausePage::Camera {
                     settings.camera = CameraView::ALL[list.selected.min(CameraView::ALL.len() - 1)];
                 }
+                // The controls listed are the picked controller's.
+                redraw = page == PausePage::Controller;
             }
             Nav::Left | Nav::Right if page == PausePage::Audio => {
                 let level = if list.selected == 0 { &mut settings.music } else { &mut settings.effects };
@@ -1226,7 +1229,8 @@ fn race_menus(
                 redraw = true;
             }
             Nav::Accept | Nav::Left | Nav::Right if page == PausePage::Controller => {
-                settings.vibration = !settings.vibration;
+                let pad = &mut settings.pads[list.selected.min(controller::PORTS - 1)];
+                pad.vibration = !pad.vibration;
                 redraw = true;
             }
             Nav::Accept | Nav::Start | Nav::Back => {
@@ -1562,18 +1566,25 @@ fn spawn_race_menu(
 }
 
 /// The pause menu's Audio, Camera or Controller page, as the Options pages
-/// lay them out: the volume bars, the camera views, or vibration and the
-/// controls.
+/// lay them out: the volume bars, the camera views, or each controller's
+/// vibration (layouts are changed in Options, as in the original, whose
+/// race page leaves the layout out) and the picked one's controls.
 fn spawn_pause_page(commands: &mut Commands, ui: &UiAssets, page: PausePage, settings: &Settings, row: usize, overlay: Option<Entity>) {
     let (items, selected, note): (Vec<&str>, usize, &str) = match page {
         PausePage::Audio => (vec!["MUSIC VOLUME", "SOUND EFFECTS VOLUME"], row, "LEFT AND RIGHT CHANGE THE VOLUME"),
         PausePage::Camera => (CameraView::ALL.map(CameraView::label).to_vec(), settings.camera.index(), "C OR BACK CHANGES IT IN THE RACE TOO"),
-        PausePage::Controller => (vec!["VIBRATION"], 0, ""),
+        PausePage::Controller => (vec!["CONTROLLER 1", "CONTROLLER 2", "CONTROLLER 3", "CONTROLLER 4"], row, "LAYOUTS ARE CHANGED IN OPTIONS"),
     };
     let width = if page == PausePage::Audio { 270.0 } else { 220.0 };
     let list = MenuList::new(&items, width).select(selected);
+    let list = if page == PausePage::Controller { list.with_row(24.0) } else { list };
     let rows = list.row;
-    let pw = if page == PausePage::Camera { 400.0 } else { 460.0 };
+    let pw = match page {
+        PausePage::Camera => 400.0,
+        PausePage::Audio => 460.0,
+        // Room for "L STICK LEFT OR D-PAD LEFT".
+        PausePage::Controller => 580.0,
+    };
     let panel = ui.bio.get("BIOPANEL").rect;
     let grey = Color::srgb(0.75, 0.85, 1.0);
     let menu = commands.spawn_empty().id();
@@ -1608,17 +1619,22 @@ fn spawn_pause_page(commands: &mut Commands, ui: &UiAssets, page: PausePage, set
                                 col.spawn(Node { height: px(rows), align_items: AlignItems::Center, ..default() }).with_children(|cell| volume_bar(cell, ui, level));
                             }
                             if page == PausePage::Controller {
-                                col.spawn(Node { height: px(rows), align_items: AlignItems::Center, ..default() }).with_children(|cell| {
-                                    cell.spawn(ui.checkbox.node(if settings.vibration { "ON" } else { "OFF" }, 0.5));
-                                });
+                                for p in &settings.pads {
+                                    col.spawn(Node { height: px(rows), align_items: AlignItems::Center, ..default() }).with_children(|cell| {
+                                        cell.spawn(ui.checkbox.node(if p.vibration { "ON" } else { "OFF" }, 0.4));
+                                    });
+                                }
                             }
                         });
                     });
                     if page == PausePage::Controller {
-                        box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(5), margin: UiRect::vertical(px(6)), ..default() }).with_children(|t| {
-                            for (i, (action, pad, keys)) in [("", "PAD", "KEYBOARD")].into_iter().chain(frontend::CONTROLS).enumerate() {
+                        box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), margin: UiRect::vertical(px(6)), ..default() }).with_children(|t| {
+                            let port = row.min(controller::PORTS - 1);
+                            let setup = &settings.pads[port];
+                            let head = (setup.layout_label(), "PAD".to_string(), "KEYBOARD".to_string());
+                            for (i, (action, pad, keys)) in [head].into_iter().chain(controller::table(setup, port).into_iter().map(|(a, p, k)| (a.to_string(), p, k))).enumerate() {
                                 t.spawn(Node { column_gap: px(8), ..default() }).with_children(|r| {
-                                    for (text, width, color) in [(action, 140.0, Color::WHITE), (pad, 92.0, grey), (keys, 130.0, grey)] {
+                                    for (text, width, color) in [(action, 140.0, Color::WHITE), (pad, 200.0, grey), (keys, 170.0, grey)] {
                                         let color = if i == 0 { Color::srgb(1.0, 0.85, 0.3) } else { color };
                                         r.spawn(Node { width: px(width), ..default() }).with_children(|cell| {
                                             cell.spawn(BitmapText::new(FontId::Small, 7.0, text).color(color));
