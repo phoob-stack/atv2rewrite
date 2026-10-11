@@ -7,8 +7,12 @@
 //!
 //! Here player 1's seat is driven by the computer too, and the
 //! [`crate::replay::Broadcast`] director films the race from the start.
-//! The original sometimes splits the screen into two or four views, each
-//! on a rider of its own; that isn't ported.
+//! As in the original, a third of the demos split the screen: the second
+//! rider gets a view too, and half of those times the third and fourth as
+//! well, top and bottom for two and a quarter each for four (0x97f90 sets
+//! `mHasCamera`, 0x86530 lays the views out). The director takes only the
+//! first view (0x80ba0); the others follow their riders with the race
+//! camera.
 
 use bevy::input::gamepad::{Gamepad, GamepadAxis};
 use bevy::prelude::*;
@@ -16,6 +20,7 @@ use bevy::prelude::*;
 use crate::frontend::{self, FrontEnd, Roster, Screen};
 use crate::hud::track_title;
 use crate::intro::ShowInIntro;
+use crate::mp::Overlay;
 use crate::opponents::{Opponents, NOT_FOR_AI};
 use crate::race::RaceProgress;
 use crate::ui::{fullscreen, placed, BitmapText, FontId, UiAssets, SCREEN_H, SCREEN_W};
@@ -27,13 +32,22 @@ pub const ATTRACT_TIME: f32 = 30.0;
 /// The longest a demo race runs, seconds (`mDemoMaxTime`).
 pub const MAX_TIME: f32 = 300.0;
 
-/// A demo is on: the selection to put back afterwards, and how long the
-/// race has run.
+/// A demo is on: the selection to put back afterwards, how long the race
+/// has run and how many views it has.
 #[derive(Resource)]
 pub struct Demo {
     saved: Selection,
     clock: f32,
     leaving: bool,
+    views: usize,
+}
+
+impl Demo {
+    /// The views on the screen: player 1's seat, then the computer riders
+    /// after it on the grid.
+    pub fn views(&self) -> usize {
+        self.views
+    }
 }
 
 pub struct DemoPlugin;
@@ -41,7 +55,7 @@ pub struct DemoPlugin;
 impl Plugin for DemoPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, attract.run_if(in_state(AppState::FrontEnd)))
-            .add_systems(OnEnter(AppState::Race), spawn_page.run_if(resource_exists::<Demo>))
+            .add_systems(OnEnter(AppState::Race), spawn_page.after(crate::setup).run_if(resource_exists::<Demo>))
             .add_systems(Update, (run, frontend::blink).run_if(in_state(AppState::Race)).run_if(resource_exists::<Demo>))
             .add_systems(OnExit(AppState::Race), finish);
     }
@@ -82,16 +96,17 @@ fn attract(
     }
     *idle = 0.0;
     let mut seed = (real.elapsed().as_nanos() as u32) | 1;
-    let Some(demo) = pick(&roster, &sel, &mut seed) else { return };
-    info!("demo: {} on {}", demo.track, demo.quad);
-    commands.insert_resource(Demo { saved: std::mem::replace(&mut *sel, demo), clock: 0.0, leaving: false });
+    let Some((demo, views)) = pick(&roster, &sel, &mut seed) else { return };
+    info!("demo: {} on {}, {views} view(s)", demo.track, demo.quad);
+    commands.insert_resource(Demo { saved: std::mem::replace(&mut *sel, demo), clock: 0.0, leaving: false, views });
     next.set(AppState::Loading);
 }
 
 /// The demo race (0x97f90): a track the setup files mark
 /// `mAvailableForDemo`, locked or not, and a computer rider and ATV for
-/// player 1's seat; the computer riders fill the grid.
-fn pick(roster: &Roster, sel: &Selection, seed: &mut u32) -> Option<Selection> {
+/// player 1's seat; the computer riders fill the grid. Also gives the
+/// views: one, or two a third of the time, and four half of those.
+fn pick(roster: &Roster, sel: &Selection, seed: &mut u32) -> Option<(Selection, usize)> {
     let mut rand = |n: usize| {
         *seed ^= *seed << 13;
         *seed ^= *seed >> 17;
@@ -114,13 +129,25 @@ fn pick(roster: &Roster, sel: &Selection, seed: &mut u32) -> Option<Selection> {
     demo.others.clear();
     demo.field.clear();
     demo.grid = 1;
-    Some(demo)
+    let views = if rand(3) != 0 {
+        1
+    } else if rand(2) != 0 {
+        2
+    } else {
+        4
+    };
+    Some((demo, views))
 }
 
-/// The demo page: the big logo, "PRESS START" flashing and the track.
-fn spawn_page(mut commands: Commands, ui: Option<Res<UiAssets>>, sel: Res<Selection>) {
+/// The demo page: the big logo, "PRESS START" flashing and the track,
+/// over every view.
+fn spawn_page(mut commands: Commands, ui: Option<Res<UiAssets>>, sel: Res<Selection>, overlay: Query<Entity, With<Overlay>>) {
     let Some(ui) = ui else { return };
-    commands.spawn((fullscreen(), DespawnOnExit(AppState::Race), Pickable::IGNORE, ShowInIntro)).with_children(|root| {
+    let mut page = commands.spawn((fullscreen(), DespawnOnExit(AppState::Race), Pickable::IGNORE, ShowInIntro));
+    if let Ok(cam) = overlay.single() {
+        page.insert(UiTargetCamera(cam));
+    }
+    page.with_children(|root| {
         root.spawn(Node {
             position_type: PositionType::Absolute,
             left: percent(50),
@@ -189,9 +216,8 @@ mod tests {
         r
     }
 
-    #[test]
-    fn demo_races_a_computer_rider_alone() {
-        let sel = Selection {
+    fn sel() -> Selection {
+        Selection {
             track: "Dunes1".into(),
             quad: "Nitro".into(),
             rider: "Male3".into(),
@@ -205,13 +231,31 @@ mod tests {
             challenge: 1,
             players: 2,
             others: vec![("Male2".into(), "Nitro".into())],
-        };
+        }
+    }
+
+    #[test]
+    fn demo_races_a_computer_rider_alone() {
+        let sel = sel();
         let mut seed = 7;
-        let demo = pick(&roster(), &sel, &mut seed).unwrap();
+        let (demo, _) = pick(&roster(), &sel, &mut seed).unwrap();
         assert_eq!((demo.track.as_str(), demo.rider.as_str(), demo.quad.as_str()), ("Forest2", "Male1", "Bandit"));
         assert_eq!((demo.mode, demo.players, demo.others.len()), (Mode::SingleRace, 1, 0));
         let mut none = roster();
         none.demo_tracks.clear();
         assert!(pick(&none, &sel, &mut seed).is_none());
+    }
+
+    #[test]
+    fn a_third_of_demos_split_the_screen() {
+        let (roster, sel) = (roster(), sel());
+        let mut seed = 12345;
+        let mut counts = [0usize; 5];
+        for _ in 0..6000 {
+            counts[pick(&roster, &sel, &mut seed).unwrap().1] += 1;
+        }
+        assert_eq!(counts[0] + counts[3], 0, "one, two or four views");
+        let near = |n: usize, want: usize| n.abs_diff(want) < 250;
+        assert!(near(counts[1], 4000) && near(counts[2], 1000) && near(counts[4], 1000), "{counts:?}");
     }
 }

@@ -283,7 +283,7 @@ fn broadcast(
     (progress, session, race): (Option<Res<RaceProgress>>, Option<Res<Session>>, Option<Res<Race>>),
     (player, wreck, opponents): (Option<Res<Player>>, Option<Res<Wreck>>, Option<Res<Opponents>>),
     live: Option<ResMut<Broadcast>>,
-    mut cams: Query<(Entity, &mut Projection), With<ChaseCam>>,
+    mut cams: Query<(Entity, &mut Projection, Option<&crate::mp::Split>), With<ChaseCam>>,
     mut transforms: Query<&mut Transform>,
     sky: Query<Entity, With<SkyDome>>,
     mut riders: Query<&mut Visibility, With<Rider>>,
@@ -326,7 +326,8 @@ fn broadcast(
     scene.target = live.director.pick_rider(&scene, players, dt);
     live.target = scene.target;
     let shot = live.director.shot(&scene, dt);
-    let Some((cam, mut proj)) = cams.iter_mut().next() else { return };
+    // The first view: the attract demo's others stay on their riders.
+    let Some((cam, mut proj, _)) = cams.iter_mut().find(|c| c.2.is_none_or(|s| s.0 == 0)) else { return };
     if let Ok(mut t) = transforms.get_mut(cam) {
         t.translation = shot.eye;
         t.rotation = shot.rotation;

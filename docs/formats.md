@@ -715,6 +715,15 @@ ends on a button press (0x80c30 takes buttons 0 and 2 of its input
 events), when any rider finishes, or after `mDemoMaxTime` (0x80d20), and
 the front end comes back.
 
+The race (0x86530) gives each rider with `mHasCamera` a view of its own
+(0x83460): two split top and bottom (left and right when 0x1dbc60, set
+from the console's widescreen video flags, is 1) and four take a quarter
+each, as in split screen. The demo page's enter (0x80ba0) turns the
+director on for the first view only; the others keep their riders' race
+cameras. The rewrite gives the extra views to the computer riders after
+player 1's seat on the grid, always top and bottom for two, and hears
+their quads as it hears split-screen players' (each view a listener).
+
 ## The race intro
 
 The intro state (0x1c1b2c; enter 0x7dd80, update 0x7e750) runs before the

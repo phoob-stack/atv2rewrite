@@ -745,9 +745,11 @@ fn setup(
         }
         None => {
             let e = commands.spawn((view.clone(), cam, ChaseCam { offset: eye - start.0, facing: cam.rotation }, IsDefaultUiCamera, scoped.clone())).id();
-            if sel.players > 1 {
+            // Split screen, or an attract demo with more than one view.
+            let views = demo.as_deref().map_or(sel.players, demo::Demo::views);
+            if views > 1 {
                 commands.entity(e).insert(mp::Split(0));
-                mp::spawn_views(&mut commands, view, sel.players, &scoped);
+                mp::spawn_views(&mut commands, view, views, &scoped);
             }
         }
     }
@@ -1157,7 +1159,7 @@ const LOOK_RAISE: f32 = 1.0;
 /// camera's offset behind the quad's heading and looks ahead of it. The
 /// offset swings round and the view turns at the camera's stiffnesses
 /// (softer in the air), so the camera lags turns but not speed.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn chase_camera(
     time: Res<Time>,
     game: Res<Game>,
@@ -1165,7 +1167,7 @@ fn chase_camera(
     player: Option<Res<Player>>,
     race: Option<Res<Race>>,
     opponents: Option<Res<opponents::Opponents>>,
-    (wreck, water): (Option<Res<Wreck>>, Option<Res<water::Water>>),
+    (wreck, water, demo): (Option<Res<Wreck>>, Option<Res<water::Water>>, Option<Res<demo::Demo>>),
     mut cams: Query<(&mut Transform, &mut ChaseCam, Option<&mp::Split>)>,
     mut riders: Query<(&Rider, &mut Visibility), Without<OpponentRider>>,
     mut rig: Local<Option<(CameraView, FollowCam)>>,
@@ -1189,6 +1191,12 @@ fn chase_camera(
                 continue;
             }
             0 => &player.0,
+            // The attract demo's other views are on the computer riders
+            // after player 1's seat on the grid.
+            slot if demo.is_some() => match opponents.as_deref().and_then(|o| o.racers.get(slot - 1)) {
+                Some(r) => &r.vehicle,
+                None => continue,
+            },
             slot => match opponents.as_deref().and_then(|o| o.human(slot + 1)) {
                 Some(r) => &r.vehicle,
                 None => continue,
