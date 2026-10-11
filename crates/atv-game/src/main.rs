@@ -38,6 +38,7 @@ mod water;
 mod mp;
 mod opponents;
 mod race;
+mod records;
 mod replay;
 mod respot;
 mod rider;
@@ -484,11 +485,12 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(intro::IntroPlugin)
         .add_plugins(effects::EffectsPlugin)
         .add_plugins(loading::LoadingPlugin)
+        .add_plugins(records::RecordsPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
         .add_systems(OnExit(AppState::Race), teardown)
-        .add_systems(FixedUpdate, (drive, career::dnf_cutoff, challenge::follow_course).chain().run_if(in_state(AppState::Race)))
+        .add_systems(FixedUpdate, (drive, records::watch, career::dnf_cutoff, challenge::follow_course).chain().run_if(in_state(AppState::Race)))
         .add_systems(
             Update,
             (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, respot::show_fade, cycle_camera, chase_camera, fly_camera, follow_sky, rumble)

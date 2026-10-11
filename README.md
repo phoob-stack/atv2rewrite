@@ -185,6 +185,12 @@ in the config folder, and the last one loaded comes back next time; the
 first one made carries on any progress from before profiles
 (`career.cfg`).
 
+**Track records**, as in the original: every track keeps its best lap (not
+on the stadiums), longest jump, biggest air, best wheelie and best
+bicycle. They start as `Setup/Tracks.xml` has them, and the results of any
+race or freestyle session (not a challenge) show the ones you broke, which
+are saved in `records.cfg` in the config folder under your profile's name.
+
 **Replays**, as in the original: the results of a one-player race or
 session offer Replay, which plays it back with the original's TV
 director (`Setup/CameraDirector.xml`). The track's own trackside cameras

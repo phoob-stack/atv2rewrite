@@ -16,6 +16,7 @@ use crate::freestyle::{limit_label, Session, MEDALS};
 use crate::frontend::{self, FrontEnd, Roster, Screen};
 use crate::opponents::{Opponents, Standings};
 use crate::race::{fmt_time, RaceProgress};
+use crate::records::{self, Broken, Feats, TrackRecords};
 use crate::replay;
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::unlocks;
@@ -511,6 +512,45 @@ fn trick_scores(run: &Run, session: Option<&Session>, opponents: Option<&Opponen
         .collect()
 }
 
+/// Each human's race for the track records: player 1's, then the other
+/// split-screen players'. A record takes the profile's name, or in split
+/// screen each player's rider's, as the original takes each controller's
+/// player name there (0x14660).
+fn record_entries(
+    p: &RaceProgress,
+    session: Option<&Session>,
+    feats: &Feats,
+    sel: &Selection,
+    roster: &Roster,
+    career: &Career,
+    opponents: Option<&Opponents>,
+) -> Vec<records::Entry> {
+    let rider_name = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider)).map_or_else(|| sel.rider.to_uppercase(), |r| r.name.clone());
+    let name = career.profile.as_ref().filter(|_| sel.players <= 1).map_or(rider_name, |pr| pr.name.clone());
+    let entry = |player: usize, name: String, rider: &str, quad: &str, p: &RaceProgress, s: Option<&Session>| {
+        let jumps = feats.0.get(player - 1).copied().unwrap_or_default();
+        records::Entry {
+            player,
+            name,
+            rider: rider.to_string(),
+            quad: quad.to_string(),
+            best_lap: p.best_lap(),
+            longest_jump: jumps.longest,
+            highest_jump: jumps.highest,
+            wheelie: s.map_or(0.0, |s| s.longest_wheelie),
+            bicycle: s.map_or(0.0, |s| s.longest_bicycle),
+        }
+    };
+    let mut out = vec![entry(1, name, &sel.rider, &sel.quad, p, session)];
+    for r in opponents.iter().flat_map(|o| &o.racers) {
+        if let Some(n) = r.human.filter(|&n| n >= 2) {
+            let quad = sel.others.get(n - 2).map_or("", |o| o.1.as_str());
+            out.push(entry(n, r.name.clone(), &r.model, quad, &r.progress, r.session.as_ref()));
+        }
+    }
+    out
+}
+
 pub fn ordinal(n: usize) -> String {
     let suffix = match (n % 10, n % 100) {
         (_, 11..=13) => "TH",
@@ -635,7 +675,13 @@ fn race_menus(
     mut next: ResMut<NextState<AppState>>,
     mut finished_for: Local<f32>,
     field: (Option<Res<Standings>>, Option<Res<Opponents>>),
-    (mut career, rules, mut fe, mut settings): (ResMut<Career>, Res<career::Rules>, ResMut<FrontEnd>, ResMut<Settings>),
+    (mut career, rules, mut fe, mut settings, (mut records, feats, demo)): (
+        ResMut<Career>,
+        Res<career::Rules>,
+        ResMut<FrontEnd>,
+        ResMut<Settings>,
+        (Option<ResMut<TrackRecords>>, Res<Feats>, Option<Res<crate::demo::Demo>>),
+    ),
     (defs, course, overlay, mut mp_champ, replay): (Res<challenge::Defs>, Option<Res<challenge::Course>>, Query<Entity, With<mp::Overlay>>, ResMut<mp::MpChamp>, Option<Res<replay::Playback>>),
 ) {
     // The replay has the controls while it plays.
@@ -659,7 +705,7 @@ fn race_menus(
         // Escape or Start pauses (Backspace is the quick restart).
         if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start)) && !over {
             virt.pause();
-            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None, None), overlay, "RETURN TO RACE");
+            spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None, None, &[]), overlay, "RETURN TO RACE");
         } else if *finished_for > 2.5 && menus.is_empty() {
             let award = (selection.mode == Mode::Career).then(|| {
                 let run = career.run.clone()?;
@@ -724,8 +770,26 @@ fn race_menus(
                 }
                 career.save();
             }
-            let run = if champ_round { mp_champ.run.as_ref() } else { career.run.as_ref() };
-            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref()), overlay, "");
+            // The track records broken, except in a challenge or by the
+            // demo's computer rider (0x8006e).
+            let broken = match records.as_mut() {
+                Some(r) if selection.mode != Mode::Challenge && demo.is_none() => {
+                    let b = r.check(&selection.track, &record_entries(&p, session.as_deref(), &feats, &selection, &roster, &career, field.1));
+                    if !b.is_empty() {
+                        r.save();
+                    }
+                    b
+                }
+                _ => Vec::new(),
+            };
+            // The championship this round was in: a single race isn't one,
+            // whatever the profile has saved.
+            let run = match selection.mode {
+                _ if champ_round => mp_champ.run.as_ref(),
+                Mode::Career => career.run.as_ref(),
+                _ => None,
+            };
+            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref(), &broken), overlay, "");
         }
         return;
     };
@@ -758,7 +822,7 @@ fn race_menus(
             Nav::Accept | Nav::Start | Nav::Back => {
                 settings.save();
                 commands.entity(e).despawn();
-                spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None, None), overlay, page.item());
+                spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None, None, &[]), overlay, page.item());
             }
             _ => {}
         }
@@ -827,7 +891,7 @@ fn arcade_won(p: &RaceProgress, standings: Option<&Standings>) -> bool {
     p.finished.is_some() && !p.out_of_time() && standings.is_none_or(|s| s.racers <= 1 || s.player == 1)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn spawn_race_menu(
     commands: &mut Commands,
     ui: &UiAssets,
@@ -837,7 +901,7 @@ fn spawn_race_menu(
     sel: &Selection,
     roster: &Roster,
     (standings, opponents): (Option<&Standings>, Option<&Opponents>),
-    (award, run, outcome, new_track): (Option<&Award>, Option<&Run>, Option<&Outcome>, Option<&str>),
+    (award, run, outcome, new_track, broken): (Option<&Award>, Option<&Run>, Option<&Outcome>, Option<&str>, &[Broken]),
     overlay: Option<Entity>,
     focus: &str,
 ) {
@@ -919,6 +983,7 @@ fn spawn_race_menu(
                 + award.map_or(0, |a| 3 + usize::from(a.new_level.is_some()) + usize::from(a.gold) + a.unlocked.len())
         }
     };
+    let rows = rows + if results && !broken.is_empty() { 1 + broken.len() } else { 0 };
     let ph = 120.0 + 18.0 * rows as f32 + 34.0 * items.len() as f32;
     let pw = 340.0;
     let menu = commands.spawn_empty().id();
@@ -1050,6 +1115,19 @@ fn spawn_race_menu(
                                 for atv in &a.unlocked {
                                     row(rows, "NEW ATV", &atv.to_uppercase(), true);
                                 }
+                            }
+                        });
+                    }
+                    if results && !broken.is_empty() {
+                        box_.spawn(Node { flex_direction: FlexDirection::Column, row_gap: px(3), ..default() }).with_children(|rows| {
+                            // The original's own page for them says "Track
+                            // record broken!", or the stadium's in freestyle
+                            // (0x4e050).
+                            let title = if sel.mode == Mode::Freestyle { "STADIUM RECORD BROKEN!" } else { "TRACK RECORD BROKEN!" };
+                            row(rows, title, "", true);
+                            for b in broken {
+                                let label = if sel.players > 1 { format!("P{} {}", b.player, b.kind.label()) } else { b.kind.label().to_string() };
+                                row(rows, &label, &b.kind.show(b.value), true);
                             }
                         });
                     }

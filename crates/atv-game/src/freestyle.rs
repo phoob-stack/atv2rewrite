@@ -324,6 +324,10 @@ pub struct Session {
     pub best_jump: u32,
     pub landed: u32,
     pub longest_air: f32,
+    /// The longest wheelie and bicycle that scored, seconds, for the track
+    /// records (the stunt manager's +0xbc and +0xc0, 0x614f0).
+    pub longest_wheelie: f32,
+    pub longest_bicycle: f32,
     /// Ended from the pause menu (unlimited sessions).
     pub ended: bool,
     mask: u8,
@@ -368,6 +372,8 @@ impl Session {
             best_jump: 0,
             landed: 0,
             longest_air: 0.0,
+            longest_wheelie: 0.0,
+            longest_bicycle: 0.0,
             ended: false,
             mask: 0,
             steady: 0.0,
@@ -637,6 +643,11 @@ impl Session {
                         Ground::Bicycle => ("BICYCLE", self.ground_points.bicycle),
                     };
                     let pts = per * (secs / 0.25) as u32;
+                    match g {
+                        Ground::Wheelie => self.longest_wheelie = self.longest_wheelie.max(secs),
+                        Ground::Bicycle => self.longest_bicycle = self.longest_bicycle.max(secs),
+                        Ground::Endo => {}
+                    }
                     self.popup(format!("{name} {secs:.1}S  {pts}"), PopupKind::Bonus);
                     self.award(pts);
                 }
