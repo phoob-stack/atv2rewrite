@@ -23,11 +23,11 @@ const MPS_TO_MPH: f32 = 2.237_41;
 const MPH_TO_MPS: f32 = 0.446_944;
 /// Radians per second -> revs per minute.
 const RAD_TO_RPM: f32 = 9.549_3;
-/// The original steps once per frame at 60 Hz; sub-stepping finer keeps the
-/// suspension stable at any render rate without changing the feel.
-const STEP: f32 = 1.0 / 120.0;
-/// Pre-load is applied by the original as a one-frame force at 60 Hz.
-const ORIGINAL_FRAME: f32 = 1.0 / 60.0;
+/// The original ticks its physics at the display rate, 1/60 s on NTSC
+/// (0x84f20), whatever the frame time. Stepping finer changes how the
+/// suspension throws the quad off ramps and through water, so the port runs
+/// the same fixed tick and interpolates the pose it shows in between.
+const TICK: f32 = 1.0 / 60.0;
 /// Seconds without wheel contact before the quad counts as airborne.
 const AIRBORNE_DELAY: f32 = 0.15;
 /// How hard deep water holds back the quad's motion and spin (0x5ba70).
@@ -149,6 +149,11 @@ pub struct Vehicle {
     force: Vec3,
     torque: Vec3,
     pos_fix: Vec3,
+    /// Time not yet simulated, and the pose before the last tick, which the
+    /// shown pose blends from.
+    pending: f32,
+    shown_pos: Vec3,
+    shown_rot: Mat3,
     /// Where each body sphere was last step, for catching tunnelling.
     body_prev: [Vec3; 5],
 
@@ -247,6 +252,9 @@ impl Vehicle {
             force: Vec3::ZERO,
             torque: Vec3::ZERO,
             pos_fix: Vec3::ZERO,
+            pending: 0.0,
+            shown_pos: Vec3::ZERO,
+            shown_rot: Mat3::IDENTITY,
             body_prev: [Vec3::NAN; 5],
             struts: vec![Strut::default(); n],
             ground: Ground {
@@ -347,6 +355,9 @@ impl Vehicle {
         self.airborne = false;
         self.air_time = 0.0;
         self.in_water = false;
+        self.pending = 0.0;
+        self.shown_pos = self.pos;
+        self.shown_rot = self.rot;
         self.sync_out();
     }
 
@@ -354,18 +365,24 @@ impl Vehicle {
     /// (sim frame), as a bump from another quad does.
     pub fn nudge(&mut self, offset: Vec3, delta_v: Vec3) {
         self.pos += offset * FLIP;
+        self.shown_pos += offset * FLIP;
         self.momentum += delta_v * FLIP * self.params.mass;
         self.vel = self.momentum / self.params.mass;
         self.position = self.pos * FLIP;
         self.velocity = self.vel * FLIP;
     }
 
-    /// Advances the simulation by `dt` seconds (internally sub-stepped).
+    /// Advances the simulation by `dt` seconds in the original's fixed
+    /// ticks; time short of a tick carries over to the next call.
     pub fn step(&mut self, input: &Input, dt: f32, world: &TrackCollision) {
-        let n = (dt / STEP).ceil().clamp(1.0, 32.0) as usize;
-        let h = dt.min(0.1) / n as f32;
-        for _ in 0..n {
-            self.substep(input, h, world);
+        // As the original, at most 0.1 s per frame.
+        self.pending += dt.clamp(0.0, 0.1);
+        while self.pending >= TICK - 1e-5 {
+            self.pending = (self.pending - TICK).max(0.0);
+            self.shown_pos = self.pos;
+            self.shown_rot = self.rot;
+            self.substep(input, TICK, world);
+            self.spin_wheels();
         }
         self.sync_out();
     }
@@ -978,7 +995,7 @@ impl Vehicle {
                     let t = self.vel.length() * MPS_TO_MPH * 0.01;
                     let push = t * (p.preload_100mph - p.preload_0mph) + p.preload_0mph;
                     // The original adds this as a force for one 60 Hz frame.
-                    self.momentum.y += push * self.preload * ORIGINAL_FRAME;
+                    self.momentum.y += push * self.preload * TICK;
                     let g = t * (p.preload_grav_scale_100mph - p.preload_grav_scale_0mph)
                         + p.preload_grav_scale_0mph;
                     self.gravity_scale = 1.0 - (1.0 - g) * self.preload;
@@ -1213,8 +1230,12 @@ impl Vehicle {
 
     /// Copies the game-frame state out to the public sim-frame fields.
     fn sync_out(&mut self) {
-        self.position = self.pos * FLIP;
-        self.rotation = Quat::from_mat3(&mirror(self.rot)).normalize();
+        // The pose between the last two ticks, so motion stays smooth when
+        // the caller steps faster than the tick.
+        let t = (self.pending / TICK).clamp(0.0, 1.0);
+        self.position = self.shown_pos.lerp(self.pos, t) * FLIP;
+        let (from, to) = (Quat::from_mat3(&self.shown_rot), Quat::from_mat3(&self.rot));
+        self.rotation = Quat::from_mat3(&mirror(Mat3::from_quat(from.slerp(to, t).normalize()))).normalize();
         self.velocity = self.vel * FLIP;
         // Angular velocity is an axial vector: mirroring flips its sign.
         self.angular_velocity = -(self.ang_vel * FLIP);
@@ -1232,10 +1253,12 @@ impl Vehicle {
                 0.0
             };
         }
+    }
+
+    fn spin_wheels(&mut self) {
         let roll = self.ground_fwd;
         for (ws, wp) in self.wheels.iter_mut().zip(&self.params.wheels) {
-            ws.spin =
-                (ws.spin + roll / wp.radius * ORIGINAL_FRAME).rem_euclid(std::f32::consts::TAU);
+            ws.spin = (ws.spin + roll / wp.radius * TICK).rem_euclid(std::f32::consts::TAU);
         }
     }
 
