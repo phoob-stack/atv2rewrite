@@ -881,7 +881,16 @@ start. The first lap's recording starts on the grid. At the end (0x9d9b0)
 a best lap under the track's lap record becomes the record, and the ghost
 is saved with the game (0x9d890, 0x9df80). The HUD (0x9fa60) shows
 "Record" (string 0xdf: the track's lap record, lowered as soon as a lap
-beats it), "Best" (0xd6), "Current" (0xd8) and the last four laps.
+beats it), "Best" (0xd6), "Current" (0xd8) and a list of laps (0x9fbd0
+every 1/30 s, drawn by 0xa0660). The list holds four times: each finished
+lap goes in slot min(laps, 4) - 1, the lap being ridden in slot
+min(laps, 3), and past four laps the list moves up one, so it shows the
+last three laps and the one being ridden (the original overwrites lap 4
+with the lap in progress before it moves up, so lap 4 never shows). Rows
+step down half a line from y 0.3 in the HUD box: Record, Best, then
+"Current" beside the first lap row. Labels use the colour pair
+0x1df850/0x1df834 (grey-teal and dark teal), times 0x1df844/0x1df840
+(orange and dark red), and the lap being ridden yellow for both.
 
 The rewrite records what is drawn, as its replays do: the quad, its
 wheels, the rider's seat and every joint, 30 times a second. The ghost is
@@ -891,8 +900,10 @@ track in `ghosts/<track>.ghost` in the config folder: `ATV2GHST`, version
 joint count (u16) and frame count (u32), then per frame the lap time, the
 quad's place and turn, the seat's, each wheel's height and turn, the
 pelvis's place and each joint's turn (places as f32, turns as four i16
-fractions of 32767). The Time Trial times add RECORD under TIME, LAP and
-BEST.
+fractions of 32767). The rewrite's Time Trial times are TIME, RECORD,
+BEST and the lap list with CURRENT beside its first row; the lap being
+ridden is yellow and the earlier laps white, like the rewrite's other
+times.
 
 ## Still unknown
 

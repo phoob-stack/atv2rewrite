@@ -167,6 +167,17 @@ impl RaceProgress {
     pub fn best_lap(&self) -> Option<f32> {
         self.lap_times.iter().copied().reduce(f32::min)
     }
+
+    /// Time Trial's lap list (0x9fbd0): the last laps, oldest first, then
+    /// the lap being ridden (`true`), four rows at most. The original
+    /// loses lap 4 when it shifts the list; this keeps every lap.
+    pub fn recent_laps(&self) -> Vec<(f32, bool)> {
+        let riding = self.finished.is_none();
+        let keep = if riding { 3 } else { 4 };
+        let done = &self.lap_times[self.lap_times.len().saturating_sub(keep)..];
+        let current = riding.then(|| (if self.started() { self.lap_time() } else { 0.0 }, true));
+        done.iter().map(|&t| (t, false)).chain(current).collect()
+    }
 }
 
 /// The arcade checkpoints, as indices into [`atv_sim::track::checkpoints`],
@@ -318,6 +329,25 @@ mod tests {
         assert!(p.finished.is_some());
         assert_eq!(p.best_lap(), Some(5.0));
         assert_eq!(fmt_time(65.432), "1:05.43");
+    }
+
+    #[test]
+    fn recent_laps_keep_the_last_three_and_the_lap_being_ridden() {
+        let mut p = RaceProgress::new(6, true);
+        assert_eq!(p.recent_laps(), vec![(0.0, true)], "the current lap reads 0 before the start");
+        p.tick(RaceProgress::COUNTDOWN + 0.01);
+        for lap in 1..=5 {
+            p.tick(lap as f32);
+            p.reach(0);
+        }
+        p.tick(0.5);
+        let laps: Vec<_> = p.recent_laps().into_iter().map(|(t, current)| ((t * 10.0).round() as u32, current)).collect();
+        assert_eq!(laps, vec![(30, false), (40, false), (50, false), (5, true)]);
+        p.tick(6.0);
+        p.reach(0);
+        assert!(p.finished.is_some());
+        let laps: Vec<_> = p.recent_laps().into_iter().map(|(t, current)| ((t * 10.0).round() as u32, current)).collect();
+        assert_eq!(laps, vec![(30, false), (40, false), (50, false), (65, false)], "no lap is ridden after the finish");
     }
 
     #[test]

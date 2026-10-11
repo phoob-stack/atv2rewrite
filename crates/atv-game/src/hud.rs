@@ -70,6 +70,9 @@ enum Readout {
     /// Arcade: seconds left, and the round.
     TimeLeft,
     Round,
+    /// Time Trial: a row of the lap list (0x9fbd0), see
+    /// [`RaceProgress::recent_laps`].
+    LapRow(usize),
 }
 #[derive(Component)]
 struct BonusText;
@@ -243,8 +246,18 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
                 ..default()
             })
             .with_children(|c| {
-                let record = (sel.mode == Mode::TimeTrial).then_some(("RECORD", 11.0, Readout::Record));
-                for (label, size, readout) in [("TIME", 18.0, Readout::Time), ("LAP", 11.0, Readout::LapTime), ("BEST", 11.0, Readout::Best)].into_iter().chain(record) {
+                // Time Trial lists the record, the best lap and the last
+                // laps, the one being ridden at the bottom, with the
+                // "Current" label on the first row (0xa0660).
+                let rows: Vec<_> = if sel.mode == Mode::TimeTrial {
+                    [("TIME", 18.0, Readout::Time), ("RECORD", 11.0, Readout::Record), ("BEST", 11.0, Readout::Best)]
+                        .into_iter()
+                        .chain((0..4).map(|i| (if i == 0 { "CURRENT" } else { "" }, 11.0, Readout::LapRow(i))))
+                        .collect()
+                } else {
+                    vec![("TIME", 18.0, Readout::Time), ("LAP", 11.0, Readout::LapTime), ("BEST", 11.0, Readout::Best)]
+                };
+                for (label, size, readout) in rows {
                     c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
                         r.spawn(BitmapText::new(FontId::Small, 8.0, label));
                         r.spawn((BitmapText::new(FontId::Chrome, size, "0:00.00"), readout));
@@ -257,10 +270,15 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
             let m = &ui.meter;
             let line = m.get("line").rect;
             let ms = 0.42;
-            let (top, length) = (112.0, line.height() * ms);
+            // Time Trial's lap list reaches further down: the meter starts
+            // under it, shorter.
+            let drop = if sel.mode == Mode::TimeTrial { 40.0 } else { 0.0 };
+            let (top, length) = (112.0 + drop, line.height() * ms - drop);
             root.spawn(Node { position_type: PositionType::Absolute, right: px(30), top: px(top), width: px(30), height: px(length), ..default() })
                 .with_children(|c| {
-                    c.spawn(placed(m.node("line", ms), 15.0 - line.width() * ms / 2.0, 0.0));
+                    let mut l = placed(m.node("line", ms), 15.0 - line.width() * ms / 2.0, 0.0);
+                    l.0.height = px(length);
+                    c.spawn(l);
                     let f = m.get("flag").rect.size() * ms * 1.2;
                     c.spawn(placed(m.node("flag", ms * 1.2), 15.0 - f.x / 2.0, -f.y - 2.0));
                     // Each rider's marker shows their place; the computer
@@ -372,6 +390,7 @@ fn update_readouts(
         set_text(&mut t, &s);
     }
     let v = &player.0;
+    let laps = if sel.mode == Mode::TimeTrial { p.recent_laps() } else { Vec::new() };
     for (r, mut t) in &mut q {
         let s = match r {
             // The dial face reads KPH.
@@ -398,6 +417,17 @@ fn update_readouts(
                 fmt_time(left)
             }
             Readout::Round => continue,
+            Readout::LapRow(i) => match laps.get(*i) {
+                Some(&(time, current)) => {
+                    // The lap being ridden is yellow.
+                    let c = if current { Color::srgb(1.0, 1.0, 0.0) } else { Color::WHITE };
+                    if t.color != c {
+                        t.color = c;
+                    }
+                    fmt_time(time)
+                }
+                None => String::new(),
+            },
         };
         set_text(&mut t, &s);
     }
