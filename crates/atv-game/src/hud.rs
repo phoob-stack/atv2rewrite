@@ -270,10 +270,15 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
             let m = &ui.meter;
             let line = m.get("line").rect;
             let ms = 0.42;
-            let (top, length) = (112.0, line.height() * ms);
+            // Time Trial's lap list reaches further down: the meter starts
+            // under it, shorter.
+            let drop = if sel.mode == Mode::TimeTrial { 40.0 } else { 0.0 };
+            let (top, length) = (112.0 + drop, line.height() * ms - drop);
             root.spawn(Node { position_type: PositionType::Absolute, right: px(30), top: px(top), width: px(30), height: px(length), ..default() })
                 .with_children(|c| {
-                    c.spawn(placed(m.node("line", ms), 15.0 - line.width() * ms / 2.0, 0.0));
+                    let mut l = placed(m.node("line", ms), 15.0 - line.width() * ms / 2.0, 0.0);
+                    l.0.height = px(length);
+                    c.spawn(l);
                     let f = m.get("flag").rect.size() * ms * 1.2;
                     c.spawn(placed(m.node("flag", ms * 1.2), 15.0 - f.x / 2.0, -f.y - 2.0));
                     // Each rider's marker shows their place; the computer
