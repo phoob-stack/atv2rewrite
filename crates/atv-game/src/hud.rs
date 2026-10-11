@@ -1,9 +1,11 @@
 //! The in-race HUD, drawn with the original art: the rev gauge with its
-//! needle, preload meter, speed and gear; lap, time and best-lap readouts;
-//! the lap progress meter; the 3-2-1-GO countdown, checkpoint banner and
-//! wrong-way warning; arcade's checkpoint clock; and the pause and results
-//! menus for every mode, the pause menu with the original's Audio, Camera
-//! and Controller pages. Freestyle's score readouts are in `freestyle`.
+//! needle, preload meter, speed and gear; the original's race panels
+//! (place, trick score and lead; current lap, best lap and lap count) and
+//! Time Trial's times; the lap progress meter; the 3-2-1-GO countdown,
+//! checkpoint banner and wrong-way warning; arcade's checkpoint clock; and
+//! the pause and results menus for every mode, the pause menu with the
+//! original's Audio, Camera and Controller pages. Freestyle's score
+//! readouts are in `freestyle`.
 
 use bevy::input::gamepad::Gamepad;
 use bevy::prelude::*;
@@ -12,7 +14,7 @@ use crate::boost::Boost;
 use crate::career::{self, Award, Career, Run};
 use crate::challenge::{self, Outcome};
 use crate::mp;
-use crate::freestyle::{limit_label, Session, MEDALS, TIME_LIMITS};
+use crate::freestyle::{limit_label, RollingScore, Session, MEDALS, TIME_LIMITS};
 use crate::frontend::{self, FrontEnd, Roster, Screen};
 use crate::opponents::{Opponents, Standings};
 use crate::race::{fmt_time, RaceProgress};
@@ -38,10 +40,17 @@ impl Plugin for HudPlugin {
             .add_systems(OnExit(AppState::Race), unpause)
             .add_systems(
                 Update,
-                (update_gauge, update_readouts, update_meter, update_banners, race_menus.run_if(no_demo).run_if(no_intro).run_if(no_briefing)).run_if(in_state(AppState::Race)),
+                (update_gauge, update_readouts, update_panel, update_meter, update_banners, race_menus.run_if(no_demo).run_if(no_intro).run_if(no_briefing))
+                    .run_if(in_state(AppState::Race)),
             );
     }
 }
+
+/// The HUD panels' colours: labels and figures (0x1df8e8 and 0x1df850,
+/// 0x1df8e0 and 0x1df844; the original shades each down to a darker one,
+/// 0x1df8d0/0x1df834 and 0x1df8c8/0x1df840).
+const LABEL: Color = Color::srgb(0.47, 0.67, 0.67);
+const FIGURE: Color = Color::srgb(1.0, 0.51, 0.3);
 
 /// Gauge scale, screen units per texel of `HUDTPAGE`.
 const GAUGE: f32 = 0.8;
@@ -75,6 +84,17 @@ enum Readout {
     /// [`RaceProgress::recent_laps`].
     LapRow(usize),
 }
+/// The race panel, top left (0xa1230): the player's place, trick score
+/// and lead.
+#[derive(Component, Clone, Copy, PartialEq)]
+enum PanelReadout {
+    Position,
+    Score,
+    Lead,
+}
+/// The panel's Lead row: with other racers, on one screen.
+#[derive(Component)]
+struct LeadRow;
 #[derive(Component)]
 struct BonusText;
 #[derive(Component)]
@@ -206,13 +226,32 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
                 spawn_messages(root, &ui);
                 return;
             }
-            // Lap, top left (and arcade's round under it).
+            // Top left: Time Trial's lap; a race's panel (0xa1930) with the
+            // place, trick score and lead, labels right-aligned before the
+            // figures; arcade's round under it.
             root.spawn(Node { position_type: PositionType::Absolute, left: px(24), top: px(18), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() })
                 .with_children(|c| {
-                    c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
-                        r.spawn(BitmapText::new(FontId::Small, 9.0, "LAP"));
-                        r.spawn((BitmapText::new(FontId::Chrome, 22.0, "1/3"), Readout::Lap));
-                    });
+                    if sel.mode == Mode::TimeTrial {
+                        c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
+                            r.spawn(BitmapText::new(FontId::Small, 9.0, "LAP").color(LABEL));
+                            r.spawn((BitmapText::new(FontId::Chrome, 22.0, "1/3").color(FIGURE), Readout::Lap));
+                        });
+                    }
+                    let panel = [("POSITION", 18.0, PanelReadout::Position), ("SCORE", 15.0, PanelReadout::Score), ("LEAD", 15.0, PanelReadout::Lead)];
+                    for (label, size, readout) in panel.into_iter().filter(|_| sel.mode != Mode::TimeTrial) {
+                        let mut row = c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(8), ..default() });
+                        if readout == PanelReadout::Lead {
+                            row.insert((LeadRow, Visibility::Hidden));
+                        }
+                        row.with_children(|r| {
+                            r.spawn(Node { width: px(64), justify_content: JustifyContent::FlexEnd, ..default() })
+                                .with_child(BitmapText::new(FontId::Small, 8.0, label).color(LABEL));
+                            let mut figure = r.spawn((BitmapText::new(FontId::Chrome, size, "").color(FIGURE), readout));
+                            if readout == PanelReadout::Score {
+                                figure.insert(RollingScore::new());
+                            }
+                        });
+                    }
                     if sel.mode == Mode::Arcade {
                         c.spawn((BitmapText::new(FontId::Small, 8.0, format!("ROUND {}/{rounds}", sel.round + 1)).color(Color::srgb(0.75, 0.85, 1.0)), Readout::Round));
                     }
@@ -256,12 +295,14 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
                         .chain((0..4).map(|i| (if i == 0 { "CURRENT" } else { "" }, 11.0, Readout::LapRow(i))))
                         .collect()
                 } else {
-                    vec![("TIME", 18.0, Readout::Time), ("LAP", 11.0, Readout::LapTime), ("BEST", 11.0, Readout::Best)]
+                    // A race's panel (0x9f840): the lap being ridden, the
+                    // best lap and the lap count.
+                    vec![("CURRENT", 15.0, Readout::LapTime), ("BEST", 15.0, Readout::Best), ("LAP", 15.0, Readout::Lap)]
                 };
                 for (label, size, readout) in rows {
                     c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
-                        r.spawn(BitmapText::new(FontId::Small, 8.0, label));
-                        r.spawn((BitmapText::new(FontId::Chrome, size, "0:00.00"), readout));
+                        r.spawn(BitmapText::new(FontId::Small, 8.0, label).color(LABEL));
+                        r.spawn((BitmapText::new(FontId::Chrome, size, "").color(FIGURE), readout));
                     });
                 }
             });
@@ -421,7 +462,7 @@ fn update_readouts(
             Readout::LapRow(i) => match laps.get(*i) {
                 Some(&(time, current)) => {
                     // The lap being ridden is yellow.
-                    let c = if current { Color::srgb(1.0, 1.0, 0.0) } else { Color::WHITE };
+                    let c = if current { Color::srgb(1.0, 1.0, 0.0) } else { FIGURE };
                     if t.color != c {
                         t.color = c;
                     }
@@ -432,6 +473,61 @@ fn update_readouts(
         };
         set_text(&mut t, &s);
     }
+}
+
+/// The race panel's figures (0xa1510): the place, the trick score rolling
+/// up to the real one (in a championship round "123 (2ND)", with the place
+/// by tricks, sorted again each second as by 0xa1130) and the lead, "12M"
+/// ahead of second place, in the labels' colour, or "-30M" behind the
+/// leader. The original shows the lead with more than one racer and one
+/// screen.
+#[allow(clippy::type_complexity)]
+fn update_panel(
+    time: Res<Time>,
+    sel: Res<Selection>,
+    (session, standings, opponents): (Option<Res<Session>>, Option<Res<Standings>>, Option<Res<Opponents>>),
+    mut trick_place: Local<(f32, usize)>,
+    mut figures: Query<(&PanelReadout, &mut BitmapText, Option<&mut RollingScore>)>,
+    mut lead_row: Query<&mut Visibility, With<LeadRow>>,
+) {
+    let standings = standings.as_deref().filter(|s| s.racers > 1);
+    let place = standings.map_or(1, |s| s.player);
+    let score = session.as_deref().map_or(0, |s| s.score);
+    let champ = sel.mode == Mode::Career;
+    if champ {
+        trick_place.0 -= time.delta_secs();
+        if trick_place.0 <= 0.0 || session.as_ref().is_some_and(|s| s.is_added()) {
+            trick_place.0 = 1.0;
+            let ahead = opponents.iter().flat_map(|o| &o.racers).filter_map(|r| r.session.as_ref()).filter(|s| s.score > score).count();
+            trick_place.1 = 1 + ahead;
+        }
+    }
+    let lead = standings.filter(|_| sel.players <= 1).map(|s| s.lead);
+    for mut vis in &mut lead_row {
+        vis.set_if_neq(if lead.is_some() { Visibility::Inherited } else { Visibility::Hidden });
+    }
+    for (readout, mut t, rolling) in &mut figures {
+        let text = match readout {
+            PanelReadout::Position => ordinal(place),
+            PanelReadout::Score => {
+                let shown = rolling.map_or(score, |mut r| r.step(score, time.delta_secs()));
+                if champ { format!("{shown} ({})", ordinal(trick_place.1.max(1))) } else { shown.to_string() }
+            }
+            PanelReadout::Lead => {
+                let c = if place == 1 { LABEL } else { FIGURE };
+                if t.color != c {
+                    t.color = c;
+                }
+                lead_text(lead.unwrap_or(0.0))
+            }
+        };
+        set_text(&mut t, &text);
+    }
+}
+
+/// The lead in whole metres, cut towards zero as the original's "%im".
+fn lead_text(metres: f32) -> String {
+    format!("{}M", metres as i32)
 }
 
 #[allow(clippy::type_complexity)]
@@ -1310,4 +1406,17 @@ fn unpause(mut virt: ResMut<Time<Virtual>>) {
 pub fn track_title(track: &str) -> String {
     let split = track.find(|c: char| c.is_ascii_digit()).unwrap_or(track.len());
     format!("{} {}", &track[..split], &track[split..]).trim().to_uppercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_lead_shows_whole_metres_cut_towards_zero() {
+        assert_eq!(lead_text(12.7), "12M");
+        assert_eq!(lead_text(-30.2), "-30M");
+        assert_eq!(lead_text(-0.5), "0M");
+        assert_eq!(ordinal(2), "2ND");
+    }
 }

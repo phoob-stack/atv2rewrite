@@ -870,6 +870,39 @@ and "Score" (0xe1) in game types 4 and 8. The score on it rolls up: each
 at the real score. The rewrite takes the same steps per 1/30 s of time
 (the original takes at most one a frame).
 
+The race HUD (0xa4990) lays its panels out in a 0..2 square per viewport
+(0xa4800 from the left, 0xa4870 from the right, 0xa48e0 measured from the
+top), with the rev gauge 0.7 across, 0.12 in from the bottom right corner.
+Top left, 0.1 in and 0.15 down, a panel 0.64 by 0.264 (0xa1230, draw
+0xa1930, update 0xa1510 every 1/30 s) holds rows at y 0.3, -0.2 and -0.7
+of its own -1..1 square, each a label right-aligned in x -1..0.3 and a
+figure from x 0.4 (the first figure 1.2 times the 0.8 size). In a race
+(not Time Trial) the rows are "Position" (string 0xde: "1st" to "8th",
+0x193 to 0x19a, from the racer's place, +0x25c), "Score" (0xe1: the
+player's trick score rolling up as the freestyle score does; in a career
+round, game types 3 and 7, "%ld (%s)" with the player's place by trick
+score among the field, sorted again every second by 0xa1130) and, with
+more than one racer and one viewport, "Lead" (0xdc): "%im" of the second
+racer's distance to go less the player's when the player leads, else the
+leader's less the player's, cut towards zero. The distance to go (racer
++0x13c, 0x904e0) is measured round the AI line to the next checkpoint and,
+with whole laps still to ride, on to the finish; the running order
+(0x901f0, 0x8fa60) is laps, then checkpoints, then the least distance to
+go, and DAT_001deaf4 onwards holds the racers in place order. The lead
+figure takes the labels' colours when the player leads. In freestyle
+types 4, 5 and 8 the panel lists the Gold, Silver and Bronze targets
+(0xc6, 0x1c5, 0x35) beside `Frontend/SmallMedals` icons; in ATV Academy it
+shows only "Score". Top right, 0.1 in and 0.15 down, 0.8 by the gauge's
+width (0.7): Time Trial's panel, freestyle's (above), or a race's (0x9f840,
+draw 0xa0100): "Current" (0xd8, the lap being ridden), "Best" (0xd6) and
+"Lap" (0xdb, "%ld/%ld"), labels in x -1..0 and figures from 0.1; with
+more than one viewport only the lap. All these panels draw in
+`MgrammeSmall`, labels shaded from (0.47, 0.67, 0.67) down to (0.25,
+0.54, 0.54) and figures from (1.0, 0.51, 0.3) down to (0.55, 0.13, 0.13).
+The rewrite draws the race panels' rows with its own sizes and fonts in
+those top colours, and takes the lead from the computer riders' distance
+round the racing line.
+
 ## Time Trial's ghost
 
 Only Time Trial (game type 1) makes the ghost object (0x9dd60, 0x110 bytes,

@@ -747,10 +747,11 @@ enum FsReadout {
 struct PopupLine(usize);
 
 /// The score on the HUD rolls up to the real one, as the original's
-/// (0x9ff60): each 1/30 s it gains a random amount under 5% of the gap,
-/// or under 3 points when that is more (0xaac50), and never passes it.
+/// (0x9ff60, and the race panel's trick score at 0xa1510): each 1/30 s it
+/// gains a random amount under 5% of the gap, or under 3 points when that
+/// is more (0xaac50), and never passes it.
 #[derive(Component)]
-struct RollingScore {
+pub(crate) struct RollingScore {
     shown: u32,
     wait: f32,
     seed: u32,
@@ -759,11 +760,11 @@ struct RollingScore {
 impl RollingScore {
     const TICK: f32 = 1.0 / 30.0;
 
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { shown: 0, wait: 0.0, seed: 1 }
     }
 
-    fn step(&mut self, score: u32, dt: f32) -> u32 {
+    pub(crate) fn step(&mut self, score: u32, dt: f32) -> u32 {
         self.wait += dt;
         while self.wait >= Self::TICK {
             self.wait -= Self::TICK;

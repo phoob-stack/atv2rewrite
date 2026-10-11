@@ -12,7 +12,7 @@ or a folder the disc was extracted to.
 | `atv-formats` | Engine-free readers: Xbox disc filesystem, "Bark" archive + LZSS, BOG textures (DXT1/DXT5, swizzled ARGB, 8-bit palettized), BED sprite sheets and bitmap fonts, ROM 1.26 models (meshes + Bezier patches), ROW 2.25 track worlds, `Setup/*.xml` rule files. |
 | `atv-sim` | Engine-free vehicle physics ported from the original game (see `docs/physics.md`): reads the game's `.params` tuning files, spring-strut wheels, body-level ground forces, auto gearbox, wheelies, preload jumps, air control, and track collision built from the track's meshes and patches. |
 | `atv-tool` | Command line: `list`, `extract <dir>`, `check` (parses every texture, model and track), `sim` (headless autopilot lap test). |
-| `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, the race loading screen with the track's picture and a racing tip) into a race with the original HUD (rev gauge, laps, times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); Single Race, Time Trial, Career, Arcade, Open Freestyle, ATV Academy and split-screen multiplayer modes; computer riders; tricks with the original stunt animations; a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
+| `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, the race loading screen with the track's picture and a racing tip) into a race with the original HUD (rev gauge, the race panels with place, trick score, lead and lap times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); Single Race, Time Trial, Career, Arcade, Open Freestyle, ATV Academy and split-screen multiplayer modes; computer riders; tricks with the original stunt animations; a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
 | `atv-hd` | HD texture packs: upscales the game's own textures with an AI upscaler (Real-ESRGAN) on the player's machine into a local cache the game prefers when present. |
 | `atv-launcher` | The launcher (binary `atv2-launcher`): pick your disc image or extracted folder once, choose track, quad, resolution and fullscreen, press Play. |
 
@@ -67,8 +67,12 @@ Race, Restart and Quit Race.
 
 - **Single Race**: pick rider, ATV, track and laps, then race five computer
   riders (`--opponents N` for 0-7). They drive the original game's AI along
-  each track's racing line. The lap meter shows everyone's place, and the
-  results show where you finished.
+  each track's racing line. As in the original, the top left shows your
+  place, your trick score and your lead over second place (or how far the
+  leader is ahead), and the top right the lap you're on, its time and your
+  best lap; the lap meter shows everyone's place, and the results show
+  where you finished. In a career round the trick score also shows your
+  place for tricks, which earns championship points.
 - **Time Trial**: the same without opponents, against the clock and, as in
   the original, the ghost of the best lap on the track: a see-through quad
   and rider that sets off with you every lap. A lap faster than the
