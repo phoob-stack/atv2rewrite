@@ -78,7 +78,16 @@ impl Opponents {
     /// Drives player 1's quad as the computer riders drive theirs (the
     /// attract demo).
     pub fn drive_player(&mut self, v: &Vehicle, dt: f32) -> Input {
-        let traffic: Vec<Traffic> = self.racers.iter().map(|r| Traffic { position: r.vehicle.position, velocity: r.vehicle.velocity }).collect();
+        let traffic: Vec<Traffic> = self
+            .racers
+            .iter()
+            .map(|r| Traffic {
+                position: r.vehicle.position,
+                velocity: r.vehicle.velocity,
+                player: r.human.is_some() && r.wreck.fall.is_none(),
+                boosting: r.boost.on,
+            })
+            .collect();
         self.player_track.drive(&self.line, v, &traffic, dt)
     }
 
@@ -283,7 +292,10 @@ pub fn spawn(
             }
             Err(e) => error!("failed to load rider {}: {e:#}", rider.model),
         }
-        let driver = AiDriver::new(&line, pos, i as u32 + 1);
+        let mut driver = AiDriver::new(&line, pos, i as u32 + 1);
+        if human.is_none() {
+            driver = driver.with_engine_boost();
+        }
         let q = roster.quads.iter().find(|q| q.name.eq_ignore_ascii_case(&quad)).map_or([0.0; 5], |q| q.stats);
         ratings.push(match human {
             // Players don't take a place behind a pace car.
@@ -372,6 +384,7 @@ fn drive_opponents(
     (keys, pads, settings): (Res<ButtonInput<KeyCode>>, Query<&Gamepad>, Res<crate::settings::Settings>),
     args: Res<crate::Args>,
     (session, crash_clips, boost_rules): (Option<Res<Session>>, Option<Res<CrashClips>>, Option<Res<BoostRules>>),
+    (player_boost, player_wreck): (Option<Res<Boost>>, Option<Res<Wreck>>),
 ) {
     let (Some(race), Some(mut player), Some(progress), Some(mut opp), Some(mut standings)) =
         (race, player, progress, opponents, standings)
@@ -403,13 +416,19 @@ fn drive_opponents(
         pacer.start(&distances);
         pacer.tick(dt, &players);
     }
-    let traffic: Vec<Traffic> = std::iter::once(&player.0)
-        .chain(opp.racers.iter().map(|r| &r.vehicle))
-        .map(|v| Traffic {
-            position: v.position,
-            velocity: v.velocity,
-        })
-        .collect();
+    let traffic: Vec<Traffic> = std::iter::once(Traffic {
+        position: player.0.position,
+        velocity: player.0.velocity,
+        player: player_wreck.as_ref().is_none_or(|w| w.fall.is_none()),
+        boosting: player_boost.as_ref().is_some_and(|b| b.on),
+    })
+    .chain(opp.racers.iter().map(|r| Traffic {
+        position: r.vehicle.position,
+        velocity: r.vehicle.velocity,
+        player: r.human.is_some() && r.wreck.fall.is_none(),
+        boosting: r.boost.on,
+    }))
+    .collect();
     for (i, r) in opp.racers.iter_mut().enumerate() {
         r.progress.tick(dt);
         let others: Vec<Traffic> = traffic
@@ -440,9 +459,14 @@ fn drive_opponents(
                     held = crate::read_boost(&controls, !r.vehicle.grounded(), Some(n - 1));
                     crate::read_input(&controls, !r.vehicle.grounded(), Some(n - 1))
                 }
-                _ => {
-                    // Computer riders (and the autopilot) spend a full meter.
+                // The autopilot spends a full meter.
+                Some(_) => {
                     held = r.progress.finished.is_none() && (r.boost.on || r.boost.meter >= 1.0);
+                    ai
+                }
+                // Computer riders boost flat out on a straight (0x67520).
+                None => {
+                    held = r.progress.finished.is_none() && r.driver.boost;
                     ai
                 }
             }
@@ -451,7 +475,8 @@ fn drive_opponents(
             r.input.throttle = 1.0;
         }
         let banked = r.session.as_mut().map_or(0, |s| s.take_banked());
-        r.vehicle.drive_scale = boost_rules.as_deref().map_or(1.0, |rules| r.boost.step(rules, held, banked, dt));
+        r.vehicle.drive_scale = boost_rules.as_deref().map_or(1.0, |rules| r.boost.step(rules, held, banked, dt))
+            * r.driver.torque_scale();
         let before = (r.vehicle.velocity, r.vehicle.angular_velocity);
         r.vehicle.step(&r.input, dt, &race.collision);
         let mut back_on = false;

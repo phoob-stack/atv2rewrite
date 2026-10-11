@@ -307,7 +307,13 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
             tune_for_ai(&mut params, 0.6);
         }
         let v = Vehicle::new(params, pos, rot);
-        let d = AiDriver::new(&line, pos, i as u32 + 1);
+        let mut d = AiDriver::new(&line, pos, i as u32 + 1);
+        // ATV2_PLAYER=1: the first quad stands in for a player (no engine
+        // boost; the others ride with it).
+        let stand_in = i == 0 && std::env::var_os("ATV2_PLAYER").is_some();
+        if std::env::var_os("ATV2_STOCK").is_none() && !stand_in {
+            d = d.with_engine_boost();
+        }
         let on_line = cps
             .first()
             .is_some_and(|&c| (c - pos).with_y(0.0).length() < 25.0);
@@ -334,6 +340,11 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
         )
     }).flatten();
     let pace_car = pacer.as_mut().map(|p| p.assign(&vec![0.0; cars.len()])).unwrap_or_default();
+    // ATV2_TRACE_WINDOW=a,b traces every frame between a and b seconds.
+    let trace_window = std::env::var("ATV2_TRACE_WINDOW").ok().and_then(|w| {
+        let (a, b) = w.split_once(',')?;
+        Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?))
+    });
     let dt = 1.0 / 60.0;
     let mut t = 0.0f32;
     let limit = laps as f32
@@ -346,9 +357,12 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
     while t < limit && cars.iter().any(|c| (c.5.len() as u32) < laps) {
         let traffic: Vec<Traffic> = cars
             .iter()
-            .map(|c| Traffic {
+            .enumerate()
+            .map(|(i, c)| Traffic {
                 position: c.1.position,
                 velocity: c.1.velocity,
+                player: i == 0 && std::env::var_os("ATV2_PLAYER").is_some(),
+                boosting: false,
             })
             .collect();
         if let Some(p) = pacer.as_mut()
@@ -379,13 +393,17 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
             } else {
                 d.drive(&line, v, &others, dt)
             };
+            v.drive_scale = d.torque_scale();
             v.step(&input, dt, &col);
-            if std::env::var_os("ATV2_TRACE").is_some() && i == 0 && (t * 60.0) as u32 % 120 == 0 {
+            if std::env::var_os("ATV2_TRACE").is_some() && i == 0 && (((t * 60.0) as u32).is_multiple_of(120) || trace_window.is_some_and(|(a, b)| t >= a && t <= b)) {
                 println!(
-                    "  t={t:6.1} edge={} t={:.2} pos={:.0?} dist={:.0} pace={:.2} mph={:.0} target_mph={:.0} up={:.2} gear={} revs={:.0} thr={:.2} brk={:.2} wheels={}",
+                    "  t={t:6.1} edge={} t={:.2} pos={:.1?} vy={:.1} jump={} preload={:.2} dist={:.0} pace={:.2} mph={:.0} target_mph={:.0} up={:.2} gear={} revs={:.0} thr={:.2} brk={:.2} wheels={}",
                     d.edge,
                     d.t,
                     v.position,
+                    v.velocity.y,
+                    u8::from(input.jump),
+                    v.preload,
                     d.distance(),
                     d.pace,
                     v.speed_mph(),

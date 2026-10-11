@@ -14,8 +14,13 @@ anyone checking the port against a disassembly.
 * Wheels are spring struts along the body's up axis. They only hold the quad
   up. Drive, braking, cornering and grip are applied to the body as a whole in
   a ground frame built from the wheel contacts.
-* Explicit Euler at 120 Hz with up to 32 substeps per frame, which matches
-  the original's minimum timestep.
+* Explicit Euler in fixed 1/60 s ticks, as the original: its game loop
+  (0x84f20) steps the world at the display rate (60 Hz on NTSC, from
+  0x19db40), at most 0.1 s per frame. Time short of a tick carries over, and
+  the pose shown in between blends the last two ticks. A finer step changes
+  how the suspension throws the quad off ramps and through water: at 120 Hz
+  computer riders fell into Forest 2's river 19 times in a 3-lap race, at
+  60 Hz none did.
 
 ## Where things came from
 

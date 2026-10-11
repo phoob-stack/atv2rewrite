@@ -344,8 +344,25 @@ jumps; with no such window Swamp 2 riders fall short often, with a 4 s
 one they lap Swamp 2 in 124-138 s against the original's 157-163. The rider skill setup (0x66200, applied
 at 0x681d0) makes an AI quad's brake (and handbrake) pedal instant, scales
 `SIDEFORCEMAX` by `1.15 (1 + Ability/10)`, sets `TORQUESLIDESCALE` to
-`0.75 / (1 + Ability/10)` and `FORCEPOINT` to 0; steering and engine are
-left alone.
+`0.75 / (1 + Ability/10)` and `FORCEPOINT` to 0; steering is left alone.
+Six seconds into the race (0x68c10 sets the timer, 0x68250 counts it
+down) a computer rider's `ENGINETORQUEMAX` goes up 2.5 times for the rest
+of the race. From then on its throttle is held to 1/2.5 while it is below
+75% of the quad's top speed (`ENGINEMAXREVS` 2π/60 over the top gear's
+ratio times `GEARMULTIPLIER`, plus 10%) or the nearest player is
+boosting (0x68430). In the rewrite's physics a quad held back like that
+tops out on the flat at about that speed (Bandit 63 mph against 65), so
+far from a player the boost mostly helps downhill. When the nearest racer
+(0x25bf0 pairs riders that are each other's nearest) is a player on
+their quad going faster than 30 mph within 30 m, the rider rides with
+them instead: throttle PID gains 0.015/0.4/0.1 on the player's speed
+(P) and the gap to them along the line (I and D), no brakes, and no speed
+limits or pacer, held to 1/2.5 when closer behind than 5 m or the player
+is boosting. A rider ahead of the player within 30 m lifts off until the
+player comes past. Flat out and not held back, a rider presses the boost
+button when the line runs straight for 100 m (0x67520, 0x66f10: up to
+five links, each within 20 degrees of the one before); it boosts only
+with something in its meter.
 
 ## Game-mode rules (Setup/*.xml)
 
