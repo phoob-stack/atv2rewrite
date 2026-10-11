@@ -289,6 +289,9 @@ pub struct UiAssets {
     /// track's picture: navy at the top and bottom, see-through between,
     /// then light and dark grey ones for the racing tip.
     pub loading_overlay: UiTex,
+    /// The results page's bands (`ResultsOverlay`), stretched the same way
+    /// over the race.
+    pub results_overlay: UiTex,
     pub backgrounds: HashMap<String, UiTex>,
     pub tracks: HashMap<String, UiTex>,
     /// The Freestyle Challenges' pictures, by number.
@@ -362,6 +365,7 @@ impl UiAssets {
             mugs: l.tex("FrontEnd/RiderMugs")?,
             loading: l.tex("FrontEnd/FELoading1")?,
             loading_overlay: l.tex("FrontEnd/LoadingOverlay")?,
+            results_overlay: l.tex("FrontEnd/ResultsOverlay")?,
             backgrounds,
             tracks,
             challenges,
