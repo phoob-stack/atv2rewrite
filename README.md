@@ -116,12 +116,15 @@ Race, Restart and Quit Race.
   Gold targets. Points come from tricks, multi-trick combos, flips and spins,
   big air, wheelies, endos and bicycles, the Stadium trick boxes (Cage Jump,
   Bus Leap, Hoopa...) and the first visit to each of the track's spots.
-  As in the original, the score on screen rolls up to the points you've
-  earned, and the clock only shows when there's a time limit.
+  As in the original, the top left lists the time limit's Gold, Silver and
+  Bronze scores beside their medals, your score taking its place among
+  them (in orange) once it beats one, and the top right shows the clock
+  (only with a time limit) and your score, rolling up to the points you've
+  earned.
 - **ATV Academy**: the original's training mode. Pick an ATV (with a
   profile loaded you ride its rider) and practise on Stadium 2, scoring as
-  in Open Freestyle but with no time limit or medal targets, until you
-  quit from the pause menu.
+  in Open Freestyle but with no time limit or medal targets (the score
+  shows top left), until you quit from the pause menu.
 - **Multiplayer**: split-screen Single Race for two to four players (two
   split top and bottom, three or four take a quarter each), with computer
   riders making the field up to four. Each player picks a rider (one
@@ -252,7 +255,9 @@ start line and is won at the course's last gate, with the gates taken in
 order (the arrow over the quad points at the next one). The first respot,
 on R or after a crash, fails the run. As in the original, cones cost no
 time and the trick challenges don't check the trick, whatever their text
-says. Challenge 12 has no course on the disc.
+says. The top left lists the Gold, Silver and Bronze times beside their
+medals, the best one you're still inside lit. Challenge 12 has no course
+on the disc.
 
 Menus: arrow keys or D-pad to move, Enter or A to select, Escape or B to go
 back; left/right changes the lap count (or Open Freestyle's time limit) on

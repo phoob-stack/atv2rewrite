@@ -890,9 +890,19 @@ with whole laps still to ride, on to the finish; the running order
 (0x901f0, 0x8fa60) is laps, then checkpoints, then the least distance to
 go, and DAT_001deaf4 onwards holds the racers in place order. The lead
 figure takes the labels' colours when the player leads. In freestyle
-types 4, 5 and 8 the panel lists the Gold, Silver and Bronze targets
-(0xc6, 0x1c5, 0x35) beside `Frontend/SmallMedals` icons; in ATV Academy it
-shows only "Score". Top right, 0.1 in and 0.15 down, 0.8 by the gauge's
+types 4, 5 and 8 the panel lists three medal rows instead (draw 0xa1930):
+a `Frontend/SmallMedals` icon (`GOLDMEDAL`, `SILVERMEDAL`, `BRONZEMEDAL`,
+0.75 of the panel high and 0.45 of that wide) at x -0.9 and a figure at
+x -0.45, the rows at y 0, -0.9 and -1.8. In types 4 and 8 the figures come
+from the session's live list (0x18090): the time limit's three records
+with each human's score put in the first place it beats (strictly), the
+best score first, the rest moving down and the last dropping off. The row
+holding the player (+0xac) takes the figures' colours and the others the
+labels'; that row shows the rolling score, except in Gold's place, where
+0xa1510 leaves the list's own (real) score. In a challenge (type 5) the
+rows are the challenge's record times, and the lit row is the best medal
+the clock is still inside (0xa1040). ATV Academy (type 9) shows only
+"Score". Top right, 0.1 in and 0.15 down, 0.8 by the gauge's
 width (0.7): Time Trial's panel, freestyle's (above), or a race's (0x9f840,
 draw 0xa0100): "Current" (0xd8, the lap being ridden), "Best" (0xd6) and
 "Lap" (0xdb, "%ld/%ld"), labels in x -1..0 and figures from 0.1; with
@@ -901,7 +911,10 @@ more than one viewport only the lap. All these panels draw in
 0.54, 0.54) and figures from (1.0, 0.51, 0.3) down to (0.55, 0.13, 0.13).
 The rewrite draws the race panels' rows with its own sizes and fonts in
 those top colours, and takes the lead from the computer riders' distance
-round the racing line.
+round the racing line. Its freestyle panels follow the same layout: the
+medal list top left (the Academy's score instead), "Time" and "Score" top
+right; the old rewrite-only lines for the next medal target and the spots
+found are gone, as the original has neither.
 
 ## Time Trial's ghost
 

@@ -38,7 +38,8 @@ use atv_formats::row::World;
 use atv_formats::{setup, GameSource};
 
 use crate::career::{Career, Rules};
-use crate::freestyle::{PopupKind, Session, MEDALS};
+use crate::freestyle::{MedalFigure, PopupKind, Session, MEDALS};
+use crate::hud::{FIGURE, LABEL};
 use crate::race::{self, fmt_time, hull, Gate, RaceProgress};
 use crate::ui::{read_nav, set_text, BitmapText, FontId, Nav, UiAssets, SCREEN_H, SCREEN_W};
 use crate::{AppState, Args, Mode, Player, Race, Selection};
@@ -390,10 +391,8 @@ enum Readout {
 #[derive(Component)]
 pub struct GuideArrow;
 
-fn spawn_hud(mut commands: Commands, course: Res<Course>, defs: Res<Defs>) {
-    let records = defs.get(course.n).map_or(String::new(), |d| {
-        (0..3).rev().map(|i| format!("{} {}", MEDALS[i], fmt_time(d.records[i]))).collect::<Vec<_>>().join("   ")
-    });
+fn spawn_hud(mut commands: Commands, course: Res<Course>, defs: Res<Defs>, ui: Option<Res<UiAssets>>) {
+    let records = defs.get(course.n).is_some_and(|d| d.records != [0.0; 3]);
     commands
         .spawn((crate::ui::fullscreen(), DespawnOnExit(AppState::Race), Pickable::IGNORE))
         .with_children(|root| {
@@ -401,7 +400,11 @@ fn spawn_hud(mut commands: Commands, course: Res<Course>, defs: Res<Defs>) {
                 .with_children(|c| {
                     c.spawn(BitmapText::new(FontId::Menu, 16.0, format!("CHALLENGE {}", course.n)));
                     c.spawn((BitmapText::new(FontId::Small, 9.0, ""), Readout::Gates));
-                    c.spawn(BitmapText::new(FontId::Small, 8.0, records).color(Color::srgb(1.0, 0.85, 0.3)));
+                    // The medal list (0xa1930): the record times, Gold
+                    // first, the best one still in reach lit.
+                    if let (Some(ui), true) = (ui.as_deref(), records) {
+                        crate::freestyle::spawn_medal_list(c, ui);
+                    }
                 });
             root.spawn(Node { position_type: PositionType::Absolute, right: px(24), top: px(18), flex_direction: FlexDirection::Column, align_items: AlignItems::FlexEnd, row_gap: px(4), ..default() })
                 .with_children(|c| {
@@ -413,8 +416,24 @@ fn spawn_hud(mut commands: Commands, course: Res<Course>, defs: Res<Defs>) {
         });
 }
 
-fn update_hud(course: Option<Res<Course>>, progress: Option<Res<RaceProgress>>, mut readouts: Query<(&Readout, &mut BitmapText)>) {
+fn update_hud(
+    (course, defs): (Option<Res<Course>>, Res<Defs>),
+    progress: Option<Res<RaceProgress>>,
+    mut readouts: Query<(&Readout, &mut BitmapText), Without<MedalFigure>>,
+    mut medals: Query<(&MedalFigure, &mut BitmapText), Without<Readout>>,
+) {
     let (Some(c), Some(p)) = (course, progress) else { return };
+    // The best medal the time so far still earns (0xa1040).
+    if let Some(d) = defs.get(c.n) {
+        let lit = d.medal(p.finished.unwrap_or(p.clock));
+        for (MedalFigure(i), mut t) in &mut medals {
+            let col = if lit == Some(2 - i) { FIGURE } else { LABEL };
+            if t.color != col {
+                t.color = col;
+            }
+            set_text(&mut t, &fmt_time(d.records[2 - i]));
+        }
+    }
     for (r, mut t) in &mut readouts {
         let text = match r {
             Readout::Time => fmt_time(p.finished.unwrap_or(p.clock)),
