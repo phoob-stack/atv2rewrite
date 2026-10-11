@@ -153,7 +153,9 @@ Race, Restart and Quit Race.
   players 3 and 4 with the third and fourth pads. Once the first player is
   home the others get a minute to finish. Freestyle Battle puts the same
   players on a track against a time limit with no computer riders; the
-  most points wins. In split screen player 1's trick buttons are 1-4 and
+  most points wins. As in the original, its results page is Open
+  Freestyle's, titled Freestyle Battle and showing player 1's session,
+  with everyone's bests below. In split screen player 1's trick buttons are 1-4 and
   player 2's are Numpad 1-4. The multiplayer Championship is the original's
   custom championship for the same players: they choose its tracks and
   laps on Choose Your Tracks (and the points split too, once Custom is
