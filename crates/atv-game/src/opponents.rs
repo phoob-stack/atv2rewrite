@@ -129,6 +129,9 @@ pub struct Standings {
     pub racers: usize,
     /// Each computer rider's place and lap progress (0..1), in racer order.
     pub opponents: Vec<(usize, f32)>,
+    /// How far the player leads second place or, when not leading, trails
+    /// the leader, metres round the racing line (the HUD's "Lead").
+    pub lead: f32,
 }
 
 /// Spawns `count` computer riders on the grid slots around the player.
@@ -573,6 +576,15 @@ fn drive_opponents(
         .enumerate()
         .map(|(i, r)| (place(i), r.progress.lap_fraction))
         .collect();
+    // Against second place when leading, the leader otherwise (0xa1510),
+    // from the distances the pacer keeps once the race is on.
+    let rival = if standings.player == 1 { 2 } else { 1 };
+    standings.lead = standings
+        .opponents
+        .iter()
+        .position(|o| o.0 == rival)
+        .filter(|_| progress.started() && opp.pacer.is_some())
+        .map_or(0.0, |i| opp.player_track.distance() - opp.racers[i].driver.distance());
 }
 
 #[allow(clippy::type_complexity)]
