@@ -480,7 +480,15 @@ left alone.
   `BigPad_Overlay_Xbox` holds the leader lines for its labels) and a
   Vibration tick box (`FrontEnd/checkbox`: `OFF`, `ON`). Replays,
   Language and Credits pages exist too; the disc has no credits text.
-  Profiles opens Available Profiles (see Profiles below).
+  Profiles opens Available Profiles (see Profiles below). The Options menu
+  (0x492d0) lists Audio, Controller, Camera, Replays (greyed), Profiles
+  (greyed with user.xml's `mDisableProfiles`) and Credits (greyed); it has
+  no Language row. The Language page (0x4ae30, five `ID_LANG_BTN` flags:
+  English, French, Italian, Spanish, German, 0x1d02a4/0x1d02b8) only opens
+  at boot when no language is set (0x59320), and the language comes from
+  the console's own setting (0x19020), so it never shows. On this disc
+  French, Italian, Spanish and German all read `Strings_l33t.txt`
+  (0x595c0).
 - `Career.xml`: root attributes `mMaxSkillForAmateur` (7),
   `mNumUnlockables` and `mTimePercentage` (1.3); `SkillLevelPoints`
   (`SkillLevel1..7`), `CertificateSkillLevels` (Amateur 0, Professional 4,
