@@ -775,6 +775,54 @@ in yellow and players in orange. The rewrite leaves the list out, since
 outside Career and Arcade it picks the computer riders only as the race
 spawns them.
 
+## Track records
+
+Each track (the 17 of the track enum at 0x1d0db0) has five records, at +0xec
+to +0x14c of the track object, 0x18 bytes each: the value, the holder's name
+(+4), and the rider and vehicle as indices (+0x14, +0x15). In order: Best Lap
+(string 0xac), Longest Jump (0x10d), Biggest Air (0xcf), Best Wheelie (0x10e)
+and Best Bicycle (0x10b) (0x4cd60). `Tracks.xml` gives their starting values
+as each track's `Fastest_Lap`, `Longest_Jump`, `Highest_Jump`,
+`Longest_Wheelie` and `Longest_Bicycle` (`Record`, `Name`, `RiderType` naming
+a `Riders.xml` entry, `VehicleType`): 360 s, 10 m, 10 m, 5 s and 2 s on every
+track, so the first lap anyone finishes is a record. The system save (0x12840)
+keeps them in a `Track_Records` section, a tag per track holding
+`TrackRecord%d` entries (0x13fe0); resetting copies the setup's back (0x13f60).
+They show as a time, "%.1fM" or "%.1fS", or long as "%.1f metres" and
+"%.1f Seconds" (0x4cdf0).
+
+The results page (0x3ef60) calls 0x14660, which goes through the racers in
+order and, for each human (vfunc +0x3c), takes their stunt stats: biggest air
+(+0xf4) above record 2, longest jump (+0xec) above 1, bicycle (+0xc0) above
+4, wheelie (+0xbc) above 3, and the best lap below record 0 except on track
+0xf and 0x10 (Stadium 1 and 2). A record beaten takes the value, the rider
+and vehicle, and the profile's name (DAT_001d86a0 +4), or with more than one
+human that controller's player name (0x88820); a later racer can beat it
+again. After the results, each human with records gets the record page
+(0x4e050, `ID_RECORD_PAGE`): "Track record broken!" (0x15e), "Track record
+broken by player %d!" in split screen (0x15d), or "Stadium record ..."
+(0x15b, 0x15a) for game types 4, 5, 8 and 9 (the freestyle ones and
+training), a row per record with its long value, then "Please enter your
+name" (0x176) and the name entry. The state machine skips it for
+challenges and training (game types 5 and 9, 0x8006e).
+
+The stunt manager measures the jumps (0x61a00, run from 0x62b20 while the
+racer isn't crashed). With no wheel touching it takes off: the quad's x and z
+then, and the height reset. When a wheel touches again the length (+0xf0) is
+the distance across the ground from there. In the air the height (+0xf8) is
+the most of the vehicle's +0x1168, which 0x1b6c0 sets to the ground's
+distance straight down from the body within 50 m (`FLT_MAX` past that, and
+then it's left out). With all four wheels down, the longest jump and biggest
+air take the length and height if they're more. A wheelie, bicycle or endo
+that scores (a second or more, 0x614f0) sets +0xbc, +0xc0 or +0xc4 to its
+time if that's more.
+
+The rewrite keeps the records in `records.cfg` in the config folder and
+shows those broken among the results rather than on their own page, with no
+name entry: the holder is the profile's name, or the rider's when there's no
+profile or in split screen. It also leaves out a jump that ends in a crash
+or a respot.
+
 ## Still unknown
 
 the `.kdt` spatial tree, `.nin`, `.viz`, `.cuban` (compressed animation), the names of
