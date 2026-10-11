@@ -37,6 +37,7 @@ use crate::race::{fmt_time, RaceProgress};
 use crate::record_page::RecordPages;
 use crate::records::{self, Broken, Feats, TrackRecords};
 use crate::replay;
+use crate::results;
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
 use crate::unlocks;
 use crate::ui::{fullscreen, placed, read_nav, set_text, spawn_menu_rows, BitmapText, FontId, MenuList, Nav, UiAssets, SCREEN_H};
@@ -67,7 +68,7 @@ impl Plugin for HudPlugin {
                     .after(crate::intro::fly)
                     .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate)
                     .run_if(in_state(AppState::Race))
-                    .run_if(|career: Res<Career>| unlocks::hud_off(&career)),
+                    .run_if(|career: Res<Career>, page: Query<(), With<results::ResultsPage>>| unlocks::hud_off(&career) || !page.is_empty()),
             );
     }
 }
@@ -77,8 +78,8 @@ impl Plugin for HudPlugin {
 #[derive(Component)]
 pub struct HudRoot;
 
-/// NOHUD: keeps the HUD hidden, whatever the intro, a replay or the guide
-/// arrow set.
+/// NOHUD, or a race's results page covering the screen: keeps the HUD
+/// hidden, whatever the intro, a replay or the guide arrow set.
 fn hide_hud(mut huds: Query<&mut Visibility, With<HudRoot>>) {
     for mut v in &mut huds {
         v.set_if_neq(Visibility::Hidden);
@@ -266,7 +267,7 @@ struct LapBanner;
 struct WrongWay;
 #[derive(Component)]
 pub(crate) struct RaceMenu {
-    results: bool,
+    pub(crate) results: bool,
     /// The pause menu's Audio, Camera or Controller page, when one is open.
     pub(crate) page: Option<PausePage>,
 }
@@ -1120,7 +1121,14 @@ fn race_menus(
                 Mode::Career => career.run.as_ref(),
                 _ => None,
             };
-            spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref(), &broken), overlay, "");
+            if selection.mode == Mode::SingleRace && run.is_none() {
+                // A race's results as the original lists them, then Race
+                // Again (0x3f260, 0x34990).
+                let finishers = results::finishers(&p, session.as_deref(), &feats, &selection, &roster, &career, field.1);
+                results::spawn_page(&mut commands, &ui, &finishers, selection.players <= 1, overlay);
+            } else {
+                spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref(), &broken), overlay, "");
+            }
         }
         return;
     };
@@ -1189,7 +1197,7 @@ fn race_menus(
                 }
                 close(&mut commands, &mut virt);
             }
-            "RESTART" | "RESTART RACE" | "RESTART CHALLENGE" | "RACE AGAIN" | "TRY AGAIN" | "PLAY AGAIN" => next.set(AppState::Loading),
+            "RESTART" | "RESTART RACE" | "RESTART CHALLENGE" | "RACE AGAIN" | "TRY AGAIN" | "PLAY AGAIN" | "YES" => next.set(AppState::Loading),
             // Arcade Status shows the next round's grid first.
             "NEXT ROUND" => {
                 selection.failed = 0;
@@ -1206,7 +1214,7 @@ fn race_menus(
                 fe.return_to = Some(Screen::Challenges);
                 next.set(AppState::FrontEnd);
             }
-            "QUIT RACE" | "MAIN MENU" => {
+            "QUIT RACE" | "MAIN MENU" | "NO" => {
                 fe.return_to = Some(Screen::Main);
                 next.set(AppState::FrontEnd);
             }

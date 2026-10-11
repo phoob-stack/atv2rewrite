@@ -70,9 +70,13 @@ Race, Restart and Quit Race.
   each track's racing line. As in the original, the top left shows your
   place, your trick score and your lead over second place (or how far the
   leader is ahead), and the top right the lap you're on, its time and your
-  best lap; the lap meter shows everyone's place, and the results show
-  where you finished. In a career round the trick score also shows your
-  place for tricks, which earns championship points.
+  best lap; the lap meter shows everyone's place. The results are the
+  original's page: everyone in the order they finished with their time and
+  trick points (riders still out are brought home at their pace so far),
+  and a box turning through the race's best lap, longest jump, biggest air,
+  wheelie and bicycle with who set them and their face. Continue asks
+  "Race Again?". In a career round the trick score also shows your place
+  for tricks, which earns championship points.
 - **Time Trial**: the same without opponents, against the clock and, as in
   the original, the ghost of the best lap on the track: a see-through quad
   and rider that sets off with you every lap. A lap faster than the

@@ -818,6 +818,61 @@ in yellow and players in orange. The rewrite leaves the list out, since
 outside Career and Arcade it picks the computer riders only as the race
 spawns them.
 
+## A race's results page
+
+0x3f260 builds a race's results (game types 0 and 3; Time Trial, Career,
+the freestyle modes and challenges have their own pages). `FrontEnd/
+ResultsOverlay`, an 8x256 strip of bands, is stretched over the screen:
+navy to 72 (in 640x480 screen units), clear to 101, a translucent teal band
+behind the column heads and light grey behind the rows, teal again from 301
+to 361 behind the bests box, clear, and navy from 404. "Race Results" (0x191) is the page
+title (0x472e0: y 56, scale 0.9 in the big font, grey 0.7 outlined in
+navy (0.098, 0.192, 0.262)). On y 120 go the column heads in
+`MgrammeSmall` at 0.9: "Position" (0x17b) from x 30, "Time" (0x1f1)
+centred on 403 and "Points" (0x178) on 550. A row per racer follows at 0.7
+(DAT_001ba664), centred on y 150 + 10 * (8 - racers) and 20 apart: "(%d)
+%s" from x 25, the time as "%02d:%02d:%02d" (minutes, seconds, hundredths;
+0x3dd10) on 403 and the trick points on 550. Players' rows are orange (1,
+0.5, 0.1); computer riders' are yellow fading by place, (0.85 - 0.05 * row)
+for red and green with blue 0.05 (0x3ea30). Names are a player's profile
+name, or their rider's name (0x88820, 0x88120). The order is by time (0x3e080
+mode 0); before the page comes up, every racer still out is brought home
+(0x813e0) at start + elapsed * total / (total - to go), their pace so far.
+
+Below the rows one box (0x3e560, 0x3de70, 0x4cbf0: the full width, 60
+tall, its bottom 30 below y 331) shows the race's bests (0x3ef60): best lap
+(racer +0x128, starting at 500000), longest jump (+0x140, the stunt stat
++0xec), biggest air (+0x158, +0xf4), wheelie (+0x170, +0xbc) and bicycle
+(+0x188, +0xc0), a strictly better value taking the slot, so the first to
+set one keeps it on a tie. Each line (0x4d360, 0x4dfa0) is a dark teal
+(0.15, 0.27, 0.27) panel with the holder's `RiderMugs` face at the left
+(x -0.92 to -0.77 of the box, 0.9 of its height), the name above the value
+from x -0.76, both yellow (0.966, 0.966, 0.266) at 7, and the record's kind
+right-aligned to 0.92 in orange at 8. Those scales are `MgrammeSmall`'s in
+the box's own space, an eighth of the screen tall. With more than one best,
+the box turns to the next every 2.5 seconds (0x4e760).
+
+The original sizes glyphs by their texels: the sprite loader (0x107300)
+divides a sprite's texel size by 320 across and 240 down, in a screen 2
+units each way. `MgrammeSmall`'s page is 256 texels to the big font's 512,
+so at the same scale its text is half the size: after its own 1.6 (0x479a0)
+a capital's cell is about 12.4 screen units a unit of scale, where the big
+font's is 24.8 after its 1.385. Text made at a scale of 1 or less stays in
+`MgrammeSmall`, which the original draws with no outline whatever outline
+colour is set (+0x64 stays -1).
+
+The pad hints are X "Replay" (0x1a0), only for a lone player and not in the
+attract demo, and A "Continue" (0x81). Continue goes to the record pages,
+then "Race Again?" (0x34990, 0x189; "Try Again?", 0x212, through 0x34bc0 in
+game types 4, 5, 8 and 9): yellow in the big font at 1.25, top-aligned on y
+156, over Yes (0x23a) on 276 and No (0x162), with A "Select" (0x1c2). Yes
+restarts the race; No quits (0x80790).
+
+The rewrite builds the page and Race Again for Single Race (`results.rs`); a
+rider who never reached the start line shows dashes for a time, where the
+original would divide by nothing. The other modes keep the rewrite's
+results menu for now.
+
 ## Track records
 
 Each track (the 17 of the track enum at 0x1d0db0) has five records, at +0xec
