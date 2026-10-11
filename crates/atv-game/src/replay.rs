@@ -192,7 +192,7 @@ fn record(
     sel: Res<Selection>,
     roster: Res<Roster>,
     quads: Query<Entity, With<QuadBody>>,
-    moving: Query<Entity, Or<(With<WheelVisual>, With<Knockable>)>>,
+    moving: Query<Entity, Or<(With<WheelVisual>, With<Knockable>, With<crate::ghost::Ghostly>)>>,
     riders: Query<(Entity, &Rider)>,
     transforms: Query<&Transform>,
 ) {

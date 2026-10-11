@@ -64,6 +64,9 @@ enum Readout {
     Time,
     LapTime,
     Best,
+    /// Time Trial: the track's lap record, which a faster lap beats on
+    /// the spot (0x9fa60).
+    Record,
     /// Arcade: seconds left, and the round.
     TimeLeft,
     Round,
@@ -240,7 +243,8 @@ fn spawn_hud(mut commands: Commands, assets: Option<Res<UiAssets>>, sel: Res<Sel
                 ..default()
             })
             .with_children(|c| {
-                for (label, size, readout) in [("TIME", 18.0, Readout::Time), ("LAP", 11.0, Readout::LapTime), ("BEST", 11.0, Readout::Best)] {
+                let record = (sel.mode == Mode::TimeTrial).then_some(("RECORD", 11.0, Readout::Record));
+                for (label, size, readout) in [("TIME", 18.0, Readout::Time), ("LAP", 11.0, Readout::LapTime), ("BEST", 11.0, Readout::Best)].into_iter().chain(record) {
                     c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
                         r.spawn(BitmapText::new(FontId::Small, 8.0, label));
                         r.spawn((BitmapText::new(FontId::Chrome, size, "0:00.00"), readout));
@@ -355,6 +359,7 @@ fn update_gauge(
 fn update_readouts(
     player: Option<Res<Player>>,
     progress: Option<Res<RaceProgress>>,
+    (records, sel): (Option<Res<TrackRecords>>, Res<Selection>),
     mut q: Query<(&Readout, &mut BitmapText), Without<BonusText>>,
     mut bonus: Query<&mut BitmapText, With<BonusText>>,
 ) {
@@ -379,6 +384,10 @@ fn update_readouts(
             Readout::Time => fmt_time(p.finished.unwrap_or(p.clock)),
             Readout::LapTime => fmt_time(if p.started() { p.lap_time() } else { 0.0 }),
             Readout::Best => p.best_lap().map_or("-:--.--".into(), fmt_time),
+            Readout::Record => {
+                let record = records.as_deref().and_then(|r| r.get(&sel.track, records::Kind::Lap)).map(|r| r.value);
+                record.into_iter().chain(p.best_lap()).reduce(f32::min).map_or("-:--.--".into(), fmt_time)
+            }
             Readout::TimeLeft => {
                 let left = p.arcade.as_ref().map_or(0.0, |a| a.left);
                 // Red in the last ten seconds.

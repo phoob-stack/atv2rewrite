@@ -835,6 +835,44 @@ name entry: the holder is the profile's name, or the rider's when there's no
 profile or in split screen. It also leaves out a jump that ends in a crash
 or a respot.
 
+## Time Trial's ghost
+
+Only Time Trial (game type 1) makes the ghost object (0x9dd60, 0x110 bytes,
+at DAT_001deb44), with two 0x32000-byte streams: the lap being recorded
+(+0xc4) and the ghost being played. It starts from the track's lap record
+(0x9d930, through 0x17e60), with the ghost's own lap time (+0x70) at 9e30
+for none yet. Every start (0x84ce0, then 0x9e110) copies the saved ghost
+into playback, starts recording the human (0x9da50), creates two ghost
+racers (0x9dcd0 through 0x85e70; vtable 0x1b7948), one on the saved ghost's
+rider and vehicle (+0x68, +0x6c) and one on the player's, and starts
+playback (0x9dbe0); the ghost shows only once there is one (+0x14).
+Loading a ghost racer (0x26240) sets flags on the model and texture
+managers (DAT_001e229c +0x198, DAT_001e2298 +0x1b4) so it gets its own
+copies of its models and textures. Every frame (0x9de20) records the
+player while the stream has room and moves the ghost on (vfunc +0x64); a
+ghost with nothing left to play is put 200 m down.
+
+When a lap is done, the Time Trial HUD (0x9fbd0) calls 0x9e120: a lap
+faster than the ghost's makes this lap's recording the ghost (0x9dc50: the
+player's rider and vehicle, changed +0x1c, there is a ghost +0x14), and
+either way 0x9e090 starts recording and playback again from the lap's
+start. The first lap's recording starts on the grid. At the end (0x9d9b0)
+a best lap under the track's lap record becomes the record, and the ghost
+is saved with the game (0x9d890, 0x9df80). The HUD (0x9fa60) shows
+"Record" (string 0xdf: the track's lap record, lowered as soon as a lap
+beats it), "Best" (0xd6), "Current" (0xd8) and the last four laps.
+
+The rewrite records what is drawn, as its replays do: the quad, its
+wheels, the rider's seat and every joint, 30 times a second. The ghost is
+drawn at 40% opacity (how the original draws it isn't decoded) and kept per
+track in `ghosts/<track>.ghost` in the config folder: `ATV2GHST`, version
+1, the lap time, the rider and quad (each a u16 length and the name), the
+joint count (u16) and frame count (u32), then per frame the lap time, the
+quad's place and turn, the seat's, each wheel's height and turn, the
+pelvis's place and each joint's turn (places as f32, turns as four i16
+fractions of 32767). The Time Trial times add RECORD under TIME, LAP and
+BEST.
+
 ## Still unknown
 
 the `.kdt` spatial tree, `.nin`, `.viz`, `.cuban` (compressed animation), the names of

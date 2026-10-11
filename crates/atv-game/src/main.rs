@@ -28,6 +28,7 @@ mod demo;
 mod effects;
 mod freestyle;
 mod frontend;
+mod ghost;
 mod hd;
 mod mud;
 mod hud;
@@ -486,6 +487,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(effects::EffectsPlugin)
         .add_plugins(loading::LoadingPlugin)
         .add_plugins(records::RecordsPlugin)
+        .add_plugins(ghost::GhostPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
@@ -644,6 +646,9 @@ fn setup(
     // challenge skill points.
     session.level = rules.skill_level(career.skill_points) as u8;
     opponents::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, &roster, &sel, (&scene.world, &collision), &session, field);
+    if sel.mode == Mode::TimeTrial && demo.is_none() {
+        ghost::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, (&sel.track, &sel.rider, &sel.quad));
+    }
     info!(
         "loaded {}: {} world meshes, {} props, {} collision tris, {} checkpoints",
         sel.track,

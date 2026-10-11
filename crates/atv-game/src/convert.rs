@@ -150,6 +150,13 @@ pub struct Loader<'a> {
     pub challenge: Option<usize>,
     /// The quad spawned last; its rider's dirt follows it.
     last_quad: Option<Entity>,
+    /// While spawning Time Trial's ghost: how opaque it is drawn. The
+    /// ghost gets its own see-through copies of the materials (as the
+    /// original loads the ghost its own models and textures, 0x26240),
+    /// and no dirt, shadow or exhaust.
+    pub ghost: Option<f32>,
+    ghost_materials: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>>,
+    solid_textures: HashMap<AssetId<Image>, Handle<Image>>,
 }
 
 /// What a track's ground does to the quads (`Tracks.xml` `mTyreType`,
@@ -363,6 +370,16 @@ fn shadow_rgba(tex: &Texture) -> Vec<u8> {
     rgba
 }
 
+/// Makes every texel of DXT5 data (all its mip levels) fully opaque: each
+/// 16-byte block opens with its two alpha endpoints and 48 bits of alpha
+/// indices; both endpoints at 255 and every index 0 is alpha 255.
+fn solid_bc3(data: &mut [u8]) {
+    for block in data.as_chunks_mut::<16>().0 {
+        block[..2].fill(255);
+        block[2..8].fill(0);
+    }
+}
+
 fn flip(p: [f32; 3]) -> [f32; 3] {
     [p[0], p[1], -p[2]]
 }
@@ -428,6 +445,9 @@ impl<'a> Loader<'a> {
             dirt: None,
             challenge: None,
             last_quad: None,
+            ghost: None,
+            ghost_materials: HashMap::new(),
+            solid_textures: HashMap::new(),
         }
     }
 
@@ -522,6 +542,14 @@ impl<'a> Loader<'a> {
     }
 
     fn material(&mut self, name: Option<&str>, look: Look) -> Handle<StandardMaterial> {
+        let m = self.shared_material(name, look);
+        match self.ghost {
+            Some(alpha) => self.ghostly(m, alpha),
+            None => m,
+        }
+    }
+
+    fn shared_material(&mut self, name: Option<&str>, look: Look) -> Handle<StandardMaterial> {
         let key = (name.unwrap_or("").to_ascii_lowercase(), look);
         if let Some(m) = self.material_cache.get(&key) {
             return m.clone();
@@ -562,12 +590,49 @@ impl<'a> Loader<'a> {
         m
     }
 
+    /// A see-through copy of `m` for the ghost. An opaque material's
+    /// texture alpha (a gloss mask, or nothing) is made solid first, so
+    /// only cut-outs show through more than the rest.
+    fn ghostly(&mut self, m: Handle<StandardMaterial>, alpha: f32) -> Handle<StandardMaterial> {
+        if let Some(g) = self.ghost_materials.get(&m.id()) {
+            return g.clone();
+        }
+        let Some(mut g) = self.materials.get(&m).cloned() else { return m };
+        if g.alpha_mode == AlphaMode::Opaque {
+            g.base_color_texture = g.base_color_texture.map(|t| self.solid(t));
+        }
+        g.alpha_mode = AlphaMode::Blend;
+        g.base_color.set_alpha(g.base_color.alpha() * alpha);
+        let h = self.materials.add(g);
+        self.ghost_materials.insert(m.id(), h.clone());
+        h
+    }
+
+    /// A copy of `tex` with every texel's alpha at full.
+    fn solid(&mut self, tex: Handle<Image>) -> Handle<Image> {
+        if let Some(s) = self.solid_textures.get(&tex.id()) {
+            return s.clone();
+        }
+        let Some(mut img) = self.images.get(&tex).cloned() else { return tex };
+        let format = img.texture_descriptor.format;
+        let Some(data) = img.data.as_mut() else { return tex };
+        match format {
+            TextureFormat::Bc3RgbaUnormSrgb => solid_bc3(data),
+            TextureFormat::Bgra8UnormSrgb | TextureFormat::Rgba8UnormSrgb => data.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255),
+            // DXT1 is see-through only where it cuts out.
+            _ => return tex,
+        }
+        let h = self.images.add(img);
+        self.solid_textures.insert(tex.id(), h.clone());
+        h
+    }
+
     /// Spawns a dirt layer mesh. The model names a generic dirt texture
     /// (`GEN_quadmud_01`, `CH_quadmud_01`, `UNI_TyreOverlay`); the track's
     /// ground picks the variant. Each layer gets its own material so its
     /// quad's dirt can fade it in.
     fn spawn_dirt(&mut self, commands: &mut Commands, batch: Batch, name: &str, parent: Entity, owner: Entity, skin: Option<SkinnedMesh>) {
-        if batch.idx.is_empty() {
+        if batch.idx.is_empty() || self.ghost.is_some() {
             return;
         }
         let ground = self.dirt.unwrap_or_default();
@@ -712,6 +777,9 @@ impl<'a> Loader<'a> {
             } else {
                 look
             };
+            if look == Look::Shadow && self.ghost.is_some() {
+                continue;
+            }
             let material = self.material(name.as_deref(), look);
             let mesh = self.meshes.add(batch.into_mesh());
             let child = commands.spawn((Mesh3d(mesh), MeshMaterial3d(material))).id();
@@ -825,10 +893,10 @@ impl<'a> Loader<'a> {
         commands.entity(root).add_child(model_root);
         let root_entity = root;
         let root = model_root;
-        if self.dirt.is_some() {
+        if self.dirt.is_some() && self.ghost.is_none() {
             commands.entity(root_entity).insert(Mud::default());
         }
-        if let Some(tip) = point("exhaustonsmokecentre") {
+        if let Some(tip) = point("exhaustonsmokecentre").filter(|_| self.ghost.is_none()) {
             commands.entity(root_entity).insert(Exhaust { tip: tip - Vec3::new(0.0, COM_HEIGHT, 0.0) });
         }
         self.last_quad = Some(root_entity);
