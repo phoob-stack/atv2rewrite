@@ -1178,6 +1178,10 @@ fn race_menus(
                 // (0x40620), then "Try Again?".
                 let finishers = results::finishers(&p, Some(s), &feats, &selection, &roster, &career, field.1);
                 results::spawn_freestyle(&mut commands, &ui, s, limit, results::bests(&finishers), true, overlay);
+            } else if let Some(o) = outcome.as_ref().filter(|_| selection.mode == Mode::Challenge) {
+                // A challenge's: passed or not, the medal, the skill points
+                // (0x55900), then "Try Again?".
+                results::spawn_challenge(&mut commands, &ui, o, overlay);
             } else if let Some((rows, order)) = &round {
                 // A championship round's three views (0x3a900), then the
                 // round's summary with what it earned.
@@ -1270,6 +1274,12 @@ fn race_menus(
                 next.set(AppState::FrontEnd);
             }
             "CHALLENGES" => {
+                fe.return_to = Some(Screen::Challenges);
+                next.set(AppState::FrontEnd);
+            }
+            // Not trying a challenge again goes back to the challenges, as
+            // the original's front end unwinds to them (0x806e0).
+            "NO" if selection.mode == Mode::Challenge => {
                 fe.return_to = Some(Screen::Challenges);
                 next.set(AppState::FrontEnd);
             }

@@ -23,6 +23,10 @@
 //! its time limit, with the bests' box but for the best lap; it carries on
 //! to "Try Again?" (0x34bc0), the same page under another title.
 //!
+//! A challenge's (0x55900, filled by 0x55780) has no bands: under
+//! "Freestyle", whether it was passed and the medal won, and the skill
+//! points it paid; "Try Again?" follows.
+//!
 //! A championship round's (0x3a900, filled by 0x3a160) has three views
 //! that Up and Down turn through: the field by finishing order with times
 //! and race points, by trick score with the trick ranking's bonuses, and by
@@ -32,7 +36,8 @@ use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::prelude::*;
 
 use crate::career::Career;
-use crate::freestyle::Session;
+use crate::challenge::Outcome;
+use crate::freestyle::{Session, MEDALS};
 use crate::frontend::Roster;
 use crate::hud::RaceMenu;
 use crate::opponents::Opponents;
@@ -94,6 +99,13 @@ const FS_FIRST_Y: f32 = HEAD_Y + 2.0 * ROW_GAP;
 /// A championship round's views' value columns, centred (0x39cc0): Time
 /// and Points, Trick Score and Bonuses, Total and Career Total.
 const ROUND_COLUMNS: [[(f32, &str); 2]; 3] = [[(305.0, "TIME"), (450.0, "POINTS")], [(300.0, "TRICK SCORE"), (506.0, "BONUSES")], [(300.0, "TOTAL"), (506.0, "CAREER TOTAL")]];
+/// A challenge's verdict and skill points (`MgrammeSmall` at 1) and the
+/// top of each, and the message's box (0x55900).
+const VERDICT: f32 = 19.9;
+const VERDICT_Y: f32 = 84.0;
+const MESSAGE_Y: f32 = 192.0;
+const MESSAGE_W: f32 = 512.0;
+const POINTS_Y: f32 = 336.0;
 /// The time limits' names (0x40620), in [`crate::freestyle::TIME_LIMITS`]' order.
 const LIMIT_NAMES: [&str; 7] = ["ONE MINUTE", "THREE MINUTES", "FIVE MINUTES", "TEN MINUTES", "FIFTEEN MINUTES", "THIRTY MINUTES", "UNLIMITED TIME"];
 
@@ -342,10 +354,10 @@ fn hints(parent: &mut ChildSpawnerCommands, ui: &UiAssets, hints: &[(&str, &str)
         });
 }
 
-/// A results page over the race: `bands` stretched over the screen, the
+/// A results page over the race: `bands`, if any, stretched over the screen, the
 /// page title (0x3a850) in grey outlined in `outline`, whatever `body` puts
 /// in the 640x480 frame, and the pad hints.
-fn spawn_frame(commands: &mut Commands, ui: &UiAssets, bands: &UiTex, (title, outline): (&str, Color), page: ResultsPage, overlay: Option<Entity>, body: impl FnOnce(&mut ChildSpawnerCommands)) {
+fn spawn_frame(commands: &mut Commands, ui: &UiAssets, bands: Option<&UiTex>, (title, outline): (&str, Color), page: ResultsPage, overlay: Option<Entity>, body: impl FnOnce(&mut ChildSpawnerCommands)) {
     let mut buttons = Vec::new();
     if page.replay {
         buttons.push(("controlbuttonsquare", "REPLAY"));
@@ -355,11 +367,13 @@ fn spawn_frame(commands: &mut Commands, ui: &UiAssets, bands: &UiTex, (title, ou
         .spawn((fullscreen(), page, RaceMenu { results: true, page: None }, DespawnOnExit(AppState::Race), Pickable::IGNORE))
         .insert_if(UiTargetCamera(overlay.unwrap_or(Entity::PLACEHOLDER)), || overlay.is_some())
         .with_children(|root| {
-            let (mut n, img) = bands.node(0.0, 0.0);
-            n.position_type = PositionType::Absolute;
-            n.width = percent(100);
-            n.height = percent(100);
-            root.spawn((n, img));
+            if let Some(bands) = bands {
+                let (mut n, img) = bands.node(0.0, 0.0);
+                n.position_type = PositionType::Absolute;
+                n.width = percent(100);
+                n.height = percent(100);
+                root.spawn((n, img));
+            }
             root.spawn(frame()).with_children(|f| {
                 let w = ui.font(FontId::Inside).width(title, TITLE);
                 f.spawn(at(SCREEN_W / 2.0, TITLE_Y, w, TITLE, 1)).with_child(two_tone(TITLE, title, GREY, outline));
@@ -380,7 +394,7 @@ fn small_text(f: &mut ChildSpawnerCommands, ui: &UiAssets, (x, y, align): (f32, 
 pub fn spawn_page(commands: &mut Commands, ui: &UiAssets, finishers: &[Finisher], replay: bool, overlay: Option<Entity>) {
     let first = FIRST_ROW_Y + 10.0 * (8.0 - finishers.len().min(8) as f32);
     let page = ResultsPage::new(bests(finishers), replay);
-    spawn_frame(commands, ui, &ui.results_overlay, ("RACE RESULTS", NAVY), page, overlay, |f| {
+    spawn_frame(commands, ui, Some(&ui.results_overlay), ("RACE RESULTS", NAVY), page, overlay, |f| {
         for (text, x, align) in [("POSITION", POSITION_X, 0), ("TIME", TIME_X, 1), ("POINTS", POINTS_X, 1)] {
             small_text(f, ui, (x, HEAD_Y, align), HEAD, text, GREY);
         }
@@ -430,7 +444,7 @@ pub fn fastest_laps(laps: &[f32]) -> Vec<(usize, f32)> {
 pub fn spawn_time_trial(commands: &mut Commands, ui: &UiAssets, name: &str, laps: &[f32], record: Option<&Record>, replay: bool, overlay: Option<Entity>) {
     let page = ResultsPage::new(Vec::new(), replay);
     let laps = fastest_laps(laps);
-    spawn_frame(commands, ui, &ui.results_overlay2, ("TIME TRIAL", TT_BLUE), page, overlay, |f| {
+    spawn_frame(commands, ui, Some(&ui.results_overlay2), ("TIME TRIAL", TT_BLUE), page, overlay, |f| {
         small_text(f, ui, (NAME_X, HEAD_Y, 0), HEAD, "BEST LAP TIMES", GREY);
         small_text(f, ui, (TT_NAME_X, HEAD_Y, 2), HEAD, name.to_uppercase(), GREY);
         small_text(f, ui, (TT_TIME_X, TT_TIME_Y, 1), HEAD, "TIME", ORANGE);
@@ -470,7 +484,7 @@ pub fn freestyle_rows(s: &Session) -> [(&'static str, String); 6] {
 pub fn spawn_freestyle(commands: &mut Commands, ui: &UiAssets, session: &Session, limit: Option<usize>, bests: Vec<Best>, replay: bool, overlay: Option<Entity>) {
     let mut page = ResultsPage::new(bests.into_iter().filter(|b| b.kind != Kind::Lap).collect(), replay);
     page.then = Then::TryAgain;
-    spawn_frame(commands, ui, &ui.results_overlay, ("OPEN FREESTYLE", TT_BLUE), page, overlay, |f| {
+    spawn_frame(commands, ui, Some(&ui.results_overlay), ("OPEN FREESTYLE", TT_BLUE), page, overlay, |f| {
         if let Some(name) = limit.and_then(|l| LIMIT_NAMES.get(l)) {
             small_text(f, ui, (FS_LABEL_X, HEAD_Y, 2), HEAD, "TIME", ORANGE);
             small_text(f, ui, (FS_VALUE_X, HEAD_Y, 0), HEAD, *name, YELLOW);
@@ -494,7 +508,7 @@ pub fn spawn_round(commands: &mut Commands, ui: &UiAssets, rows: &[RoundRow], or
     page.view = Some(0);
     let views = round_views(rows, order);
     let first = FIRST_ROW_Y + 10.0 * (8.0 - rows.len().min(8) as f32);
-    spawn_frame(commands, ui, &ui.results_overlay, ("RACE RESULTS", TT_BLUE), page, overlay, |f| {
+    spawn_frame(commands, ui, Some(&ui.results_overlay), ("RACE RESULTS", TT_BLUE), page, overlay, |f| {
         for (v, lines) in views.iter().enumerate() {
             let shown = if v == 0 { Visibility::Inherited } else { Visibility::Hidden };
             f.spawn((frame(), RoundView(v), shown)).with_children(|c| {
@@ -512,6 +526,57 @@ pub fn spawn_round(commands: &mut Commands, ui: &UiAssets, rows: &[RoundRow], or
             });
         }
         bests_box(f, ui);
+    });
+}
+
+/// A challenge's lines (0x55780): passed or failed, what the run won (the
+/// medal, new or not, or no record beaten; nothing when a respot failed
+/// it), and the skill points a new medal paid.
+pub fn challenge_lines(o: &Outcome) -> (&'static str, String, Option<String>) {
+    if o.time.is_none() {
+        return ("CHALLENGE FAILED", String::new(), None);
+    }
+    let Some(m) = o.medal else { return ("CHALLENGE FAILED", "YOU FAILED TO BEAT ANY OF THE RECORDS.".into(), None) };
+    let medal = MEDALS.get(m).copied().unwrap_or_default();
+    if !o.improved {
+        return ("CHALLENGE PASSED", format!("CHALLENGE COMPLETED AT {medal} LEVEL."), None);
+    }
+    let points = (o.skill_points > 0).then(|| format!("{} SKILL POINTS AWARDED", o.skill_points));
+    ("CHALLENGE PASSED", format!("CONGRATULATIONS, YOU'VE GOT THE {medal} MEDAL!"), points)
+}
+
+/// Splits `text` into lines no wider than `width` at `size`.
+fn wrap_to(ui: &UiAssets, text: &str, size: f32, width: f32) -> Vec<String> {
+    let font = ui.font(FontId::Small);
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(l) if font.width(&format!("{l} {word}"), size) <= width => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_string()),
+        }
+    }
+    lines
+}
+
+/// A challenge's results (0x55900) over the race, with no bands: under
+/// "Freestyle", [`challenge_lines`]: the verdict in white, the message in
+/// grey in a box from x 64 to 576 hanging from y 192, and the skill points
+/// in orange from y 336, then "Try Again?".
+pub fn spawn_challenge(commands: &mut Commands, ui: &UiAssets, outcome: &Outcome, overlay: Option<Entity>) {
+    let mut page = ResultsPage::new(Vec::new(), false);
+    page.then = Then::TryAgain;
+    let (verdict, message, points) = challenge_lines(outcome);
+    spawn_frame(commands, ui, None, ("FREESTYLE", NAVY), page, overlay, |f| {
+        small_text(f, ui, (SCREEN_W / 2.0, VERDICT_Y + VERDICT / 2.0, 1), VERDICT, verdict, Color::WHITE);
+        for (i, line) in wrap_to(ui, &message, ROW, MESSAGE_W).into_iter().enumerate() {
+            small_text(f, ui, (SCREEN_W / 2.0, MESSAGE_Y + ROW / 2.0 + ROW * i as f32, 1), ROW, line, GREY);
+        }
+        if let Some(points) = points {
+            small_text(f, ui, (SCREEN_W / 2.0, POINTS_Y + VERDICT / 2.0, 1), VERDICT, points, ORANGE);
+        }
     });
 }
 
@@ -722,6 +787,16 @@ mod tests {
         // A points tie puts the player first.
         assert_eq!(by_total.iter().map(line).collect::<Vec<_>>(), ["(1) BO | 16 | 60", "(2) DANA | 45 | 45", "(3) ANN | 45 | 45"]);
         assert!(by_total[1].0);
+    }
+
+    #[test]
+    fn challenge_lines_read_as_the_original() {
+        let won = |medal, improved, skill_points| Outcome { time: Some(20.0), medal, improved, skill_points, ..Outcome::FAILED };
+        assert_eq!(challenge_lines(&Outcome::FAILED), ("CHALLENGE FAILED", String::new(), None));
+        assert_eq!(challenge_lines(&won(None, false, 0)).1, "YOU FAILED TO BEAT ANY OF THE RECORDS.");
+        assert_eq!(challenge_lines(&won(Some(2), true, 1000)), ("CHALLENGE PASSED", "CONGRATULATIONS, YOU'VE GOT THE GOLD MEDAL!".into(), Some("1000 SKILL POINTS AWARDED".into())));
+        assert_eq!(challenge_lines(&won(Some(0), true, 0)).2, None, "no points, no line");
+        assert_eq!(challenge_lines(&won(Some(1), false, 0)).1, "CHALLENGE COMPLETED AT SILVER LEVEL.");
     }
 
     #[test]
