@@ -49,8 +49,8 @@ impl Plugin for HudPlugin {
 /// The HUD panels' colours: labels and figures (0x1df8e8 and 0x1df850,
 /// 0x1df8e0 and 0x1df844; the original shades each down to a darker one,
 /// 0x1df8d0/0x1df834 and 0x1df8c8/0x1df840).
-const LABEL: Color = Color::srgb(0.47, 0.67, 0.67);
-const FIGURE: Color = Color::srgb(1.0, 0.51, 0.3);
+pub(crate) const LABEL: Color = Color::srgb(0.47, 0.67, 0.67);
+pub(crate) const FIGURE: Color = Color::srgb(1.0, 0.51, 0.3);
 
 /// Gauge scale, screen units per texel of `HUDTPAGE`.
 const GAUGE: f32 = 0.8;

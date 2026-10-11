@@ -28,7 +28,8 @@ use atv_sim::Vehicle;
 
 use crate::race::fmt_time;
 use crate::rider::Clip;
-use crate::ui::{set_text, BitmapText, FontId};
+use crate::hud::{FIGURE, LABEL};
+use crate::ui::{set_text, BitmapText, FontId, UiAssets};
 use crate::{AppState, Mode, Selection};
 
 /// The time limits Open Freestyle offers, in the disc's record order
@@ -740,8 +741,42 @@ impl Plugin for FreestylePlugin {
 enum FsReadout {
     Score,
     Time,
-    Spots,
-    Target,
+}
+/// A figure in the medal list, top left (0xa1930, in freestyle and the
+/// challenges): row 0 Gold, 1 Silver, 2 Bronze, each beside its icon.
+#[derive(Component)]
+pub(crate) struct MedalFigure(pub usize);
+
+/// The medal list's icons (`Frontend/SmallMedals`), Gold first.
+const MEDAL_ICONS: [&str; 3] = ["GOLDMEDAL", "SILVERMEDAL", "BRONZEMEDAL"];
+
+/// Spawns the medal list's three rows into a column.
+pub(crate) fn spawn_medal_list(c: &mut ChildSpawnerCommands, ui: &UiAssets) {
+    for (i, icon) in MEDAL_ICONS.into_iter().enumerate() {
+        c.spawn(Node { align_items: AlignItems::Center, column_gap: px(8), ..default() }).with_children(|r| {
+            let h = ui.small_medals.get(icon).rect.height().max(1.0);
+            r.spawn(ui.small_medals.node(icon, 22.0 / h));
+            r.spawn((BitmapText::new(FontId::Chrome, 15.0, "").color(LABEL), MedalFigure(i)));
+        });
+    }
+}
+
+/// The medal list as the original keeps it while a session runs (0x18090):
+/// the Gold, Silver and Bronze records with each player's score put in the
+/// first place it beats (more than the record), the best score first, the
+/// records below moving down and the last dropping off. Gives each row's
+/// score and the player in it.
+pub(crate) fn live_medals(records: [u32; 3], scores: &[(usize, u32)]) -> [(u32, Option<usize>); 3] {
+    let mut list = records.map(|r| (r, None));
+    let mut order = scores.to_vec();
+    order.sort_by_key(|&(player, score)| (std::cmp::Reverse(score), player));
+    for (player, score) in order {
+        if let Some(i) = list.iter().position(|&(r, _)| r < score) {
+            list[i..].rotate_right(1);
+            list[i] = (score, Some(player));
+        }
+    }
+    list
 }
 #[derive(Component)]
 struct PopupLine(usize);
@@ -785,34 +820,50 @@ impl RollingScore {
 const POPUP_LINES: usize = 4;
 const POPUP_SECS: f32 = 2.2;
 
-fn spawn_hud(mut commands: Commands, session: Res<Session>) {
+fn spawn_hud(mut commands: Commands, session: Res<Session>, sel: Res<Selection>, ui: Option<Res<UiAssets>>) {
+    let academy = sel.mode == Mode::Training;
     commands
         .spawn((crate::ui::fullscreen(), DespawnOnExit(AppState::Race), Pickable::IGNORE))
         .with_children(|root| {
             if session.freestyle {
+                let score_row = |c: &mut ChildSpawnerCommands| {
+                    c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
+                        r.spawn(BitmapText::new(FontId::Small, 8.0, "SCORE").color(LABEL));
+                        r.spawn((BitmapText::new(FontId::Chrome, 18.0, "0").color(FIGURE), FsReadout::Score, RollingScore::new()));
+                    });
+                };
+                // Top left (0xa1930): ATV Academy's score, or the time
+                // limit's medal records with the score among them.
                 root.spawn(Node { position_type: PositionType::Absolute, left: px(24), top: px(18), flex_direction: FlexDirection::Column, row_gap: px(4), ..default() })
                     .with_children(|c| {
-                        c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
-                            r.spawn(BitmapText::new(FontId::Small, 9.0, "SCORE"));
-                            r.spawn((BitmapText::new(FontId::Chrome, 22.0, "0"), FsReadout::Score, RollingScore::new()));
-                        });
-                        c.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(1.0, 0.85, 0.3)), FsReadout::Target));
-                        c.spawn((BitmapText::new(FontId::Small, 8.0, "").color(Color::srgb(0.75, 0.85, 1.0)), FsReadout::Spots));
+                        if academy {
+                            score_row(c);
+                        } else if let (Some(ui), Some(_)) = (ui.as_deref(), session.medals) {
+                            spawn_medal_list(c, ui);
+                        }
                     });
-                // The clock only shows with a time limit (0xa0b40), so
-                // not in unlimited sessions or ATV Academy.
-                if session.limit.is_some() {
+                // Top right (0x9fe50, 0xa0b40): the clock only with a time
+                // limit, and the score but in ATV Academy.
+                if session.limit.is_some() || !academy {
                     root.spawn(Node {
                         position_type: PositionType::Absolute,
                         right: px(24),
                         top: px(18),
+                        flex_direction: FlexDirection::Column,
                         align_items: AlignItems::FlexEnd,
-                        column_gap: px(6),
+                        row_gap: px(4),
                         ..default()
                     })
-                    .with_children(|r| {
-                        r.spawn(BitmapText::new(FontId::Small, 8.0, "TIME LEFT"));
-                        r.spawn((BitmapText::new(FontId::Chrome, 18.0, "0:00.00"), FsReadout::Time));
+                    .with_children(|c| {
+                        if session.limit.is_some() {
+                            c.spawn(Node { align_items: AlignItems::FlexEnd, column_gap: px(6), ..default() }).with_children(|r| {
+                                r.spawn(BitmapText::new(FontId::Small, 8.0, "TIME").color(LABEL));
+                                r.spawn((BitmapText::new(FontId::Chrome, 18.0, "0:00.00").color(FIGURE), FsReadout::Time));
+                            });
+                        }
+                        if !academy {
+                            score_row(c);
+                        }
                     });
                 }
             }
@@ -834,28 +885,46 @@ fn spawn_hud(mut commands: Commands, session: Res<Session>) {
         });
 }
 
+#[allow(clippy::type_complexity)]
 fn update_hud(
     session: Option<Res<Session>>,
     progress: Option<Res<crate::race::RaceProgress>>,
+    opponents: Option<Res<crate::opponents::Opponents>>,
     time: Res<Time>,
-    mut readouts: Query<(&FsReadout, &mut BitmapText, Option<&mut RollingScore>), Without<PopupLine>>,
-    mut lines: Query<(&PopupLine, &mut BitmapText), Without<FsReadout>>,
+    mut readouts: Query<(&FsReadout, &mut BitmapText, Option<&mut RollingScore>), (Without<PopupLine>, Without<MedalFigure>)>,
+    mut medals: Query<(&MedalFigure, &mut BitmapText), (Without<FsReadout>, Without<PopupLine>)>,
+    mut lines: Query<(&PopupLine, &mut BitmapText), (Without<FsReadout>, Without<MedalFigure>)>,
 ) {
     let (Some(s), Some(p)) = (session, progress) else { return };
+    let mut shown = s.score;
     for (r, mut t, rolling) in &mut readouts {
         let text = match r {
-            FsReadout::Score => rolling.map_or(s.score, |mut r| r.step(s.score, time.delta_secs())).to_string(),
+            FsReadout::Score => {
+                shown = rolling.map_or(s.score, |mut r| r.step(s.score, time.delta_secs()));
+                shown.to_string()
+            }
             FsReadout::Time => fmt_time(s.time_left(p.clock).unwrap_or(p.clock)),
-            FsReadout::Spots => format!("SPOTS {}/{}", s.spots_found(), s.spots.len()),
-            FsReadout::Target => match s.medals {
-                Some(m) => match (0..3).find(|&i| s.score <= m[i]) {
-                    Some(i) => format!("{} {}", MEDALS[i], m[i]),
-                    None => "GOLD MEDAL!".into(),
-                },
-                None => String::new(),
-            },
         };
         set_text(&mut t, &text);
+    }
+    // The medal list (0xa1040, 0xa1510): the records with the players'
+    // scores in the places they'd take, Freestyle Battle's other players'
+    // too, player 1's row in the figures' colour and the rest in the
+    // labels'. Their row shows the rolling score, but in Gold's place the
+    // real one, as the original's does.
+    if let Some(m) = s.medals {
+        let mut scores = vec![(1, s.score)];
+        scores.extend(opponents.iter().flat_map(|o| &o.racers).filter_map(|r| Some((r.human?, r.session.as_ref()?.score))));
+        let list = live_medals([m[2], m[1], m[0]], &scores);
+        for (MedalFigure(i), mut t) in &mut medals {
+            let (value, who) = list[*i];
+            let mine = who == Some(1);
+            let c = if mine { FIGURE } else { LABEL };
+            if t.color != c {
+                t.color = c;
+            }
+            set_text(&mut t, &if mine && *i > 0 { shown } else { value }.to_string());
+        }
     }
     // Newest call-out at the bottom, older ones above, fading out.
     let recent: Vec<&Popup> = s.popups.iter().rev().filter(|p| s.time - p.at < POPUP_SECS).take(POPUP_LINES).collect();
@@ -882,6 +951,17 @@ fn update_hud(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scores_take_their_place_in_the_medal_list() {
+        let records = [1450, 1200, 900];
+        assert_eq!(live_medals(records, &[(1, 50)]), [(1450, None), (1200, None), (900, None)]);
+        assert_eq!(live_medals(records, &[(1, 1300)]), [(1450, None), (1300, Some(1)), (1200, None)]);
+        assert_eq!(live_medals(records, &[(1, 1450)]), [(1450, None), (1450, Some(1)), (1200, None)], "a record has to be beaten");
+        // Freestyle Battle: the best score first, the next under it.
+        assert_eq!(live_medals(records, &[(1, 1000), (2, 1500)]), [(1500, Some(2)), (1450, None), (1200, None)]);
+        assert_eq!(live_medals(records, &[(2, 950), (1, 1000)]), [(1450, None), (1200, None), (1000, Some(1))]);
+    }
 
     #[test]
     fn the_shown_score_rolls_up_to_the_real_one() {
