@@ -5,16 +5,34 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
-use atv_formats::GameSource;
+use atv_formats::{setup, GameSource};
 
-use crate::config::Config;
+use crate::config::{Config, Start};
+
+/// The Freestyle Challenges in the game.
+pub const CHALLENGES: usize = 12;
+/// Freestyle time limits as the game offers them (0 = unlimited).
+pub const MINUTES: [u32; 7] = [1, 3, 5, 10, 15, 30, 0];
+/// Where the Challenges and ATV Academy are held.
+const STADIUM: &str = "Stadium2";
 
 /// What the launcher found in the player's copy of the game.
 #[derive(Clone, Debug)]
 pub struct Catalog {
     pub disc_image: bool,
     pub tracks: Vec<String>,
+    /// Tracks with no laps to race (the stadiums): freestyle only.
+    pub arenas: Vec<String>,
     pub quads: Vec<String>,
+    /// (name, model folder) in the game's own order.
+    pub riders: Vec<(String, String)>,
+}
+
+impl Catalog {
+    /// The tracks a mode can start on.
+    pub fn tracks_for(&self, start: Start) -> impl Iterator<Item = &String> {
+        self.tracks.iter().filter(move |t| !start.circuits_only() || !self.arenas.contains(t))
+    }
 }
 
 /// Environments in the order the original game lists them.
@@ -54,7 +72,20 @@ pub fn scan(path: &Path) -> anyhow::Result<Catalog> {
     });
     quads.sort();
     quads.dedup();
-    Ok(Catalog { disc_image: !path.is_dir(), tracks, quads })
+
+    let read = |p: &str| game.read(p).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    // A track whose `Checkpoints` list is empty has no laps (as the game
+    // reads Tracks.xml).
+    let arenas = setup::entries(&read("/Setup/Tracks.xml"))
+        .into_iter()
+        .filter(|e| e.get("Checkpoints").is_some_and(|c| c.trim().is_empty()))
+        .map(|e| e.name)
+        .collect();
+    let riders = setup::entries(&read("/Setup/Riders.xml"))
+        .into_iter()
+        .filter_map(|e| Some((e.name.replace('_', " "), e.get("mModelFilename")?.to_string())))
+        .collect();
+    Ok(Catalog { disc_image: !path.is_dir(), tracks, arenas, quads, riders })
 }
 
 /// "Industrial2" -> "Industrial 2".
@@ -75,6 +106,39 @@ pub fn game_binary() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
+/// The game's arguments for the launcher's settings (after `--game`).
+pub fn args(cfg: &Config) -> Vec<String> {
+    let mut a: Vec<String> = Vec::new();
+    let mut add = |v: &[&str]| a.extend(v.iter().map(|s| s.to_string()));
+    let laps = cfg.laps.to_string();
+    let minutes = cfg.minutes.to_string();
+    let challenge = cfg.challenge.to_string();
+    match cfg.start {
+        // No track: the game opens on its title screen.
+        Start::Menu => {}
+        Start::SingleRace => add(&["--mode", "race", "--track", &cfg.track, "--laps", &laps]),
+        Start::TimeTrial => add(&["--mode", "timetrial", "--track", &cfg.track, "--laps", &laps]),
+        Start::Freestyle => add(&["--mode", "freestyle", "--track", &cfg.track, "--minutes", &minutes]),
+        Start::Arcade => add(&["--mode", "arcade", "--round", "0"]),
+        Start::Challenge => add(&["--challenge", &challenge]),
+        Start::Academy => add(&["--mode", "training", "--track", STADIUM]),
+    }
+    if cfg.start != Start::Menu {
+        add(&["--quad", &cfg.quad, "--rider", &cfg.rider]);
+    }
+    add(&["--resolution", &format!("{}x{}", cfg.width, cfg.height)]);
+    if cfg.fullscreen {
+        add(&["--fullscreen"]);
+    }
+    if !cfg.hd {
+        add(&["--no-hd"]);
+    } else if !cfg.hd_dir.as_os_str().is_empty() {
+        a.push("--hd".into());
+        a.push(cfg.hd_dir.display().to_string());
+    }
+    a
+}
+
 /// A running game, with the tail of its error output kept for the launcher
 /// to show if it fails.
 pub struct Running {
@@ -91,17 +155,7 @@ impl Running {
     pub fn start(cfg: &Config) -> anyhow::Result<Self> {
         let bin = game_binary();
         let mut cmd = Command::new(&bin);
-        cmd.arg("--game")
-            .arg(&cfg.game)
-            .args(["--track", &cfg.track, "--quad", &cfg.quad])
-            .args(["--resolution", &format!("{}x{}", cfg.width, cfg.height)])
-            .stderr(Stdio::piped());
-        if cfg.fullscreen {
-            cmd.arg("--fullscreen");
-        }
-        if !cfg.hd {
-            cmd.arg("--no-hd");
-        }
+        cmd.arg("--game").arg(&cfg.game).args(args(cfg)).stderr(Stdio::piped());
         let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("could not start {}: {e}", bin.display()))?;
 
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -140,6 +194,23 @@ mod tests {
         assert_eq!(track_label("Industrial2"), "Industrial 2");
         assert_eq!(track_label("Dunes1"), "Dunes 1");
         assert_eq!(track_label("Custom"), "Custom");
+    }
+
+    #[test]
+    fn menu_start_opens_the_title_screen() {
+        let a = args(&Config::default());
+        assert!(!a.iter().any(|s| s == "--track" || s == "--mode"), "{a:?}");
+    }
+
+    #[test]
+    fn mode_args() {
+        let cfg = Config { start: Start::TimeTrial, track: "Swamp2".into(), laps: 5, ..Default::default() };
+        let a = args(&cfg).join(" ");
+        assert!(a.starts_with("--mode timetrial --track Swamp2 --laps 5 --quad Bandit --rider Male1"), "{a}");
+        let cfg = Config { start: Start::Challenge, challenge: 7, hd_dir: "D:/hd".into(), ..Default::default() };
+        let a = args(&cfg).join(" ");
+        assert!(a.starts_with("--challenge 7 --quad"), "{a}");
+        assert!(a.ends_with("--hd D:/hd"), "{a}");
     }
 
     #[test]
