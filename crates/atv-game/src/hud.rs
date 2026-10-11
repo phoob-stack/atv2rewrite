@@ -811,6 +811,35 @@ fn trick_scores(run: &Run, session: Option<&Session>, opponents: Option<&Opponen
         .collect()
 }
 
+/// A championship round's line for each entrant, by field index, for its
+/// results page (0x3a160): `run` as it was before the round was scored,
+/// `after` with its points. A rider past the cutoff, brought home at their
+/// pace, didn't finish, as the original shows times past it as "DNF".
+#[allow(clippy::too_many_arguments)]
+fn round_rows(run: &Run, after: &Run, rules: &career::Rules, order: &[usize], tricks: &[u32], p: &RaceProgress, opponents: Option<&Opponents>, name: &str) -> Vec<results::RoundRow> {
+    let points = run.round_points(rules, order, tricks);
+    run.field
+        .iter()
+        .enumerate()
+        .map(|(i, e)| {
+            let p1 = e.player && i == 0;
+            let racer = opponents.and_then(|o| o.racers.iter().find(|r| r.model.eq_ignore_ascii_case(&e.model)));
+            let progress = if p1 { Some(p) } else { racer.map(|r| &r.progress) };
+            let time = progress.filter(|q| !q.dnf).and_then(results::home_time).filter(|&t| p.cutoff.is_none_or(|c| t <= c));
+            let (race, bonus) = points.get(i).copied().unwrap_or_default();
+            results::RoundRow {
+                name: if p1 { name.to_string() } else { racer.map_or_else(|| e.name.clone(), |r| r.name.clone()) },
+                human: e.player,
+                time,
+                points: race,
+                tricks: tricks.get(i).copied().unwrap_or(0),
+                bonus,
+                total: after.field.get(i).map_or(0, |a| a.points),
+            }
+        })
+        .collect()
+}
+
 /// Each human's race for the track records: player 1's, then the other
 /// split-screen players'. A record takes the profile's name, or in split
 /// screen each player's rider's, as the original takes each controller's
@@ -1026,12 +1055,19 @@ fn race_menus(
             virt.pause();
             spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None, None, &[]), overlay, "RETURN TO RACE");
         } else if *finished_for > 2.5 && menus.is_empty() {
+            // A championship round's lines for its results page: player 1
+            // goes by their profile's name.
+            let name = results::player_name(&selection, &roster, &career);
+            let mut round = None;
             let award = (selection.mode == Mode::Career).then(|| {
                 let run = career.run.clone()?;
                 let order = finishing_order(&run, p.dnf, field);
                 let tricks = trick_scores(&run, session.as_deref(), field.1);
                 let award = career.score(&rules, &selection.track, &order, &tricks);
                 career.save();
+                if let Some(after) = career.run.as_ref() {
+                    round = Some((round_rows(&run, after, &rules, &order, &tricks, &p, field.1, &name), order));
+                }
                 award
             });
             let award = award.flatten();
@@ -1042,6 +1078,9 @@ fn race_menus(
                 let tricks = trick_scores(&run, session.as_deref(), field.1);
                 mp_champ.score(&rules, &order, &tricks);
                 mp_champ.keep(&mut career);
+                if let Some(after) = mp_champ.run.as_ref() {
+                    round = Some((round_rows(&run, after, &rules, &order, &tricks, &p, field.1, &name), order));
+                }
             }
             // A challenge run: its medal and bonus, or the respot that
             // failed it.
@@ -1139,6 +1178,13 @@ fn race_menus(
                 // (0x40620), then "Try Again?".
                 let finishers = results::finishers(&p, Some(s), &feats, &selection, &roster, &career, field.1);
                 results::spawn_freestyle(&mut commands, &ui, s, limit, results::bests(&finishers), true, overlay);
+            } else if let Some((rows, order)) = &round {
+                // A championship round's three views (0x3a900), then the
+                // round's summary with what it earned.
+                let finishers = results::finishers(&p, session.as_deref(), &feats, &selection, &roster, &career, field.1);
+                results::spawn_round(&mut commands, &ui, rows, order, results::bests(&finishers), selection.players <= 1, overlay);
+                let menu = spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref(), &broken), overlay, "");
+                commands.entity(menu).insert(Visibility::Hidden);
             } else {
                 spawn_race_menu(&mut commands, &ui, true, &p, session.as_deref(), &selection, &roster, field, (award.as_ref(), run, outcome.as_ref(), new_track.as_deref(), &broken), overlay, "");
             }
@@ -1260,7 +1306,7 @@ fn spawn_race_menu(
     (award, run, outcome, new_track, broken): (Option<&Award>, Option<&Run>, Option<&Outcome>, Option<&str>, &[Broken]),
     overlay: Option<Entity>,
     focus: &str,
-) {
+) -> Entity {
     // Split screen: each other player's place and time.
     let others: Vec<(usize, String)> = opponents
         .map(|o| {
@@ -1345,7 +1391,7 @@ fn spawn_race_menu(
     let ph = 120.0 + 18.0 * rows as f32 + 34.0 * items.len() as f32;
     let pw = 340.0;
     let menu = commands.spawn_empty().id();
-    commands
+    let root = commands
         .spawn((
             Node { justify_content: JustifyContent::Center, align_items: AlignItems::Center, ..fullscreen() },
             BackgroundColor(Color::srgba(0.0, 0.0, 0.05, 0.45)),
@@ -1492,9 +1538,11 @@ fn spawn_race_menu(
                     }
                     box_.spawn(Node { margin: UiRect::top(px(8)), ..default() }).add_child(menu);
                 });
-        });
+        })
+        .id();
     spawn_menu_rows(commands, ui, menu, &list);
     commands.entity(menu).insert(list);
+    root
 }
 
 /// The pause menu's Audio, Camera or Controller page, as the Options pages

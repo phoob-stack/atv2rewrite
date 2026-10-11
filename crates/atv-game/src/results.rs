@@ -22,6 +22,11 @@
 //! points, longest endo, best trick combo and what that jump scored under
 //! its time limit, with the bests' box but for the best lap; it carries on
 //! to "Try Again?" (0x34bc0), the same page under another title.
+//!
+//! A championship round's (0x3a900, filled by 0x3a160) has three views
+//! that Up and Down turn through: the field by finishing order with times
+//! and race points, by trick score with the trick ranking's bonuses, and by
+//! championship points with the round's total and the career total.
 
 use bevy::input::gamepad::{Gamepad, GamepadButton};
 use bevy::prelude::*;
@@ -86,6 +91,9 @@ const BEST_TIME: f32 = 2.5;
 const FS_LABEL_X: f32 = 334.0;
 const FS_VALUE_X: f32 = 348.0;
 const FS_FIRST_Y: f32 = HEAD_Y + 2.0 * ROW_GAP;
+/// A championship round's views' value columns, centred (0x39cc0): Time
+/// and Points, Trick Score and Bonuses, Total and Career Total.
+const ROUND_COLUMNS: [[(f32, &str); 2]; 3] = [[(305.0, "TIME"), (450.0, "POINTS")], [(300.0, "TRICK SCORE"), (506.0, "BONUSES")], [(300.0, "TOTAL"), (506.0, "CAREER TOTAL")]];
 /// The time limits' names (0x40620), in [`crate::freestyle::TIME_LIMITS`]' order.
 const LIMIT_NAMES: [&str; 7] = ["ONE MINUTE", "THREE MINUTES", "FIVE MINUTES", "TEN MINUTES", "FIFTEEN MINUTES", "THIRTY MINUTES", "UNLIMITED TIME"];
 
@@ -122,6 +130,51 @@ pub struct Best {
     pub rider: String,
 }
 
+/// A rider's line on a championship round's results (0x3a160).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoundRow {
+    pub name: String,
+    pub human: bool,
+    /// Race time; None for a rider who didn't finish.
+    pub time: Option<f32>,
+    /// Race points for the finishing place.
+    pub points: u32,
+    pub tricks: u32,
+    /// The trick ranking's points.
+    pub bonus: u32,
+    /// Championship points after the round.
+    pub total: u32,
+}
+
+/// A championship round's three views (0x3a160), each a row per rider with
+/// whether they're a player: by finishing order (`order`: row indices,
+/// winner first) with time (or "DNF") and race points; by trick score, the
+/// finishing order breaking ties, with the bonus; and by championship
+/// points, a player first on a tie, with the round's points and the total.
+pub fn round_views(rows: &[RoundRow], order: &[usize]) -> [Vec<(bool, [String; 3])>; 3] {
+    let mut by_tricks = order.to_vec();
+    by_tricks.sort_by_key(|&i| std::cmp::Reverse(rows.get(i).map_or(0, |r| r.tricks)));
+    let mut by_total: Vec<usize> = (0..rows.len()).collect();
+    by_total.sort_by_key(|&i| (std::cmp::Reverse(rows[i].total), !rows[i].human));
+    let name = |n: usize, r: &RoundRow| format!("({}) {}", n + 1, r.name.to_uppercase());
+    let view = |ranking: &[usize], cells: &dyn Fn(&RoundRow) -> [String; 2]| -> Vec<(bool, [String; 3])> {
+        ranking
+            .iter()
+            .enumerate()
+            .filter_map(|(n, &i)| rows.get(i).map(|r| (n, r)))
+            .map(|(n, r)| {
+                let [a, b] = cells(r);
+                (r.human, [name(n, r), a, b])
+            })
+            .collect()
+    };
+    [
+        view(order, &|r| [r.time.map_or("DNF".into(), |t| clock(Some(t))), r.points.to_string()]),
+        view(&by_tricks, &|r| [r.tricks.to_string(), r.bonus.to_string()]),
+        view(&by_total, &|r| [(r.points + r.bonus).to_string(), r.total.to_string()]),
+    ]
+}
+
 /// Player 1's name: their profile's when they ride its rider, otherwise
 /// their rider's, as anyone else goes by (0x88820, 0x88120).
 pub fn player_name(sel: &Selection, roster: &Roster, career: &Career) -> String {
@@ -152,7 +205,7 @@ pub fn finishers(p: &RaceProgress, session: Option<&Session>, feats: &Feats, sel
 
 /// A racer's time: home, or the race time scaled by how much of the race
 /// they have ridden (0x813e0).
-fn home_time(p: &RaceProgress) -> Option<f32> {
+pub fn home_time(p: &RaceProgress) -> Option<f32> {
     if let Some(t) = p.finished {
         return Some(t);
     }
@@ -211,16 +264,30 @@ pub struct ResultsPage {
     shown: usize,
     clock: f32,
     replay: bool,
-    /// "Try Again?" follows instead of "Race Again?" (0x7fe40 picks it for
-    /// freestyle and challenges).
-    try_again: bool,
+    then: Then,
+    /// A championship round's view shown (0 to 2).
+    view: Option<usize>,
 }
 
 impl ResultsPage {
     fn new(bests: Vec<Best>, replay: bool) -> Self {
-        Self { bests, shown: 0, clock: 0.0, replay, try_again: false }
+        Self { bests, shown: 0, clock: 0.0, replay, then: Then::RaceAgain, view: None }
     }
 }
+
+/// What follows a results page.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Then {
+    RaceAgain,
+    /// "Try Again?", for freestyle and challenges (0x34bc0).
+    TryAgain,
+    /// The round's summary menu, already up and hidden under the page.
+    Menu,
+}
+
+/// A championship round's column, shown in one of the page's views.
+#[derive(Component)]
+struct RoundView(usize);
 
 /// The Race Again page.
 #[derive(Component)]
@@ -402,7 +469,7 @@ pub fn freestyle_rows(s: &Session) -> [(&'static str, String); 6] {
 /// show (0x3e560).
 pub fn spawn_freestyle(commands: &mut Commands, ui: &UiAssets, session: &Session, limit: Option<usize>, bests: Vec<Best>, replay: bool, overlay: Option<Entity>) {
     let mut page = ResultsPage::new(bests.into_iter().filter(|b| b.kind != Kind::Lap).collect(), replay);
-    page.try_again = true;
+    page.then = Then::TryAgain;
     spawn_frame(commands, ui, &ui.results_overlay, ("OPEN FREESTYLE", TT_BLUE), page, overlay, |f| {
         if let Some(name) = limit.and_then(|l| LIMIT_NAMES.get(l)) {
             small_text(f, ui, (FS_LABEL_X, HEAD_Y, 2), HEAD, "TIME", ORANGE);
@@ -413,6 +480,36 @@ pub fn spawn_freestyle(commands: &mut Commands, ui: &UiAssets, session: &Session
             let y = FS_FIRST_Y + ROW_GAP * (i + usize::from(i > 0)) as f32;
             small_text(f, ui, (FS_LABEL_X, y, 2), ROW, label, ORANGE);
             small_text(f, ui, (FS_VALUE_X, y, 0), ROW, value, YELLOW);
+        }
+        bests_box(f, ui);
+    });
+}
+
+/// A championship round's results (0x3a900): "Race Results" over the
+/// three [`round_views`], the first showing, and the box of the race's
+/// bests. Continue reveals the round's summary menu, already up under it.
+pub fn spawn_round(commands: &mut Commands, ui: &UiAssets, rows: &[RoundRow], order: &[usize], bests: Vec<Best>, replay: bool, overlay: Option<Entity>) {
+    let mut page = ResultsPage::new(bests, replay);
+    page.then = Then::Menu;
+    page.view = Some(0);
+    let views = round_views(rows, order);
+    let first = FIRST_ROW_Y + 10.0 * (8.0 - rows.len().min(8) as f32);
+    spawn_frame(commands, ui, &ui.results_overlay, ("RACE RESULTS", TT_BLUE), page, overlay, |f| {
+        for (v, lines) in views.iter().enumerate() {
+            let shown = if v == 0 { Visibility::Inherited } else { Visibility::Hidden };
+            f.spawn((frame(), RoundView(v), shown)).with_children(|c| {
+                let [(x1, h1), (x2, h2)] = ROUND_COLUMNS[v];
+                for (text, x, align) in [("POSITION", NAME_X, 0), (h1, x1, 1), (h2, x2, 1)] {
+                    small_text(c, ui, (x, HEAD_Y, align), HEAD, text, GREY);
+                }
+                for (i, (human, cells)) in lines.iter().enumerate() {
+                    let y = first + ROW_GAP * i as f32;
+                    let colour = row_colour(i, *human);
+                    for (text, x, align) in [(&cells[0], NAME_X, 0), (&cells[1], x1, 1), (&cells[2], x2, 1)] {
+                        small_text(c, ui, (x, y, align), ROW, text.clone(), colour);
+                    }
+                }
+            });
         }
         bests_box(f, ui);
     });
@@ -440,26 +537,37 @@ pub fn spawn_race_again(commands: &mut Commands, ui: &UiAssets, title: &str, ove
 }
 
 /// The results page's buttons: X for the replay, A on to the record pages
-/// and then Race Again.
-#[allow(clippy::too_many_arguments)]
+/// and then Race Again, Try Again or the round's summary; Up and Down turn
+/// a championship round's views.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn run(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     ui: Option<Res<UiAssets>>,
-    pages: Query<(Entity, &ResultsPage, Option<&UiTargetCamera>)>,
+    mut pages: Query<(Entity, &mut ResultsPage, Option<&UiTargetCamera>)>,
     mut records: Option<ResMut<RecordPages>>,
     playback: Option<Res<replay::Playback>>,
+    mut views: Query<(&RoundView, &mut Visibility)>,
+    mut menus: Query<&mut Visibility, (With<RaceMenu>, Without<ResultsPage>, Without<RoundView>)>,
 ) {
-    let (Ok((e, page, target)), Some(ui)) = (pages.single(), ui) else { return };
+    let (Ok((e, mut page, target)), Some(ui)) = (pages.single_mut(), ui) else { return };
     if playback.is_some() || records.as_deref().is_some_and(RecordPages::open) {
         return;
     }
     let overlay = target.map(UiTargetCamera::entity);
-    let again = if page.try_again { "TRY AGAIN?" } else { "RACE AGAIN?" };
-    let carry_on = |commands: &mut Commands| {
+    let then = page.then;
+    let mut carry_on = |commands: &mut Commands| {
         commands.entity(e).despawn();
-        spawn_race_again(commands, &ui, again, overlay);
+        match then {
+            Then::RaceAgain => spawn_race_again(commands, &ui, "RACE AGAIN?", overlay),
+            Then::TryAgain => spawn_race_again(commands, &ui, "TRY AGAIN?", overlay),
+            Then::Menu => {
+                for mut v in &mut menus {
+                    *v = Visibility::Inherited;
+                }
+            }
+        }
     };
     // The record pages are done.
     if records.as_mut().and_then(|r| r.resume()).is_some() {
@@ -474,6 +582,13 @@ fn run(
         }
     } else if page.replay && (keys.just_pressed(KeyCode::KeyR) || pads.iter().any(|p| p.just_pressed(GamepadButton::West))) {
         commands.insert_resource(replay::Playback::new());
+    } else if let (Some(view), Some(step @ (Nav::Up | Nav::Down))) = (page.view, nav) {
+        // Up and Down turn through a championship round's views (0x3a040).
+        let to = if step == Nav::Up { view.saturating_sub(1) } else { (view + 1).min(ROUND_COLUMNS.len() - 1) };
+        page.view = Some(to);
+        for (v, mut vis) in &mut views {
+            *vis = if v.0 == to { Visibility::Inherited } else { Visibility::Hidden };
+        }
     }
 }
 
@@ -589,6 +704,24 @@ mod tests {
         let c = row_colour(3, false).to_srgba();
         assert!((c.red - 0.7).abs() < 1e-5 && c.red == c.green && c.blue == 0.05, "{c:?}");
         assert_eq!(row_colour(5, true), ORANGE);
+    }
+
+    #[test]
+    fn a_round_lists_the_field_three_ways() {
+        let row = |name: &str, human, time, points, tricks, bonus, total| RoundRow { name: name.into(), human, time, points, tricks, bonus, total };
+        let rows = [
+            row("Dana", true, Some(95.5), 20, 300, 25, 45),
+            row("Ann", false, Some(90.0), 25, 300, 20, 45),
+            row("Bo", false, None, 0, 900, 16, 60),
+        ];
+        let [by_time, by_tricks, by_total] = round_views(&rows, &[1, 0, 2]);
+        let line = |v: &(bool, [String; 3])| v.1.join(" | ");
+        assert_eq!(by_time.iter().map(line).collect::<Vec<_>>(), ["(1) ANN | 01:30:00 | 25", "(2) DANA | 01:35:50 | 20", "(3) BO | DNF | 0"]);
+        // A trick-score tie goes by finishing order.
+        assert_eq!(by_tricks.iter().map(line).collect::<Vec<_>>(), ["(1) BO | 900 | 16", "(2) ANN | 300 | 20", "(3) DANA | 300 | 25"]);
+        // A points tie puts the player first.
+        assert_eq!(by_total.iter().map(line).collect::<Vec<_>>(), ["(1) BO | 16 | 60", "(2) DANA | 45 | 45", "(3) ANN | 45 | 45"]);
+        assert!(by_total[1].0);
     }
 
     #[test]

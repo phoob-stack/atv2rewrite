@@ -272,6 +272,28 @@ impl Run {
         }
     }
 
+    /// What a round gives each entrant, by field index: race points by
+    /// finishing place (`order`: field indices, winner first) and the trick
+    /// ranking's points, most tricks first with finishing order breaking
+    /// ties (0x3a160's Points and Bonuses).
+    pub fn round_points(&self, rules: &Rules, order: &[usize], tricks: &[u32]) -> Vec<(u32, u32)> {
+        let (race, trick) = self.points(rules);
+        let mut by_tricks = order.to_vec();
+        by_tricks.sort_by_key(|&i| std::cmp::Reverse(tricks.get(i).copied().unwrap_or(0)));
+        let mut out = vec![(0, 0); self.field.len()];
+        for (place, &i) in order.iter().enumerate() {
+            if let Some(o) = out.get_mut(i) {
+                o.0 = race.get(place).copied().unwrap_or(0);
+            }
+        }
+        for (place, &i) in by_tricks.iter().enumerate() {
+            if let Some(o) = out.get_mut(i) {
+                o.1 = trick.get(place).copied().unwrap_or(0);
+            }
+        }
+        out
+    }
+
     /// The field by points, best first (the player first on a tie).
     pub fn standings(&self) -> Vec<&Entrant> {
         let mut s: Vec<&Entrant> = self.field.iter().collect();
@@ -418,31 +440,17 @@ impl Career {
     pub fn score(&mut self, rules: &Rules, track: &str, order: &[usize], tricks: &[u32]) -> Option<Award> {
         let golds_before = self.golds();
         let run = self.run.as_mut().filter(|r| !r.over())?;
-        let (position_points, trick_points) = run.points(rules);
         let mut award = Award::default();
-        // Trick ranking: higher score first, finishing order breaks ties.
-        let mut by_tricks = order.to_vec();
-        by_tricks.sort_by_key(|&i| std::cmp::Reverse(tricks.get(i).copied().unwrap_or(0)));
-        for (place, &i) in order.iter().enumerate() {
-            let pts = position_points.get(place).copied().unwrap_or(0);
-            if let Some(e) = run.field.get_mut(i) {
-                e.points += pts;
-                if e.player {
-                    award.place = place + 1;
-                    award.position_points = pts;
-                }
-            }
-        }
-        for (place, &i) in by_tricks.iter().enumerate() {
-            let pts = trick_points.get(place).copied().unwrap_or(0);
-            if let Some(e) = run.field.get_mut(i) {
-                e.points += pts;
-                if e.player {
-                    award.trick_points = pts;
-                }
-            }
+        let points = run.round_points(rules, order, tricks);
+        for (e, &(race, trick)) in run.field.iter_mut().zip(&points) {
+            e.points += race + trick;
         }
         let player = run.field.iter().position(|e| e.player).unwrap_or(0);
+        if let Some(place) = order.iter().position(|&i| i == player) {
+            award.place = place + 1;
+            award.position_points = points[player].0;
+        }
+        award.trick_points = points.get(player).map_or(0, |p| p.1);
         let score = tricks.get(player).copied().unwrap_or(0);
         let level_before = rules.skill_level(self.skill_points);
         let before = self.skill_points;
