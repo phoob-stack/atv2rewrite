@@ -93,7 +93,7 @@ pub fn spawn_views(commands: &mut Commands, view: impl Bundle + Clone, players: 
             // Player 1's view clears the window; the rest draw over it.
             Camera { order: slot as isize, clear_color: ClearColorConfig::None, ..default() },
             Transform::default(),
-            crate::ChaseCam { offset: Vec3::new(0.0, 2.5, 6.0), facing: Quat::IDENTITY },
+            crate::ChaseCam::default(),
             Split(slot),
             scoped.clone(),
         ));

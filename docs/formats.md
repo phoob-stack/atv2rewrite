@@ -489,9 +489,20 @@ with something in its meter.
   rather than flattened. Where the offsets are measured from is not known:
   taken from the centre of mass they look down on the quad at 20-37
   degrees and lose the horizon, so the rewrite aims 1 m above it. The
-  rewrite eases the offset (not the position) at the position stiffness,
-  so the camera lags turns but not speed, and turns the view at the
-  rotation stiffness. Very Close sits at the rider's head, so the rider
+  original's follow camera (0x6e760, loaded by 0x6f2d0 into the camera
+  manager at 0x1dd5b0) is a chain of steps: the offset point behind the
+  quad's heading (0x72390; its full orientation, wheels down, inside a
+  track's `FUNNYCAM` boxes, which only Stadium 1 has and the rewrite
+  skips); the position eased towards it at the position stiffness, which
+  drops at once on takeoff and climbs back at 1/s after landing
+  (0x71ed0/0x71dd0), so the camera lags climbs, drops and speed too; the
+  distance on a critically damped spring (k 50), pulled in to 0.8 of the
+  way to anything in between (0x72150, 0x71f50); kept between 1 and 1.3
+  times the offset's length (0x71b20, 0x71c40); then aimed straight at the
+  look point, ahead along the quad's own heading and pitch (0x6f520). The
+  rotation stiffnesses are read but unused. The zoom (view tangents
+  divided by it) eases at 1/s towards 0.9 standing, 0.5 at 70 mph and 0.9
+  again by 150 mph (0x6fc90). Very Close sits at the rider's head, so the rider
   is hidden in it. `CameraDirector.xml` lists the replay director's
   camera sets.
 - Options pages (`Frontend.xml` `Options*` screens): Audio has Music and

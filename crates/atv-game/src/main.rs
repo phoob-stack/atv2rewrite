@@ -253,11 +253,23 @@ struct Controls(Input);
 #[derive(Component)]
 struct QuadBody;
 
-#[derive(Component)]
+#[derive(Component, Default)]
 struct ChaseCam {
-    /// Smoothed offset from the quad, before pulling in for terrain.
-    offset: Vec3,
-    /// Smoothed facing.
+    /// Where the camera trails to, before its distance limits: it heads for
+    /// the camera's offset point at the position stiffness (0x71dd0), so it
+    /// lags the quad's climbs and drops as well as its turns.
+    trail: Option<Vec3>,
+    /// The position stiffness in use: it drops at once on takeoff and creeps
+    /// back up after landing (0x71ed0).
+    stiffness: f32,
+    /// The camera's distance from the quad on its spring, and its rate
+    /// (0x72150).
+    dist: (f32, f32),
+    /// The quad's position last frame, to spot a respot.
+    last: Vec3,
+    /// Zoom (0x6fc90): the view's tangents are divided by it.
+    zoom: f32,
+    /// Facing.
     facing: Quat,
 }
 
@@ -762,7 +774,7 @@ fn setup(
             commands.spawn((view, t, FlyCam { yaw, pitch }, IsDefaultUiCamera, scoped.clone()));
         }
         None => {
-            let e = commands.spawn((view.clone(), cam, ChaseCam { offset: eye - start.0, facing: cam.rotation }, IsDefaultUiCamera, scoped.clone())).id();
+            let e = commands.spawn((view.clone(), cam, ChaseCam { facing: cam.rotation, ..default() }, IsDefaultUiCamera, scoped.clone())).id();
             // Split screen, or an attract demo with more than one view.
             let views = demo.as_deref().map_or(sel.players, demo::Demo::views);
             if views > 1 {
@@ -1132,10 +1144,15 @@ fn stunts(
 /// rider's chest, so the quad sits low in the picture.
 const LOOK_RAISE: f32 = 1.0;
 
-/// The player's follow camera, as picked in Options: it sits at the
-/// camera's offset behind the quad's heading and looks ahead of it. The
-/// offset swings round and the view turns at the camera's stiffnesses
-/// (softer in the air), so the camera lags turns but not speed.
+/// Stiffness of the follow camera's distance spring (0x72090).
+const CAM_SPRING: f32 = 50.0;
+
+/// The player's follow camera, as picked in Options, as the original's
+/// (0x6e760): it trails the offset point behind the quad's heading at the
+/// camera's position stiffness (softer in the air), so it lags turns,
+/// speed, climbs and drops, within 1 to 1.3 times the offset's length of
+/// the quad, and looks straight at a point ahead of the quad. The
+/// rotation stiffnesses go unused, as in the original.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn chase_camera(
     time: Res<Time>,
@@ -1145,7 +1162,7 @@ fn chase_camera(
     race: Option<Res<Race>>,
     opponents: Option<Res<opponents::Opponents>>,
     (wreck, water, demo): (Option<Res<Wreck>>, Option<Res<water::Water>>, Option<Res<demo::Demo>>),
-    mut cams: Query<(&mut Transform, &mut ChaseCam, Option<&mp::Split>)>,
+    mut cams: Query<(&mut Transform, &mut Projection, &mut ChaseCam, Option<&mp::Split>)>,
     mut riders: Query<(&Rider, &mut Visibility), Without<OpponentRider>>,
     mut rig: Local<Option<(CameraView, FollowCam)>>,
 ) {
@@ -1154,7 +1171,7 @@ fn chase_camera(
         *rig = Some((settings.camera, FollowCam::load(&game.0, settings.camera)));
     }
     let Some((_, follow)) = *rig else { return };
-    for (mut t, mut cam, split) in &mut cams {
+    for (mut t, mut proj, mut cam, split) in &mut cams {
         // Split screen: each view follows its own player's quad.
         let v = match split.map_or(0, |s| s.0) {
             0 if let Some(body) = wreck.as_deref().and_then(Wreck::floating) => {
@@ -1179,7 +1196,7 @@ fn chase_camera(
                 None => continue,
             },
         };
-        follow_quad(&time, &race, &follow, v, &mut t, &mut cam);
+        follow_quad(&time, &race, &follow, v, &mut t, &mut proj, &mut cam);
     }
     // Very close puts the camera at the rider's head: ride without them.
     for (r, mut vis) in &mut riders {
@@ -1188,38 +1205,83 @@ fn chase_camera(
     }
 }
 
-fn follow_quad(time: &Time, race: &Race, follow: &FollowCam, v: &Vehicle, t: &mut Transform, cam: &mut ChaseCam) {
+fn follow_quad(time: &Time, race: &Race, follow: &FollowCam, v: &Vehicle, t: &mut Transform, proj: &mut Projection, cam: &mut ChaseCam) {
+    let dt = time.delta_secs();
     let fwd = v.forward().with_y(0.0).normalize_or(Vec3::NEG_Z);
     let right = fwd.cross(Vec3::Y);
     let at = |o: Vec3| v.position + right * o.x + Vec3::Y * o.y + fwd * o.z;
-    let air = usize::from(!v.grounded());
-    let ease = |stiffness: f32| 1.0 - (-stiffness * time.delta_secs()).exp();
-    cam.offset = cam.offset.lerp(at(follow.offset) - v.position, ease(follow.pos_stiffness[air]));
-    // Never let the camera sink below the quad's level.
-    cam.offset.y = cam.offset.y.max(0.5);
-    let ideal = v.position + cam.offset;
+    let ideal = at(follow.offset);
+    let near = follow.offset.length();
 
-    // Pull in when terrain or a wall is between the rider and the camera,
-    // and keep clear of the ground under it.
-    let pivot = v.position + Vec3::Y * 1.2;
-    let to_cam = ideal - pivot;
-    let dist = to_cam.length();
-    let mut eye = ideal;
-    if dist > 0.01 {
-        let dir = to_cam / dist;
-        if let Some(hit) = race.collision.raycast(pivot, dir, dist + 0.4) {
-            // Never past the hit, even right by the rider.
-            eye = pivot + dir * (hit.t - 0.4).max(hit.t * 0.5);
+    // A new race or a respot starts the camera at the offset point.
+    let trail = match cam.trail {
+        Some(p) if (v.position - cam.last - v.velocity * dt).length() < 3.0 => p,
+        _ => {
+            cam.dist = (near, 0.0);
+            ideal
         }
+    };
+    cam.last = v.position;
+    let want = follow.pos_stiffness[usize::from(!v.grounded())];
+    cam.stiffness = if cam.stiffness < want { cam.stiffness + (want - cam.stiffness) * dt } else { want };
+    let trail = trail.lerp(ideal, (dt * cam.stiffness).min(1.0));
+    cam.trail = Some(trail);
+
+    // The distance follows on a stiff spring (k 50, critically damped),
+    // pulled in to 0.8 of the way to anything between the quad and the
+    // camera (0x71f50).
+    let to = trail - v.position;
+    let d = to.length();
+    let dir = if d > 1e-3 { to / d } else { (ideal - v.position) / near.max(1e-3) };
+    let pivot = v.position + Vec3::Y;
+    let goal = race.collision.raycast(pivot, (trail - pivot).normalize_or_zero(), (trail - pivot).length()).map_or(d, |hit| hit.t * 0.8);
+    cam.dist = critical_spring(cam.dist, goal, CAM_SPRING.sqrt(), dt);
+    let x = cam.dist.0;
+    let mut eye = v.position + dir * x;
+    // No nearer than the offset's length, pushed out level (0x71b20), and
+    // no further than 1.3 times it (0x71c40).
+    let off = eye - v.position;
+    let level = off.x * off.x + off.z * off.z;
+    if off.length() < near - 1e-6 && level >= 1e-6 {
+        let s = (1.0 - (off.length_squared() - near * near) / level).sqrt();
+        eye = v.position + Vec3::new(off.x * s, off.y, off.z * s);
+    }
+    let off = eye - v.position;
+    if off.length() > near * 1.3 - 1e-6 && level >= 1e-6 {
+        eye = v.position + off * (near * 1.3 / off.length());
     }
     lift_off_ground(&race.collision, pivot, &mut eye);
     t.translation = eye;
-    let look = at(follow.look + Vec3::Y * LOOK_RAISE);
+
+    // It looks at a point ahead along the quad's own heading, pitch and
+    // all (0x6f520), with no lag.
+    let look = v.position + v.forward().cross(v.up()) * follow.look.x + v.forward() * follow.look.z + Vec3::Y * (follow.look.y + LOOK_RAISE);
     if (look - eye).length_squared() > 1e-4 {
-        let want = Transform::from_translation(eye).looking_at(look, Vec3::Y).rotation;
-        cam.facing = cam.facing.slerp(want, ease(follow.rot_stiffness[air])).normalize();
+        cam.facing = Transform::from_translation(eye).looking_at(look, Vec3::Y).rotation;
     }
     t.rotation = cam.facing;
+
+    // The view widens towards 70 mph (zoom 0.9 standing, 0.5 at 70 mph,
+    // back to 0.9 by 150 mph) and eases there at 1/s (0x6fc90).
+    let mph = v.speed_mph().abs();
+    let k = if mph < 70.0 { (70.0 - mph) / 70.0 } else { ((mph - 70.0) / 80.0).min(1.0) };
+    let target = 0.5 + 0.4 * k;
+    if cam.zoom <= 0.0 {
+        cam.zoom = target;
+    }
+    cam.zoom += (target - cam.zoom) * dt.min(1.0);
+    if let Projection::Perspective(p) = proj {
+        p.fov = 2.0 * ((replay::director::FOV * 0.5).tan() / cam.zoom.max(0.5)).atan();
+    }
+}
+
+/// A critically damped spring's (value, rate) after `dt` heading for `goal`
+/// at angular frequency `w`, solved exactly so long frames stay stable.
+fn critical_spring((x, v): (f32, f32), goal: f32, w: f32, dt: f32) -> (f32, f32) {
+    let e = x - goal;
+    let c = v + w * e;
+    let decay = (-w * dt).exp();
+    (goal + (e + c * dt) * decay, (v - c * w * dt) * decay)
 }
 
 /// Keeps the camera half a metre over the ground under it, unless that

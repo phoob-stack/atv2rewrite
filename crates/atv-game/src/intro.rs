@@ -326,7 +326,7 @@ pub(crate) fn fly(
     mut commands: Commands,
     time: Res<Time>,
     mut intro: ResMut<Intro>,
-    mut cams: Query<(&mut Transform, &mut Camera, Option<&crate::mp::Split>), With<ChaseCam>>,
+    mut cams: Query<(&mut Transform, &mut Camera, &mut Projection, Option<&crate::mp::Split>), With<ChaseCam>>,
     mut sky: Query<&mut Transform, (With<SkyDome>, Without<ChaseCam>)>,
     mut screens: Query<(Entity, &mut Visibility), (With<Node>, Without<ChildOf>, With<DespawnOnExit<AppState>>, Without<ShowInIntro>)>,
     mut riders: Query<&mut Visibility, (With<Rider>, Without<Node>)>,
@@ -334,14 +334,14 @@ pub(crate) fn fly(
     let intro = &mut *intro;
     // Split screen: the other players' views.
     let slot = |split: Option<&crate::mp::Split>| split.map_or(0, |s| s.0);
-    let view = cams.iter().any(|(_, _, s)| slot(s) == 0).then(|| intro.step(time.delta_secs())).flatten();
+    let view = cams.iter().any(|(_, _, _, s)| slot(s) == 0).then(|| intro.step(time.delta_secs())).flatten();
     let Some(view) = view else {
         for (e, was) in intro.hidden.drain(..) {
             if let Ok((_, mut v)) = screens.get_mut(e) {
                 *v = was;
             }
         }
-        for (_, mut cam, split) in &mut cams {
+        for (_, mut cam, _, split) in &mut cams {
             if slot(split) > 0 {
                 cam.is_active = true;
             }
@@ -350,12 +350,17 @@ pub(crate) fn fly(
         commands.remove_resource::<Intro>();
         return;
     };
-    for (mut t, mut cam, split) in &mut cams {
+    for (mut t, mut cam, mut proj, split) in &mut cams {
         if slot(split) > 0 {
             cam.is_active = false;
             continue;
         }
         *t = view;
+        // The intro cameras' field of view (0x6d290), whatever the race
+        // camera's zoom.
+        if let Projection::Perspective(p) = proj.as_mut() {
+            p.fov = crate::replay::director::FOV;
+        }
         // Player 1's view fills the screen while the others wait.
         if split.is_some() {
             cam.viewport = None;
