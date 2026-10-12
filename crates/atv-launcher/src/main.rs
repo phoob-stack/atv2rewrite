@@ -2,12 +2,16 @@
 //! game once and press Play to boot into the game's start menu, or go
 //! straight into a mode with a track, rider and quad picked here.
 //!
+//! The Config tab tunes the physics: every quad, or each quad's engine,
+//! handling, jumps and suspension (see [`tuning`]).
+//!
 //! Settings are remembered between runs. The game binary (`atv2`) is
 //! expected next to the launcher, or on the PATH.
 
 mod config;
 mod game;
 mod hd;
+mod tuning;
 
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -18,6 +22,12 @@ use config::{Config, Start};
 use game::{Catalog, Exit, Running};
 
 const RESOLUTIONS: [(u32, u32); 6] = [(1280, 720), (1366, 768), (1600, 900), (1920, 1080), (2560, 1440), (3840, 2160)];
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Play,
+    Config,
+}
+
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(232, 140, 32);
 
 enum Scan {
@@ -40,6 +50,8 @@ struct Launcher {
     /// Upscaler and HD pack folder paths being edited.
     upscaler_text: String,
     hd_dir_text: String,
+    tab: Tab,
+    tune: tuning::Config,
 }
 
 impl Launcher {
@@ -50,6 +62,8 @@ impl Launcher {
             path_text: cfg.game.display().to_string(),
             upscaler_text: cfg.upscaler.display().to_string(),
             hd_dir_text: cfg.hd_dir.display().to_string(),
+            tune: tuning::Config::load(&cfg.quad),
+            tab: Tab::Play,
             cfg,
             scan: Scan::Idle,
             running: None,
@@ -79,6 +93,7 @@ impl Launcher {
     }
 
     fn play(&mut self) {
+        self.tune.save_if_changed();
         if let Err(e) = self.cfg.save() {
             eprintln!("could not save launcher settings: {e}");
         }
@@ -171,6 +186,19 @@ impl eframe::App for Launcher {
         egui::Panel::top("header").frame(egui::Frame::new().inner_margin(egui::Margin { left: 20, right: 20, top: 16, bottom: 10 }).fill(ui.visuals().extreme_bg_color)).show(ui, |ui| {
             ui.label(egui::RichText::new("ATV Quad Power Racing 2").size(28.0).strong().color(ACCENT));
             ui.label("PC rewrite. Plays from your own copy of the game.");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                for (tab, name) in [(Tab::Play, "Play"), (Tab::Config, "Config")] {
+                    let text = egui::RichText::new(name).size(15.0);
+                    let text = if self.tab == tab { text.strong().color(ACCENT) } else { text };
+                    if ui.add(egui::Button::selectable(self.tab == tab, text).min_size(egui::vec2(80.0, 26.0))).clicked() {
+                        self.tab = tab;
+                    }
+                }
+                if !self.tune.tuning.is_empty() {
+                    ui.label(egui::RichText::new("Tuning on").size(12.0).color(ACCENT)).on_hover_text("Some physics differ from the game's (Config tab).");
+                }
+            });
         });
 
         egui::Panel::bottom("play").frame(egui::Frame::new().inner_margin(egui::Margin { left: 20, right: 20, top: 10, bottom: 16 }).fill(ui.visuals().extreme_bg_color)).show(ui, |ui| {
@@ -202,10 +230,15 @@ impl eframe::App for Launcher {
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 ui.set_width(ui.available_width() - 8.0);
-                self.game_section(ui);
-                ui.add_space(14.0);
-                ui.add_enabled_ui(catalog.is_some(), |ui| self.options_section(ui, catalog.as_ref()));
-                ui.add_space(8.0);
+                match self.tab {
+                    Tab::Play => {
+                        self.game_section(ui);
+                        ui.add_space(14.0);
+                        ui.add_enabled_ui(catalog.is_some(), |ui| self.options_section(ui, catalog.as_ref()));
+                        ui.add_space(8.0);
+                    }
+                    Tab::Config => self.tune.ui(ui, catalog.as_ref()),
+                }
             });
         });
     }
@@ -317,7 +350,7 @@ impl Launcher {
     /// straight into a mode.
     fn mode_options(&mut self, ui: &mut egui::Ui, catalog: Option<&Catalog>) {
         let start = self.cfg.start;
-        let empty = Catalog { disc_image: false, tracks: Vec::new(), arenas: Vec::new(), quads: Vec::new(), riders: Vec::new() };
+        let empty = Catalog { disc_image: false, tracks: Vec::new(), arenas: Vec::new(), quads: Vec::new(), riders: Vec::new(), params: Default::default() };
         let cat = catalog.unwrap_or(&empty);
         // A race can't start on a stadium, so move off one.
         let tracks: Vec<&String> = cat.tracks_for(start).collect();

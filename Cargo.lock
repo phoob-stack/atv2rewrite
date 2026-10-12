@@ -468,6 +468,7 @@ dependencies = [
  "anyhow",
  "atv-formats",
  "atv-hd",
+ "atv-sim",
  "directories",
  "eframe",
  "rfd",

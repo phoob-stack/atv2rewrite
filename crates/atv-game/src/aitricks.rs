@@ -82,7 +82,7 @@ fn time_to_land(v: &Vehicle, world: &TrackCollision) -> f32 {
     let (mut pos, mut vel) = (v.position, v.velocity);
     for i in 1..100 {
         let up = if vel.y > 0.0 { p.in_air_grav_up } else { p.in_air_grav_down };
-        vel.y -= atv_sim::vehicle::GRAVITY * p.in_air_grav_scale * up * STEP;
+        vel.y -= p.gravity * p.in_air_grav_scale * up * STEP;
         pos += vel * STEP;
         match world.raycast(pos + Vec3::Y * 2.0, Vec3::NEG_Y, 60.0) {
             Some(h) if pos.y <= h.point.y + 0.5 => return i as f32 * STEP,

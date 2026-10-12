@@ -14,7 +14,7 @@ or a folder the disc was extracted to.
 | `atv-tool` | Command line: `list`, `extract <dir>`, `check` (parses every texture, model and track), `sim` (headless autopilot lap test). |
 | `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, the race loading screen with the track's picture and a racing tip) into a race with the original HUD (rev gauge, the race panels with place, trick score, lead and lap times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); Single Race, Time Trial, Career, Arcade, Open Freestyle, ATV Academy and split-screen multiplayer modes; computer riders; tricks with the original stunt animations; a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
 | `atv-hd` | HD texture packs: upscales the game's own textures with an AI upscaler (Real-ESRGAN) on the player's machine into a local cache the game prefers when present. |
-| `atv-launcher` | The launcher (binary `atv2-launcher`): pick your disc image or extracted folder once and press Play to boot into the game's start menu, or start straight into a game mode with a track, rider and quad; resolution, fullscreen and HD texture settings. |
+| `atv-launcher` | The launcher (binary `atv2-launcher`): pick your disc image or extracted folder once and press Play to boot into the game's start menu, or start straight into a game mode with a track, rider and quad; resolution, fullscreen and HD texture settings; a Config tab for physics tuning. |
 
 ## Running
 
@@ -34,6 +34,14 @@ choices, and starts `atv2` for you. **Game mode** picks what Play starts:
 while Single Race, Time Trial, Open Freestyle, Arcade, a Freestyle Challenge
 or ATV Academy go straight in with the track, laps, rider and quad you pick.
 If the game fails to start, its last error lines show in the launcher.
+
+The launcher's **Config** tab tunes the physics. **Physics (every quad)** scales
+gravity, air gravity, engine power, grip, brakes, steering lock, air drag and
+the pre-load jump as percentages. **Per ATV** sets one quad's engine, handling,
+jump and suspension values, each shown next to the game's own. The tuning is
+kept in `tuning.cfg` in the config folder and read at every race, so changes
+show from the next race; your game files are never changed. Only the players'
+quads are tuned unless you tick **Computer riders use this tuning too**.
 
 To update to the latest version later, close the game and run `update.bat`
 (Windows) from the repository folder: it pulls `main` from GitHub, keeps any
