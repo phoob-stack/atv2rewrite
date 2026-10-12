@@ -147,6 +147,21 @@ impl Texture {
         out
     }
 
+    /// Whether a DXT1 texture has see-through texels: a block in its
+    /// three-colour mode (first colour not above the second) that uses
+    /// index 3. The original draws them cut out on any mesh.
+    pub fn dxt1_cutout(&self) -> bool {
+        if self.format != TexFormat::Dxt1 {
+            return false;
+        }
+        let top = &self.data[..self.level_size(0).min(self.data.len())];
+        top.chunks_exact(8).any(|b| {
+            let (c0, c1) = (u16::from_le_bytes([b[0], b[1]]), u16::from_le_bytes([b[2], b[3]]));
+            let idx = u32::from_le_bytes([b[4], b[5], b[6], b[7]]);
+            c0 <= c1 && (0..16).any(|i| (idx >> (2 * i)) & 3 == 3)
+        })
+    }
+
     /// The texture as a `.dds` file. `reserved` fills the header's eleven
     /// reserved words, which readers ignore.
     pub fn to_dds(&self, reserved: [u32; 11]) -> Vec<u8> {
