@@ -3,17 +3,20 @@
 //! Tricks come from the disc's `Setup/Tricks.xml`: each is a button (or a
 //! pair of buttons) plus a stick direction, pulled while airborne. The rider
 //! plays the trick's stunt animation; landing before its recovery part has
-//! started is a bail and loses the jump. Several tricks in one jump
-//! multiply, holding the buttons at a trick's peak adds its hold points,
-//! and wheelies, endos and bicycles (two wheels on one side) score on the
-//! ground. Tricks work in every mode; only freestyle shows the score.
+//! started is a bail. Holding the buttons at a trick's peak adds its hold
+//! points. Scoring is the retail stunt manager's (0x75bf0): tricks,
+//! flips, spins, wheelies, bicycles and endos and trick boxes string into
+//! a combo that pays, times the number of different moves in it, once the
+//! quad has sat on all four wheels for a moment; a bail or a crash loses
+//! it. Tricks work in every mode; only freestyle shows the score.
 //!
 //! Open Freestyle is free roaming of a track against an optional time
 //! limit, with Bronze/Silver/Gold targets from `Setup/Freestyle.xml`.
 //! ATV Academy is the same on Stadium 2, with no limit or targets.
 //! Besides tricks it scores flying through the stadiums' trick boxes
-//! (`Setup/TrickBoxes.xml` and the `TBOXn` locators) and finding the
-//! track's spots (checkpoints, respots and photo boxes) for the first time.
+//! (`Setup/TrickBoxes.xml` and the `TBOXn` locators).
+//!
+//! Addresses here are the retail xbe's (`ATV.exe`'s minus 0x3ef440).
 
 use std::sync::Arc;
 
@@ -23,7 +26,7 @@ use atv_formats::row::World;
 use atv_formats::setup;
 use atv_formats::GameSource;
 use atv_sim::track as trk;
-use atv_sim::Vehicle;
+use atv_sim::{TrackCollision, Vehicle};
 
 use crate::race::fmt_time;
 use crate::controller::{self, Action};
@@ -90,22 +93,104 @@ pub struct TrickDef {
 /// The highest skill level, at which every trick can be pulled.
 pub const MAX_LEVEL: u8 = 7;
 
-/// Points per quarter second of wheelie, bicycle and endo.
-#[derive(Clone, Copy, Debug)]
-pub struct GroundPoints {
-    pub wheelie: u32,
-    pub bicycle: u32,
-    pub endo: u32,
+/// A ground trick held on two wheels.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ground {
+    Wheelie,
+    /// On the left wheels, the right ones up.
+    BicycleLeft,
+    BicycleRight,
+    Endo,
 }
 
-pub fn load_tricks(game: &GameSource) -> (Vec<TrickDef>, GroundPoints) {
+impl Ground {
+    /// The call-out, the game's own strings ("Left Bicycle", 0x153).
+    fn label(self) -> &'static str {
+        match self {
+            Ground::Wheelie => "WHEELIE",
+            Ground::BicycleLeft => "LEFT BICYCLE",
+            Ground::BicycleRight => "RIGHT BICYCLE",
+            Ground::Endo => "ENDO",
+        }
+    }
+}
+
+/// How a ground trick pays (`Tricks.xml`): `score` points a second to
+/// begin with, that rate growing by `accel` of itself a second, the
+/// trick's total held to `max`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroundRate {
+    pub score: f32,
+    pub accel: f32,
+    pub max: f32,
+}
+
+/// The trick points that aren't air tricks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Scoring {
+    /// Wheelie, left and right bicycle, endo.
+    pub ground: [GroundRate; 4],
+    pub back_flip: u32,
+    pub front_flip: u32,
+    pub spin_cw: u32,
+    pub spin_ccw: u32,
+}
+
+impl Scoring {
+    /// The retail game's values.
+    #[cfg(test)]
+    pub const RETAIL: Scoring = Scoring {
+        ground: [
+            GroundRate { score: 300.0, accel: 0.0001, max: 9999.0 },
+            GroundRate { score: 400.0, accel: 0.001, max: 99999.0 },
+            GroundRate { score: 400.0, accel: 0.001, max: 99999.0 },
+            GroundRate { score: 300.0, accel: 0.0015, max: 99999.0 },
+        ],
+        back_flip: 400,
+        front_flip: 600,
+        spin_cw: 600,
+        spin_ccw: 600,
+    };
+
+    fn rate(&self, g: Ground) -> GroundRate {
+        self.ground[g as usize]
+    }
+
+    /// Reads `Tricks.xml`. The retail disc has `Wheelie`, `Bicycle_Left`,
+    /// `Bicycle_Right` and `Endo` with `Score`, `Accel` and `Max` (0x732d0),
+    /// and the flips' and spins' points. The prototype's only has
+    /// `<Wheelie Wheelie="20"/>` and the like, read as 20 points a quarter
+    /// second, and no flips: those keep 1000 a flip and 600 a spin.
+    fn load(entries: &[setup::Entry]) -> Self {
+        let find = |name: &str| entries.iter().find(|e| e.name == name);
+        let proto = |name: &str| {
+            let per_quarter = find(name).and_then(|e| e.num(name)).unwrap_or(20.0);
+            GroundRate { score: per_quarter * 4.0, accel: 0.0, max: f32::MAX }
+        };
+        let rate = |name: &str, old: &str| match find(name).filter(|e| e.get("Score").is_some()) {
+            Some(e) => GroundRate {
+                score: e.num("Score").unwrap_or(0.0),
+                accel: e.num("Accel").unwrap_or(0.0),
+                max: e.num("Max").unwrap_or(f32::MAX),
+            },
+            None => proto(old),
+        };
+        let points = |name: &str, default: u32| find(name).and_then(|e| e.num("Score")).map_or(default, |v| v as u32);
+        Self {
+            ground: [rate("Wheelie", "Wheelie"), rate("Bicycle_Left", "Bicycle"), rate("Bicycle_Right", "Bicycle"), rate("Endo", "Endo")],
+            back_flip: points("Backward_Flip", 1000),
+            front_flip: points("Forward_Flip", 1000),
+            spin_cw: points("Clockwise_Spin", 600),
+            spin_ccw: points("Counter_Clockwise_Spin", 600),
+        }
+    }
+}
+
+pub fn load_tricks(game: &GameSource) -> (Vec<TrickDef>, Scoring) {
     let xml = game.read("/Setup/Tricks.xml").map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
     let stems = crate::rider::stunt_stems(game);
     let entries = setup::entries(&xml);
-    let num = |name: &str, key: &str, default: u32| {
-        entries.iter().find(|e| e.name == name).and_then(|e| e.num(key)).map_or(default, |v| v as u32)
-    };
-    let ground = GroundPoints { wheelie: num("Wheelie", "Wheelie", 20), bicycle: num("Bicycle", "Bicycle", 20), endo: num("Endo", "Endo", 20) };
+    let scoring = Scoring::load(&entries);
     let tricks = entries
         .iter()
         .filter_map(|e| {
@@ -132,7 +217,7 @@ pub fn load_tricks(game: &GameSource) -> (Vec<TrickDef>, GroundPoints) {
             })
         })
         .collect();
-    (tricks, ground)
+    (tricks, scoring)
 }
 
 /// The stunt file for a Tricks.xml clip name ("Anim Stunt Seat Grab" ->
@@ -165,48 +250,58 @@ pub fn limit_tag(limit: Option<u32>) -> String {
 
 pub const MEDALS: [&str; 3] = ["BRONZE", "SILVER", "GOLD"];
 
-/// A trick box: fly through any of its volumes (and its linked box's, if
-/// it has one, in the same jump) for its points.
+/// A trick box: fly into any of its volumes for its points (or, linked to
+/// another box, into this one and then that one).
 #[derive(Clone, Debug)]
 struct TrickBox {
     name: String,
     points: u32,
     linked: Option<usize>,
+    /// Only pays in a combo that's under way (`NeedsTrick`).
+    needs_trick: bool,
     volumes: Vec<(Vec3, Quat, Vec3)>,
 }
 
+/// The track's trick boxes (0x72ab0): `TBOXn` locators named under the
+/// track in `TrickBoxes.xml`. Boxes with a `GroundTrick` child (Stadium 2's
+/// wheelie, endo and bicycle zones, with Bronze/Silver/Gold targets) are
+/// for the retail lessons and never pay here (the lookup at 0x72a20 skips
+/// them), and nor do boxes worth nothing.
 fn load_boxes(game: &GameSource, track: &str, world: &World) -> Vec<TrickBox> {
     let xml = game.read("/Setup/TrickBoxes.xml").map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
     let Some(block) = xml.split(&format!("<{track}>")).nth(1).and_then(|b| b.split(&format!("</{track}>")).next()) else { return Vec::new() };
     let attr = |tag: &str, key: &str| tag.split(&format!("{key}=\"")).nth(1).and_then(|r| r.split('"').next()).map(str::trim).map(str::to_owned);
-    let mut defs: Vec<(String, String, u32, String)> = Vec::new();
-    for tag in block.split('<').skip(1) {
+    let mut defs: Vec<(String, String, u32, String, bool)> = Vec::new();
+    let tags: Vec<&str> = block.split('<').skip(1).collect();
+    for (i, tag) in tags.iter().enumerate() {
         let Some(id) = tag.split_whitespace().next().filter(|t| t.starts_with("TBOX")) else { continue };
         let points: u32 = attr(tag, "Points").and_then(|p| p.parse().ok()).unwrap_or(0);
-        if points == 0 {
+        let ground = !tag.trim_end().ends_with("/>") && tags.get(i + 1).is_some_and(|t| t.starts_with("GroundTrick"));
+        if points == 0 || ground {
             continue;
         }
-        defs.push((id.to_string(), attr(tag, "Name").unwrap_or_default().replace('_', " ").to_uppercase(), points, attr(tag, "LinkedBox").unwrap_or_default()));
+        let needs_trick = attr(tag, "NeedsTrick").is_some_and(|n| n != "0" && !n.is_empty());
+        defs.push((id.to_string(), attr(tag, "Name").unwrap_or_default().replace('_', " ").to_uppercase(), points, attr(tag, "LinkedBox").unwrap_or_default(), needs_trick));
     }
-    let mut boxes: Vec<TrickBox> = defs
+    let volumes = |id: &str| -> Vec<(Vec3, Quat, Vec3)> {
+        world
+            .locators
+            .iter()
+            .filter(|l| l.name.trim().eq_ignore_ascii_case(id))
+            .map(|l| (trk::to_sim(l.pos), trk::rotation_to_sim(&l.rotation), Vec3::from(l.scale).abs()))
+            .collect()
+    };
+    let placed: Vec<_> = defs.into_iter().map(|d| (volumes(&d.0), d)).filter(|(v, _)| !v.is_empty()).collect();
+    placed
         .iter()
-        .map(|(id, name, points, _)| TrickBox {
+        .map(|(volumes, (_, name, points, link, needs_trick))| TrickBox {
             name: name.clone(),
             points: *points,
-            linked: None,
-            volumes: world
-                .locators
-                .iter()
-                .filter(|l| l.name.trim().eq_ignore_ascii_case(id))
-                .map(|l| (trk::to_sim(l.pos), trk::rotation_to_sim(&l.rotation), Vec3::from(l.scale).abs()))
-                .collect(),
+            linked: placed.iter().position(|(_, d)| d.0.eq_ignore_ascii_case(link)),
+            needs_trick: *needs_trick,
+            volumes: volumes.clone(),
         })
-        .collect();
-    for (i, (_, _, _, link)) in defs.iter().enumerate() {
-        boxes[i].linked = defs.iter().position(|d| d.0.eq_ignore_ascii_case(link));
-    }
-    boxes.retain(|b| !b.volumes.is_empty());
-    boxes
+        .collect()
 }
 
 /// Places worth finding: checkpoints, respots and the stadiums' photo
@@ -226,7 +321,6 @@ fn load_spots(world: &World) -> Vec<Vec3> {
     spots
 }
 
-pub const SPOT_POINTS: u32 = 250;
 const SPOT_RADIUS: f32 = 14.0;
 /// Seconds airborne before trick buttons count (skips bumps), and before
 /// touching down counts as a landing.
@@ -236,6 +330,30 @@ const LANDING_AIR: f32 = 0.2;
 /// frame apart doesn't start the one-button trick.
 const COMBO_WINDOW: f32 = 0.06;
 const HOLD_TICK: f32 = 0.2;
+/// All four wheels down this long ends a combo (0x75bf0).
+const SETTLE: f32 = 0.1;
+/// A ground trick pays once held longer than this, seconds.
+const GROUND_MIN: f32 = 1.0;
+/// Below this speed (m/s) a wheelie or bicycle doesn't start, and one
+/// under way stops gaining points; an endo needs no speed.
+const GROUND_SPEED: f32 = 2.0;
+/// Changing straight from one ground trick to another starts the new one
+/// this far in, seconds.
+const GROUND_SWITCH: f32 = 0.5;
+/// The Big Air bonus: points, for coming within `BIG_AIR_MARGIN` metres of
+/// the track's Biggest Air record, then not again for `BIG_AIR_WAIT`
+/// seconds (0x75bf0, the stunt manager's `Big_Air` box at +0x1f4).
+const BIG_AIR_POINTS: u32 = 100;
+const BIG_AIR_MARGIN: f32 = 0.5;
+const BIG_AIR_WAIT: f32 = 7.0;
+/// How far down the ground is looked for under a flying quad.
+const GROUND_REACH: f32 = 50.0;
+
+/// Points as the original adds them to a combo: rounded up to fives
+/// (0x74260, 0x74380).
+fn fives(points: u32) -> u32 {
+    points.div_ceil(5) * 5
+}
 
 #[derive(Clone, Debug)]
 pub struct ActiveTrick {
@@ -268,23 +386,138 @@ pub struct Popup {
     pub at: f32,
 }
 
-#[derive(Default, Clone, Debug)]
-struct Jump {
-    tricks: Vec<(usize, u32)>,
-    boxes: Vec<usize>,
-    /// Rotation turned through in the air, about the quad's own pitch, yaw
-    /// and roll axes (radians).
-    turned: Vec3,
-    from: Vec3,
-    top: f32,
+/// One kind of move, for the combo's multiplier: each different one
+/// counts once (the flags at +0x10 to +0xa4).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Move {
+    Trick(usize),
+    Ground(Ground),
+    /// Forward or not.
+    Flip(bool),
+    /// Counter-clockwise or not.
+    Spin(bool),
 }
 
-/// A ground trick: two wheels off.
+/// The moves strung together since the quad last sat on all four wheels
+/// (+0x124 to +0x130). It pays when the quad has been down on all four
+/// for [`SETTLE`]: its points times the number of different moves, every
+/// trick box (and Big Air) counting as a different one (0x74700). A crash
+/// loses it (0x745c0).
+#[derive(Clone, Debug, Default)]
+struct Combo {
+    points: u32,
+    /// Moves, repeats and all.
+    moves: u32,
+    kinds: Vec<Move>,
+    boxes: u32,
+    /// Something is under way (+0x12c): a trick, a ground trick past its
+    /// first second, a flip, a box.
+    on: bool,
+}
+
+impl Combo {
+    fn add(&mut self, kind: Option<Move>, points: u32) {
+        self.points += points;
+        self.moves += 1;
+        match kind {
+            Some(k) if !self.kinds.contains(&k) => self.kinds.push(k),
+            Some(_) => {}
+            None => self.boxes += 1,
+        }
+        self.on = true;
+    }
+
+    fn multiplier(&self) -> u32 {
+        self.kinds.len() as u32 + self.boxes
+    }
+}
+
+/// Rotation through a jump about two of the quad's axes, as the original
+/// tracks flips and spins (0x73b90): each tick the angles the two other
+/// axes turned through, signed by which way, are added up while each is
+/// under half a turn.
+#[derive(Clone, Copy, Debug, Default)]
+struct Turning {
+    a: f32,
+    b: f32,
+    /// A flip just paid: wait for this one to come round (1.9 turns
+    /// forward of where the jump started, backwards ones only) before the
+    /// next can.
+    held: bool,
+}
+
+impl Turning {
+    /// Spins (about up), compared from the right and forward axes; the
+    /// sign is + turning right.
+    fn spin(&mut self, was: Quat, now: Quat) {
+        let (r0, f0) = (was * Vec3::X, was * Vec3::NEG_Z);
+        let (r1, f1) = (now * Vec3::X, now * Vec3::NEG_Z);
+        self.add(angle(r0, r1), angle(f0, f1), f1.dot(r0) < 0.0);
+    }
+
+    /// Flips (about right), from the forward and up axes; + nose up.
+    fn flip(&mut self, was: Quat, now: Quat) {
+        let (f0, u0) = (was * Vec3::NEG_Z, was * Vec3::Y);
+        let (f1, u1) = (now * Vec3::NEG_Z, now * Vec3::Y);
+        self.add(angle(f0, f1), angle(u0, u1), f1.dot(u0) < 0.0);
+        let round = 1.9 * std::f32::consts::PI;
+        if self.held && self.a > round && self.b > round {
+            *self = Turning::default();
+        }
+    }
+
+    fn add(&mut self, a: f32, b: f32, negative: bool) {
+        let (a, b) = if negative { (-a, -b) } else { (a, b) };
+        if a < std::f32::consts::PI && b < std::f32::consts::PI {
+            self.a += a;
+            self.b += b;
+        }
+    }
+
+    /// Turned far enough to pay (0x73e10): 1.1 turns for a flip, 1.5 for a
+    /// spin.
+    fn done(&self, need: f32) -> bool {
+        !self.held && self.a.abs() > need && self.b.abs() > need
+    }
+}
+
+fn angle(a: Vec3, b: Vec3) -> f32 {
+    a.dot(b).clamp(-1.0, 1.0).acos()
+}
+
+/// Half-turns a flip and a spin need (doubles at 0x5aae38 and 0x5aae30).
+const FLIP_NEED: f32 = 1.1 * std::f32::consts::PI;
+const SPIN_NEED: f32 = 1.5 * std::f32::consts::PI;
+
+/// What the wheels say about a ground trick this tick (0x74030).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Ground {
-    Wheelie,
-    Endo,
-    Bicycle,
+enum Pose {
+    Trick(Ground),
+    /// On the ground, not in a trick.
+    Down,
+    Air,
+    /// One wheel down: no change.
+    Same,
+}
+
+/// The ground trick being held, or the last one (+0xac to +0xbc).
+#[derive(Clone, Copy, Debug, Default)]
+struct GroundRun {
+    kind: Option<Ground>,
+    secs: f32,
+    /// Points a second, and points so far.
+    rate: f32,
+    points: f32,
+}
+
+/// The trick boxes this jump (+0x1ec, +0x1f0).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum BoxRun {
+    #[default]
+    None,
+    /// Flown into this box; waiting for its other end, or a trick.
+    In(usize),
+    Paid,
 }
 
 #[derive(Resource, Clone)]
@@ -298,18 +531,34 @@ pub struct Session {
     /// original (0x18439), which takes it from the profile's skill points
     /// or, for another player's rider, its `mSkillRating` (0x25590).
     pub level: u8,
-    ground_points: GroundPoints,
+    scoring: Scoring,
     boxes: Vec<TrickBox>,
     pub spots: Vec<(Vec3, bool)>,
     pub score: u32,
     /// Points banked since the speed boost last took them.
     banked: u32,
     pub active: Option<ActiveTrick>,
-    jump: Jump,
-    ground: Option<(Ground, f32)>,
+    combo: Combo,
+    ground: GroundRun,
+    /// Seconds all four wheels have been down, up to [`SETTLE`].
+    settled: f32,
+    /// In the air since all wheels left the ground, and the turning since.
+    flying: bool,
+    flips: Turning,
+    spins: Turning,
+    boxing: BoxRun,
+    /// The track's Biggest Air record, for the Big Air bonus (none: no
+    /// bonus, as in the challenges and training). A higher jump raises it.
+    pub air_record: Option<f32>,
+    /// The ground's distance below when last in the air, and the most this
+    /// jump.
+    height: f32,
+    peak: f32,
+    big_air_wait: f32,
     pub popups: Vec<Popup>,
     pub time: f32,
     pub best_trick: Option<(String, u32)>,
+    /// The best combo's points.
     pub best_jump: u32,
     pub landed: u32,
     pub longest_air: f32,
@@ -319,10 +568,9 @@ pub struct Session {
     pub longest_bicycle: f32,
     /// The longest endo, seconds (+0xc4), for the freestyle results.
     pub longest_endo: f32,
-    /// The most tricks and bonuses landed in one jump, repeats and all, and
-    /// what that jump scored: the results' Best Trick Combo and Best Trick
-    /// (+0xc8 and +0xcc, kept at each landing by 0x62040, where every trick,
-    /// flip and trick box of the jump counts one, 0x61ae0-0x61dd0).
+    /// The combo with the most moves, repeats and all, and what it paid:
+    /// the results' Best Trick Combo and Best Trick (+0xe0 and +0xe8, kept
+    /// when a combo pays, 0x74700).
     pub best_combo: (u32, u32),
     /// Ended from the pause menu (unlimited sessions).
     pub ended: bool,
@@ -337,14 +585,15 @@ impl Session {
     /// `medals`: Open Freestyle's Bronze, Silver and Gold targets, the
     /// time limit's medal records (see [`crate::records`]).
     pub fn new(game: &GameSource, sel: &Selection, world: &World, medals: Option<[u32; 3]>) -> Self {
-        let (tricks, ground_points) = load_tricks(game);
+        let (tricks, scoring) = load_tricks(game);
         // ATV Academy scores like unlimited Open Freestyle, without medals
         // (0xa0e60 leaves its targets unset for game type 9).
         let training = sel.mode == Mode::Training;
         let freestyle = sel.mode == Mode::Freestyle || training;
-        let mut s = Self::with(tricks, ground_points, if freestyle { load_boxes(game, &sel.track, world) } else { Vec::new() });
+        let mut s = Self::with(tricks, scoring, if freestyle { load_boxes(game, &sel.track, world) } else { Vec::new() });
         s.freestyle = freestyle;
         if freestyle {
+            debug!("trick boxes: {:?}", s.boxes.iter().map(|b| (&b.name, b.points, b.linked, b.needs_trick, b.volumes.len())).collect::<Vec<_>>());
             s.limit = sel.time_limit.filter(|_| !training).map(|m| m as f32 * 60.0);
             s.medals = medals.filter(|_| !training);
             s.spots = load_spots(world).into_iter().map(|p| (p, false)).collect();
@@ -352,21 +601,30 @@ impl Session {
         s
     }
 
-    fn with(tricks: Vec<TrickDef>, ground_points: GroundPoints, boxes: Vec<TrickBox>) -> Self {
+    fn with(tricks: Vec<TrickDef>, scoring: Scoring, boxes: Vec<TrickBox>) -> Self {
         Self {
             freestyle: false,
             limit: None,
             medals: None,
             tricks,
             level: MAX_LEVEL,
-            ground_points,
+            scoring,
             boxes,
             spots: Vec::new(),
             score: 0,
             banked: 0,
             active: None,
-            jump: Jump::default(),
-            ground: None,
+            combo: Combo::default(),
+            ground: GroundRun::default(),
+            settled: 0.0,
+            flying: false,
+            flips: Turning::default(),
+            spins: Turning::default(),
+            boxing: BoxRun::None,
+            air_record: None,
+            height: 0.0,
+            peak: 0.0,
+            big_air_wait: 0.0,
             popups: Vec::new(),
             time: 0.0,
             best_trick: None,
@@ -388,7 +646,7 @@ impl Session {
 
     #[cfg(test)]
     pub fn test_with(tricks: Vec<TrickDef>) -> Self {
-        Self::with(tricks, GroundPoints { wheelie: 20, bicycle: 20, endo: 20 }, Vec::new())
+        Self::with(tricks, Scoring::RETAIL, Vec::new())
     }
 
     pub fn time_left(&self, clock: f32) -> Option<f32> {
@@ -448,25 +706,68 @@ impl Session {
     pub fn start_trick(&mut self, def: usize) {
         if self.active.is_none() && self.tricks.get(def).is_some_and(|t| t.level <= self.level) {
             self.active = Some(ActiveTrick { def, t: 0.0, held: 0.0, released: true });
+            self.combo.on = true;
         }
     }
 
-    /// One physics step. `live`: the clock is running (tricks are held
-    /// during the countdown and after the end).
-    pub fn step(&mut self, v: &Vehicle, buttons: u8, dir: Option<Dir>, dt: f32, live: bool) {
+    /// One physics step, as the stunt manager's (0x75bf0). `live`: the
+    /// clock is running (tricks are held during the countdown and after
+    /// the end); `crashed`: the rider is off the quad.
+    pub fn step(&mut self, v: &Vehicle, world: &TrackCollision, (buttons, dir): (u8, Option<Dir>), dt: f32, live: bool, crashed: bool) {
         self.time += dt;
-        let air = v.air_time;
-        let grounded = v.grounded();
+        self.big_air_wait = (self.big_air_wait - dt).max(0.0);
+        let down = v.wheels.iter().filter(|w| w.contact).count();
+        let all_down = !v.wheels.is_empty() && down == v.wheels.len();
+        self.settled = if all_down { (self.settled + dt).min(SETTLE) } else { 0.0 };
+        if crashed {
+            self.crash();
+            self.last_rot = v.rotation;
+            self.last_air = 0.0;
+            return;
+        }
 
-        // Rotation in the air, in the quad's own frame.
-        if air > 0.0 {
-            let (axis, angle) = (self.last_rot.inverse() * v.rotation).to_axis_angle();
-            if angle.is_finite() && angle < 1.0 {
-                self.jump.turned += axis * angle;
+        // Jumps: take-off with no wheel down, landing at the first. In the
+        // air the ground's distance below is measured (0x74220).
+        if !self.flying && down == 0 {
+            self.flying = true;
+            self.flips = Turning::default();
+            self.spins = Turning::default();
+            self.peak = 0.0;
+        } else if self.flying && down > 0 {
+            self.flying = false;
+        }
+        if self.flying {
+            if let Some(h) = world.raycast(v.position, Vec3::NEG_Y, GROUND_REACH) {
+                self.height = h.t;
             }
-            self.jump.top = self.jump.top.max(v.position.y - self.jump.from.y);
-        } else {
-            self.jump.from = v.position;
+            self.peak = self.peak.max(self.height);
+        }
+        if all_down && let Some(r) = self.air_record.as_mut() {
+            *r = r.max(self.peak);
+        }
+        if live && self.air_record.is_some_and(|r| self.big_air_wait == 0.0 && self.height >= r - BIG_AIR_MARGIN) {
+            self.big_air_wait = BIG_AIR_WAIT;
+            self.pay_box("BIG AIR".into(), BIG_AIR_POINTS);
+        }
+
+        // Flips and spins (0x74b90): paid first, then this tick's turn.
+        if self.flying {
+            if self.flips.done(FLIP_NEED) {
+                let forward = self.flips.a < 0.0;
+                let pts = if forward { self.scoring.front_flip } else { self.scoring.back_flip };
+                self.combo.add(Some(Move::Flip(forward)), pts);
+                self.popup(format!("{}  {pts}", if forward { "FRONTFLIP" } else { "BACKFLIP" }), PopupKind::Trick);
+                self.flips.held = true;
+            }
+            if self.spins.done(SPIN_NEED) {
+                let ccw = self.spins.a < 0.0;
+                let pts = if ccw { self.scoring.spin_ccw } else { self.scoring.spin_cw };
+                self.combo.add(Some(Move::Spin(ccw)), pts);
+                self.popup(format!("360  {pts}"), PopupKind::Trick);
+                self.spins = Turning::default();
+            }
+            self.flips.flip(self.last_rot, v.rotation);
+            self.spins.spin(self.last_rot, v.rotation);
         }
         self.last_rot = v.rotation;
 
@@ -480,11 +781,13 @@ impl Session {
         if buttons == 0 {
             self.armed = true;
         }
+        let air = v.air_time;
         if live && air > TRICK_AIR && self.active.is_none() && self.armed && buttons != 0 && self.steady >= COMBO_WINDOW
             && let Some(dir) = dir
             && let Some(def) = self.trick_for(buttons, dir)
         {
             self.active = Some(ActiveTrick { def, t: 0.0, held: 0.0, released: false });
+            self.combo.on = true;
             self.armed = false;
         }
         if let Some(a) = self.active.as_mut() {
@@ -505,171 +808,255 @@ impl Session {
             }
         }
 
-        // Trick boxes, flown through.
-        if air > TRICK_AIR {
-            for (i, b) in self.boxes.iter().enumerate() {
-                let inside = b.volumes.iter().any(|(c, r, h)| {
-                    let l = r.inverse() * (v.position - *c);
-                    l.x.abs() <= h.x && l.y.abs() <= h.y && l.z.abs() <= h.z
-                });
-                if inside && !self.jump.boxes.contains(&i) {
-                    self.jump.boxes.push(i);
+        // Landing: still mid-trick is a bail.
+        if self.last_air > LANDING_AIR && down > 0 {
+            self.longest_air = self.longest_air.max(self.last_air);
+            if let Some(a) = self.active.take() {
+                let def = &self.tricks[a.def];
+                if a.t < def.total - def.end {
+                    self.popup("BAILED", PopupKind::Bail);
+                    self.drop_combo();
+                } else {
+                    self.finish_trick(a);
                 }
             }
-        }
-
-        // Landing.
-        if self.last_air > LANDING_AIR && grounded {
-            self.land(self.last_air, v.position);
         }
         self.last_air = air;
 
         if live {
-            self.ground_tricks(v, dt);
+            let pose = pose(v, down);
+            self.ground_tricks(pose, v.velocity.length(), dt);
+            self.trick_boxes(v.position, down);
             self.find_spots(v.position);
+        }
+
+        // All four wheels down a moment: the combo pays.
+        if self.combo.on && self.settled >= SETTLE {
+            self.complete();
         }
     }
 
     fn finish_trick(&mut self, a: ActiveTrick) {
         let def = &self.tricks[a.def];
-        let pts = def.points + a.hold_points(def);
+        let pts = fives(def.points + a.hold_points(def));
         let name = def.name.clone();
-        self.jump.tricks.push((a.def, a.hold_points(def)));
+        if self.best_trick.as_ref().is_none_or(|b| pts > b.1) {
+            self.best_trick = Some((name.clone(), pts));
+        }
+        self.landed += 1;
+        self.combo.add(Some(Move::Trick(a.def)), pts);
         self.popup(format!("{name}  {pts}"), PopupKind::Trick);
     }
 
-    fn land(&mut self, air: f32, at: Vec3) {
-        if let Some(a) = self.active.take() {
-            let def = &self.tricks[a.def];
-            if a.t < def.total - def.end {
-                // Still mid-trick: bailed, the jump scores nothing.
-                self.popup("BAILED", PopupKind::Bail);
-                self.jump = Jump { from: at, ..default() };
-                return;
-            }
-            self.finish_trick(a);
-        }
-        let jump = std::mem::take(&mut self.jump);
-        self.jump.from = at;
-        self.longest_air = self.longest_air.max(air);
+    /// A trick box (or Big Air) paid: points into the combo, and a
+    /// different move every time (0x75020).
+    fn pay_box(&mut self, name: String, points: u32) {
+        self.combo.add(None, points);
+        self.popup(format!("{name}  {points}"), PopupKind::Bonus);
+    }
 
-        let mut total = 0;
-        let mut names: Vec<usize> = jump.tricks.iter().map(|t| t.0).collect();
-        names.sort_unstable();
-        names.dedup();
-        let trick_points: u32 = jump.tricks.iter().map(|(d, hold)| self.tricks[*d].points + hold).sum();
-        // Different tricks in one jump multiply.
-        let multiplier = names.len().max(1) as u32;
-        total += trick_points * multiplier;
-        for (d, hold) in &jump.tricks {
-            let def = &self.tricks[*d];
-            if self.best_trick.as_ref().is_none_or(|b| def.points + hold > b.1) {
-                self.best_trick = Some((def.name.clone(), def.points + hold));
-            }
+    /// The combo pays (0x74700).
+    fn complete(&mut self) {
+        let combo = std::mem::take(&mut self.combo);
+        let total = combo.points * combo.multiplier();
+        if combo.moves > self.best_combo.0 {
+            self.best_combo = (combo.moves, total);
         }
-        self.landed += jump.tricks.len() as u32;
-
-        let mut bonuses: Vec<(String, u32)> = Vec::new();
-        // Whole turns about each axis.
-        let turns = |a: f32| ((a.abs() + 0.5) / std::f32::consts::TAU) as u32;
-        let flips = turns(jump.turned.x);
-        if flips > 0 {
-            bonuses.push((if jump.turned.x > 0.0 { "BACKFLIP" } else { "FRONTFLIP" }.into(), 1000 * flips));
-        }
-        let spins = turns(jump.turned.y);
-        if spins > 0 {
-            bonuses.push((format!("{}", 360 * spins), 600 * spins));
-        }
-        let rolls = turns(jump.turned.z);
-        if rolls > 0 {
-            bonuses.push(("BARREL ROLL".into(), 800 * rolls));
-        }
-        for &b in &jump.boxes {
-            let tb = &self.boxes[b];
-            // A linked pair (a gap) needs both ends in the same jump, and
-            // pays once.
-            match tb.linked {
-                Some(l) if !jump.boxes.contains(&l) => continue,
-                Some(l) if l < b => continue,
-                _ => {}
-            }
-            bonuses.push((tb.name.clone(), tb.points));
-        }
-        if air >= 1.5 {
-            bonuses.push(("BIG AIR".into(), (air * 100.0) as u32));
-        }
-        for (name, pts) in &bonuses {
-            total += pts;
-            self.popup(format!("{name}  {pts}"), PopupKind::Bonus);
-        }
+        self.best_jump = self.best_jump.max(total);
         if total > 0 {
+            let multiplier = combo.multiplier();
             if multiplier > 1 {
                 self.popup(format!("{multiplier}X COMBO  {total}"), PopupKind::Total);
-            } else if !jump.tricks.is_empty() || bonuses.len() > 1 {
-                self.popup(format!("LANDED  {total}"), PopupKind::Total);
-            }
-            self.best_jump = self.best_jump.max(total);
-            let count = (jump.tricks.len() + bonuses.len()) as u32;
-            if count > self.best_combo.0 {
-                self.best_combo = (count, total);
+            } else if combo.moves > 1 {
+                self.popup(format!("COMPLETE  {total}"), PopupKind::Total);
             }
             self.award(total);
         }
+        self.ground = GroundRun::default();
+        self.boxing = BoxRun::None;
     }
 
-    fn ground_tricks(&mut self, v: &Vehicle, dt: f32) {
-        let contact = |front: bool, left: Option<bool>| {
-            v.wheels.iter().zip(&v.params.wheels).filter(|(_, p)| (p.offset[2] < 0.0) == front && left.is_none_or(|l| (p.offset[0] < 0.0) == l)).all(|(w, _)| w.contact)
+    /// The combo is lost: a bail or a crash (0x745c0, "FAILED").
+    fn drop_combo(&mut self) {
+        self.combo = Combo::default();
+        self.active = None;
+        self.ground = GroundRun::default();
+        self.flips = Turning::default();
+        self.spins = Turning::default();
+    }
+
+    fn crash(&mut self) {
+        if self.combo.on {
+            self.popup("FAILED", PopupKind::Bail);
+        }
+        self.drop_combo();
+        self.flying = false;
+        self.boxing = BoxRun::None;
+    }
+
+    /// Wheelies, bicycles and endos (0x75640). A trick starts when the
+    /// quad lifts two wheels on one end or side (at walking pace or more,
+    /// but for an endo), and gains points as it's held: its rate a second,
+    /// the rate growing by its `Accel`, the total held to its `Max`. Held
+    /// past a second it pays into the combo when it ends: back on all four
+    /// wheels for a moment, into another ground trick, or in the air with
+    /// a trick under way. Flying off a ramp in one only pauses it; landing
+    /// back in the same trick carries on with its points so far.
+    fn ground_tricks(&mut self, pose: Pose, speed: f32, dt: f32) {
+        let prev = self.ground.kind;
+        // Back on all four only counts once settled.
+        let now = match pose {
+            Pose::Same => prev.map_or(Pose::Down, Pose::Trick),
+            Pose::Down if self.settled < SETTLE => prev.map_or(Pose::Down, Pose::Trick),
+            p => p,
         };
-        let none = |front: bool, left: Option<bool>| {
-            v.wheels.iter().zip(&v.params.wheels).filter(|(_, p)| (p.offset[2] < 0.0) == front && left.is_none_or(|l| (p.offset[0] < 0.0) == l)).all(|(w, _)| !w.contact)
-        };
-        let side = |left: bool| {
-            v.wheels.iter().zip(&v.params.wheels).all(|(w, p)| w.contact == ((p.offset[0] < 0.0) == left))
-        };
-        let moving = v.velocity.length() > 4.0;
-        let now = if !moving || v.wheels.len() < 4 {
-            None
-        } else if contact(false, None) && none(true, None) {
-            Some(Ground::Wheelie)
-        } else if contact(true, None) && none(false, None) {
-            Some(Ground::Endo)
-        } else if side(true) || side(false) {
-            Some(Ground::Bicycle)
-        } else {
-            None
-        };
-        match (self.ground, now) {
-            (Some((g, secs)), Some(n)) if g == n => self.ground = Some((g, secs + dt)),
-            (prev, now) => {
-                if let Some((g, secs)) = prev
-                    && secs >= 1.0
-                {
-                    let (name, per) = match g {
-                        Ground::Wheelie => ("WHEELIE", self.ground_points.wheelie),
-                        Ground::Endo => ("ENDO", self.ground_points.endo),
-                        Ground::Bicycle => ("BICYCLE", self.ground_points.bicycle),
-                    };
-                    let pts = per * (secs / 0.25) as u32;
-                    match g {
-                        Ground::Wheelie => self.longest_wheelie = self.longest_wheelie.max(secs),
-                        Ground::Bicycle => self.longest_bicycle = self.longest_bicycle.max(secs),
-                        Ground::Endo => self.longest_endo = self.longest_endo.max(secs),
+        match now {
+            Pose::Trick(g) => match prev {
+                None => {
+                    if speed >= GROUND_SPEED || g == Ground::Endo {
+                        self.start_ground(g, dt, 0.0);
                     }
-                    self.popup(format!("{name} {secs:.1}S  {pts}"), PopupKind::Bonus);
-                    self.award(pts);
                 }
-                self.ground = now.map(|n| (n, 0.0));
+                Some(p) if p == g => {
+                    if speed >= GROUND_SPEED || g == Ground::Endo {
+                        self.hold_ground(dt);
+                    }
+                }
+                Some(p) => {
+                    if self.ground.secs > GROUND_MIN {
+                        self.end_ground(p);
+                        // The new one starts half a second in, its points
+                        // going on from the last one's.
+                        let points = self.ground.points;
+                        self.start_ground(g, GROUND_SWITCH, points);
+                    } else {
+                        self.start_ground(g, dt, 0.0);
+                    }
+                }
+            },
+            Pose::Down => {
+                if let Some(p) = prev {
+                    self.end_ground(p);
+                    self.ground.kind = None;
+                }
             }
+            Pose::Air => {
+                if let Some(p) = prev.filter(|_| self.active.is_some()) {
+                    self.end_ground(p);
+                }
+            }
+            Pose::Same => {}
         }
     }
 
+    fn start_ground(&mut self, g: Ground, secs: f32, points: f32) {
+        self.ground = GroundRun { kind: Some(g), secs, rate: self.scoring.rate(g).score, points };
+    }
+
+    fn hold_ground(&mut self, dt: f32) {
+        let Some(g) = self.ground.kind else { return };
+        let r = self.scoring.rate(g);
+        self.ground.secs += dt;
+        self.ground.rate *= 1.0 + r.accel * dt;
+        self.ground.points += self.ground.rate * dt;
+        if self.ground.secs > GROUND_MIN {
+            self.ground.points = self.ground.points.min(r.max);
+            self.combo.on = true;
+        }
+    }
+
+    /// The ground trick ends: held over a second, it pays into the combo.
+    fn end_ground(&mut self, g: Ground) {
+        let secs = std::mem::take(&mut self.ground.secs);
+        if secs <= GROUND_MIN {
+            return;
+        }
+        self.ground.points = self.ground.points.min(self.scoring.rate(g).max);
+        let pts = fives(self.ground.points as u32);
+        match g {
+            Ground::Wheelie => self.longest_wheelie = self.longest_wheelie.max(secs),
+            Ground::BicycleLeft | Ground::BicycleRight => self.longest_bicycle = self.longest_bicycle.max(secs),
+            Ground::Endo => self.longest_endo = self.longest_endo.max(secs),
+        }
+        self.combo.add(Some(Move::Ground(g)), pts);
+        self.popup(format!("{} {secs:.1}S  {pts}", g.label()), PopupKind::Bonus);
+    }
+
+    /// Trick boxes (0x75360): the first box flown into in a jump pays, at
+    /// once or, if it needs a trick, once the combo has one. A linked box
+    /// pays when its other end comes next, so each end of a gap pays its
+    /// own points for the way it was jumped.
+    fn trick_boxes(&mut self, at: Vec3, down: usize) {
+        if down > 0 {
+            self.boxing = BoxRun::None;
+            return;
+        }
+        let inside = |b: &TrickBox| {
+            b.volumes.iter().any(|(c, r, h)| {
+                let l = r.inverse() * (at - *c);
+                l.x.abs() <= h.x && l.y.abs() <= h.y && l.z.abs() <= h.z
+            })
+        };
+        let here = self.boxes.iter().position(inside);
+        let b = match self.boxing {
+            BoxRun::Paid => return,
+            BoxRun::None => match here {
+                Some(b) => {
+                    self.boxing = BoxRun::In(b);
+                    b
+                }
+                None => return,
+            },
+            BoxRun::In(b) => b,
+        };
+        let tb = &self.boxes[b];
+        if let Some(l) = tb.linked {
+            match here {
+                Some(h) if h == l => {}
+                Some(h) if h != b => {
+                    self.boxing = BoxRun::None;
+                    return;
+                }
+                _ => return,
+            }
+        }
+        if tb.needs_trick && !self.combo.on {
+            return;
+        }
+        let (name, points) = (tb.name.clone(), tb.points);
+        self.boxing = BoxRun::Paid;
+        self.pay_box(name, points);
+    }
+
     fn find_spots(&mut self, at: Vec3) {
-        let Some(i) = self.spots.iter().position(|(p, found)| !found && (*p - at).with_y(0.0).length() < SPOT_RADIUS) else { return };
-        self.spots[i].1 = true;
-        let (found, n) = (self.spots_found(), self.spots.len());
-        self.popup(format!("NEW SPOT {found}/{n}  {SPOT_POINTS}"), PopupKind::Bonus);
-        self.award(SPOT_POINTS);
+        if let Some(i) = self.spots.iter().position(|(p, found)| !found && (*p - at).with_y(0.0).length() < SPOT_RADIUS) {
+            self.spots[i].1 = true;
+        }
+    }
+}
+
+/// The ground-trick pose from the wheels (0x74030): two wheels down at the
+/// back a wheelie, at the front an endo, on one side a bicycle. With none
+/// down the quad is in the air; one changes nothing; any other way it's on
+/// the ground.
+fn pose(v: &Vehicle, down: usize) -> Pose {
+    if v.wheels.len() != 4 {
+        return Pose::Down;
+    }
+    let touching = |front: bool, left: bool| {
+        v.wheels.iter().zip(&v.params.wheels).any(|(w, p)| w.contact && (p.offset[2] < 0.0) == front && (p.offset[0] < 0.0) == left)
+    };
+    let (fl, fr, rl, rr) = (touching(true, true), touching(true, false), touching(false, true), touching(false, false));
+    match (fl, fr, rl, rr) {
+        (false, false, true, true) => Pose::Trick(Ground::Wheelie),
+        (true, true, false, false) => Pose::Trick(Ground::Endo),
+        (true, false, true, false) => Pose::Trick(Ground::BicycleLeft),
+        (false, true, false, true) => Pose::Trick(Ground::BicycleRight),
+        _ => match down {
+            0 => Pose::Air,
+            1 => Pose::Same,
+            _ => Pose::Down,
+        },
     }
 }
 
@@ -984,37 +1371,214 @@ mod tests {
         TrickDef { name: name.into(), level: 1, buttons: 1, dir: Dir::Up, points, hold_points: 20, total: 1.0, end: 0.4, clip: String::new() }
     }
 
+    const DT: f32 = 1.0 / 60.0;
+
     fn session() -> Session {
         let boxes = vec![
-            TrickBox { name: "GAP".into(), points: 1000, linked: Some(1), volumes: vec![] },
-            TrickBox { name: "GAP".into(), points: 1000, linked: Some(0), volumes: vec![] },
-            TrickBox { name: "HOOP".into(), points: 500, linked: None, volumes: vec![] },
+            // A gap: each end pays its own points for the way it's jumped.
+            TrickBox { name: "GAP JUMP".into(), points: 200, linked: Some(1), needs_trick: false, volumes: vec![(Vec3::new(0.0, 10.0, 0.0), Quat::IDENTITY, Vec3::ONE)] },
+            TrickBox { name: "GAP JUMP".into(), points: 800, linked: Some(0), needs_trick: false, volumes: vec![(Vec3::new(0.0, 10.0, -20.0), Quat::IDENTITY, Vec3::ONE)] },
+            TrickBox { name: "SPECIAL TRICK".into(), points: 1000, linked: None, needs_trick: true, volumes: vec![(Vec3::new(50.0, 10.0, 0.0), Quat::IDENTITY, Vec3::ONE)] },
         ];
-        let mut s = Session::with(vec![trick("A", 100), trick("B", 300)], GroundPoints { wheelie: 20, bicycle: 20, endo: 20 }, boxes);
+        let mut s = Session::with(vec![trick("A", 100), trick("B", 300)], Scoring::RETAIL, boxes);
         s.freestyle = true;
         s
     }
 
+    /// A quad with its wheels front left, front right, rear left and rear
+    /// right, moving at 5 m/s.
+    fn quad() -> Vehicle {
+        let text = "WHEEL 0\nWHEELOFFSET -0.5 -0.17 0.58\nWHEEL 1\nWHEELOFFSET 0.5 -0.17 0.58\n\
+                    WHEEL 2\nWHEELOFFSET -0.5 -0.17 -0.6\nWHEEL 3\nWHEELOFFSET 0.5 -0.17 -0.6\nEND\n";
+        let mut v = Vehicle::new(atv_sim::VehicleParams::from_files(text, None), Vec3::ZERO, Quat::IDENTITY);
+        v.velocity = Vec3::new(0.0, 0.0, -5.0);
+        v
+    }
+
+    fn flat() -> TrackCollision {
+        let e = 500.0;
+        TrackCollision::new(vec![[Vec3::new(-e, 0.0, -e), Vec3::new(e, 0.0, -e), Vec3::new(0.0, 0.0, e)]], 50.0)
+    }
+
+    /// Steps `secs` with these wheels down (front left, front right, rear
+    /// left, rear right).
+    fn ride(s: &mut Session, v: &mut Vehicle, world: &TrackCollision, down: [bool; 4], secs: f32) {
+        for _ in 0..(secs / DT).round() as usize {
+            for (w, d) in v.wheels.iter_mut().zip(down) {
+                w.contact = d;
+            }
+            v.air_time = if down.contains(&true) { 0.0 } else { v.air_time + DT };
+            s.step(v, world, (0, None), DT, true, false);
+        }
+    }
+
+    const ALL: [bool; 4] = [true; 4];
+    const NONE: [bool; 4] = [false; 4];
+    const WHEELIE: [bool; 4] = [false, false, true, true];
+    const LEFT_BICYCLE: [bool; 4] = [true, false, true, false];
+
     #[test]
-    fn combos_multiply_and_gaps_pay_once() {
+    fn reads_retail_and_prototype_ground_points() {
+        let retail = setup::entries(
+            r#"<Root><Wheelie Score="300" Accel="0.0001" Max="9999"/><Bicycle_Left Score="400" Accel="0.001" Max="99999"/>
+            <Bicycle_Right Score="400" Accel="0.001" Max="99999"/><Endo Score="300" Accel="0.0015" Max="99999"/>
+            <Forward_Flip Score="600"/><Backward_Flip Score="400"/><Clockwise_Spin Score="600"/><Counter_Clockwise_Spin Score="600"/></Root>"#,
+        );
+        assert_eq!(Scoring::load(&retail), Scoring::RETAIL);
+        let proto = Scoring::load(&setup::entries(r#"<Root><Wheelie Wheelie="20"/><Bicycle Bicycle="20"/><Endo Endo="20"/></Root>"#));
+        assert_eq!(proto.ground[0], GroundRate { score: 80.0, accel: 0.0, max: f32::MAX });
+        assert_eq!(proto.ground[2], proto.ground[1]);
+        assert_eq!((proto.back_flip, proto.front_flip, proto.spin_cw), (1000, 1000, 600));
+    }
+
+    #[test]
+    fn a_wheelie_pays_its_rate_once_held_a_second() {
+        let (mut s, mut v, w) = (session(), quad(), flat());
+        ride(&mut s, &mut v, &w, ALL, 0.5);
+        ride(&mut s, &mut v, &w, WHEELIE, 3.0);
+        assert_eq!(s.score, 0, "nothing until it ends");
+        // A moment on three wheels doesn't end it.
+        ride(&mut s, &mut v, &w, [true, false, true, true], 0.05);
+        ride(&mut s, &mut v, &w, WHEELIE, 1.0);
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        // 300 a second for the 4 s and the moment it takes to settle.
+        assert!((1225..=1250).contains(&s.score) && s.score % 5 == 0, "{}", s.score);
+        assert!((s.longest_wheelie - 4.12).abs() < 0.05, "{}", s.longest_wheelie);
+        // A short one pays nothing.
+        let before = s.score;
+        ride(&mut s, &mut v, &w, WHEELIE, 0.8);
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        assert_eq!(s.score, before);
+        // Too slow to start one.
+        v.velocity = Vec3::new(0.0, 0.0, -1.0);
+        ride(&mut s, &mut v, &w, LEFT_BICYCLE, 2.0);
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        assert_eq!(s.score, before);
+    }
+
+    #[test]
+    fn ground_tricks_string_into_a_combo() {
+        let (mut s, mut v, w) = (session(), quad(), flat());
+        ride(&mut s, &mut v, &w, ALL, 0.5);
+        // A wheelie straight into a left bicycle: the wheelie pays, and the
+        // bicycle starts half a second in with the wheelie's points.
+        ride(&mut s, &mut v, &w, WHEELIE, 2.0);
+        ride(&mut s, &mut v, &w, LEFT_BICYCLE, 1.0);
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        // 600 + (600 + 400 a second for the 1 s and the settling), times
+        // two moves.
+        assert!((3220..=3260).contains(&s.score), "{}", s.score);
+        assert_eq!(s.best_combo.0, 2);
+    }
+
+    #[test]
+    fn combos_multiply_by_different_moves() {
         let mut s = session();
-        s.jump.tricks = vec![(0, 0), (1, 40), (1, 0)];
-        s.jump.boxes = vec![0, 1, 2];
-        s.land(1.0, Vec3::ZERO);
-        // (100 + 340 + 300) x 2 different tricks, the gap once, the hoop.
-        assert_eq!(s.score, 740 * 2 + 1000 + 500);
-        assert_eq!(s.best_trick, Some(("B".into(), 340)));
-        // Three tricks, the gap and the hoop: a five-trick combo.
-        assert_eq!(s.best_combo, (5, 740 * 2 + 1500));
-        // Half a gap pays nothing.
-        s.jump.boxes = vec![1];
-        s.land(1.0, Vec3::ZERO);
-        assert_eq!(s.score, 740 * 2 + 1500);
+        s.combo.add(Some(Move::Trick(0)), 100);
+        s.combo.add(Some(Move::Trick(1)), 300);
+        s.combo.add(Some(Move::Trick(1)), 300);
+        s.combo.add(Some(Move::Flip(false)), 400);
+        s.combo.add(None, 200);
+        s.complete();
+        // Trick A, trick B, a backflip and a box: four different moves.
+        assert_eq!(s.score, 1300 * 4);
+        assert_eq!(s.best_combo, (5, 1300 * 4));
+        assert_eq!(s.best_jump, 1300 * 4);
         // A smaller combo, however well it pays, leaves the best one.
-        s.jump.tricks = vec![(1, 0), (1, 0)];
-        s.jump.boxes = vec![2];
-        s.land(1.0, Vec3::ZERO);
-        assert_eq!(s.best_combo, (5, 740 * 2 + 1500));
+        s.combo.add(Some(Move::Ground(Ground::Wheelie)), 9000);
+        s.complete();
+        assert_eq!(s.best_combo, (5, 1300 * 4));
+    }
+
+    #[test]
+    fn gaps_pay_the_end_they_start_from() {
+        let (mut s, mut v, w) = (session(), quad(), flat());
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        // Through the 200 end, then the 800 one.
+        v.position = Vec3::new(0.0, 10.0, 0.0);
+        ride(&mut s, &mut v, &w, NONE, 0.1);
+        v.position = Vec3::new(0.0, 10.0, -10.0);
+        ride(&mut s, &mut v, &w, NONE, 0.1);
+        v.position = Vec3::new(0.0, 10.0, -20.0);
+        ride(&mut s, &mut v, &w, NONE, 0.1);
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        assert_eq!(s.score, 200);
+        // The other way round pays the other end's.
+        v.position = Vec3::new(0.0, 10.0, -20.0);
+        ride(&mut s, &mut v, &w, NONE, 0.1);
+        v.position = Vec3::new(0.0, 10.0, 0.0);
+        ride(&mut s, &mut v, &w, NONE, 0.1);
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        assert_eq!(s.score, 1000);
+        // One end alone pays nothing.
+        v.position = Vec3::new(0.0, 10.0, 0.0);
+        ride(&mut s, &mut v, &w, NONE, 0.1);
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        assert_eq!(s.score, 1000);
+    }
+
+    #[test]
+    fn a_box_that_needs_a_trick_waits_for_one() {
+        let (mut s, mut v, w) = (session(), quad(), flat());
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        v.position = Vec3::new(50.0, 10.0, 0.0);
+        ride(&mut s, &mut v, &w, NONE, 0.2);
+        assert_eq!(s.combo.moves, 0);
+        // A trick later in the same jump, even outside the box.
+        v.position = Vec3::new(50.0, 10.0, -30.0);
+        s.start_trick(0);
+        ride(&mut s, &mut v, &w, NONE, 0.1);
+        assert_eq!((s.combo.moves, s.combo.points), (1, 1000));
+    }
+
+    #[test]
+    fn flips_and_spins_pay_past_their_turn() {
+        let (mut s, mut v, w) = (session(), quad(), flat());
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        v.position = Vec3::new(0.0, 3.0, 100.0);
+        ride(&mut s, &mut v, &w, NONE, DT);
+        // Nose up through a whole turn: one backflip, at 198 degrees.
+        let turn = |s: &mut Session, v: &mut Vehicle, axis: Vec3, degrees: f32| {
+            for _ in 0..(degrees / 5.0) as usize {
+                v.rotation = Quat::from_axis_angle(axis, 5f32.to_radians()) * v.rotation;
+                ride(s, v, &w, NONE, DT);
+            }
+        };
+        turn(&mut s, &mut v, Vec3::X, 190.0);
+        assert_eq!(s.combo.moves, 0);
+        turn(&mut s, &mut v, Vec3::X, 170.0);
+        assert_eq!((s.combo.moves, s.combo.points), (1, 400));
+        // Turning right: a spin at 270 degrees, clockwise.
+        turn(&mut s, &mut v, Vec3::NEG_Y, 300.0);
+        assert_eq!((s.combo.moves, s.combo.points), (2, 1000));
+        assert_eq!(s.combo.kinds, vec![Move::Flip(false), Move::Spin(false)]);
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        assert_eq!(s.score, 2000);
+        // Nose down is a frontflip.
+        v.rotation = Quat::IDENTITY;
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        ride(&mut s, &mut v, &w, NONE, DT);
+        turn(&mut s, &mut v, Vec3::NEG_X, 210.0);
+        assert_eq!(s.combo.kinds, vec![Move::Flip(true)]);
+    }
+
+    #[test]
+    fn big_air_near_the_record() {
+        let (mut s, mut v, w) = (session(), quad(), flat());
+        s.air_record = Some(10.0);
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        v.position = Vec3::new(0.0, 9.0, 100.0);
+        ride(&mut s, &mut v, &w, NONE, 0.1);
+        assert_eq!(s.combo.moves, 0);
+        v.position.y = 9.6;
+        ride(&mut s, &mut v, &w, NONE, 1.0);
+        assert_eq!((s.combo.moves, s.combo.points), (1, BIG_AIR_POINTS), "once, then a wait");
+        // Higher still: the jump is the new mark to get near.
+        v.position.y = 12.0;
+        ride(&mut s, &mut v, &w, NONE, 0.1);
+        v.position.y = 0.0;
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        assert_eq!(s.air_record, Some(12.0));
     }
 
     #[test]
@@ -1029,16 +1593,24 @@ mod tests {
     }
 
     #[test]
-    fn landing_mid_trick_bails() {
-        let mut s = session();
-        s.jump.tricks = vec![(1, 0)];
+    fn bails_and_crashes_lose_the_combo() {
+        let (mut s, mut v, w) = (session(), quad(), flat());
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        ride(&mut s, &mut v, &w, NONE, 0.5);
+        s.combo.add(Some(Move::Trick(1)), 300);
         s.active = Some(ActiveTrick { def: 0, t: 0.3, held: 0.0, released: false });
-        s.land(1.0, Vec3::ZERO);
-        assert_eq!(s.score, 0, "the whole jump is lost");
-        assert_eq!(s.popups.last().map(|p| p.kind), Some(PopupKind::Bail));
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        assert_eq!(s.score, 0, "the whole combo is lost");
+        assert!(s.popups.iter().any(|p| p.kind == PopupKind::Bail));
         // In the recovery part it counts.
+        ride(&mut s, &mut v, &w, NONE, 0.5);
         s.active = Some(ActiveTrick { def: 0, t: 0.7, held: 0.0, released: true });
-        s.land(1.0, Vec3::ZERO);
+        ride(&mut s, &mut v, &w, ALL, 0.2);
+        assert_eq!(s.score, 100);
+        // A crash loses what's under way.
+        s.combo.add(Some(Move::Trick(1)), 300);
+        s.step(&v, &w, (0, None), DT, true, true);
+        ride(&mut s, &mut v, &w, ALL, 0.2);
         assert_eq!(s.score, 100);
     }
 
@@ -1046,8 +1618,9 @@ mod tests {
     fn races_bank_trick_points_too() {
         let mut s = session();
         s.freestyle = false;
-        s.jump.tricks = vec![(0, 0)];
-        s.land(1.0, Vec3::ZERO);
+        s.combo.add(Some(Move::Trick(0)), 100);
+        s.complete();
         assert_eq!(s.score, 100);
+        assert_eq!(s.take_banked(), 100);
     }
 }
