@@ -576,6 +576,8 @@ pub struct Session {
     armed: bool,
     last_air: f32,
     last_rot: Quat,
+    /// The flip this jump paid (forward or not), for the lessons.
+    flipped: Option<bool>,
 }
 
 impl Session {
@@ -638,6 +640,7 @@ impl Session {
             armed: true,
             last_air: 0.0,
             last_rot: Quat::IDENTITY,
+            flipped: None,
         }
     }
 
@@ -651,6 +654,19 @@ impl Session {
     }
 
     /// Time is up (or the session was ended).
+    /// The move under way, as the stunt manager names its current trick
+    /// (+0x74, which the retail lessons read): the ground trick being
+    /// held, the air trick, or the flip this jump paid.
+    pub fn current_move(&self) -> Option<&str> {
+        if let Some(g) = self.ground.kind {
+            return Some(g.label());
+        }
+        if let Some(a) = &self.active {
+            return self.tricks.get(a.def).map(|t| t.name.as_str());
+        }
+        self.flipped.map(|forward| if forward { "FRONTFLIP" } else { "BACKFLIP" })
+    }
+
     pub fn over(&self, clock: f32) -> bool {
         self.ended || self.time_left(clock) == Some(0.0)
     }
@@ -730,6 +746,7 @@ impl Session {
             self.flips = Turning::default();
             self.spins = Turning::default();
             self.peak = 0.0;
+            self.flipped = None;
         } else if self.flying && down > 0 {
             self.flying = false;
         }
@@ -755,6 +772,7 @@ impl Session {
                 self.combo.add(Some(Move::Flip(forward)), pts);
                 self.popup(format!("{}  {pts}", if forward { "FRONTFLIP" } else { "BACKFLIP" }), PopupKind::Trick);
                 self.flips.held = true;
+                self.flipped = Some(forward);
             }
             if self.spins.done(SPIN_NEED) {
                 let ccw = self.spins.a < 0.0;

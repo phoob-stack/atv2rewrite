@@ -33,6 +33,7 @@ use crate::arcade::{self, ArcadeField};
 use crate::freestyle::{self, limit_label, TrickDef, MEDALS, TIME_LIMITS};
 use crate::career::{self, Career, Champ, CustomSetup, Plan, Profile, Run, PROFILES};
 use crate::challenge;
+use crate::lessons;
 use crate::controller::{self, Action, Input, PadInput, PORTS};
 use crate::hud::{ordinal, track_title};
 use crate::settings::{CameraView, Settings, VOLUME_STEPS};
@@ -237,6 +238,8 @@ pub enum Screen {
     CareerComplete,
     /// Open Freestyle or the challenges.
     FreestyleType,
+    /// Retail ATV Academy: Control Training or Trick Training.
+    Training,
     Challenges,
     /// Split screen: Single Race or Freestyle Battle, then how many play.
     MpMode,
@@ -598,6 +601,7 @@ fn navigate(
                     sel.players = 1;
                     sel.others.clear();
                     sel.field.clear();
+                    sel.lesson = 0;
                     mp_champ.run = None;
                     match item {
                         // Retail lists open freestyle and the challenges
@@ -638,6 +642,12 @@ fn navigate(
                             fe.mode = Mode::Career;
                             sel.mode = Mode::Career;
                             fe.screen = Screen::CareerChamp;
+                        }
+                        // Retail's TrainingSM (0xbd480): the courses.
+                        Some("ATV ACADEMY") if retail => {
+                            fe.mode = Mode::Training;
+                            sel.mode = Mode::Training;
+                            fe.screen = Screen::Training;
                         }
                         // The original's TrainingSM (0x9d6c0): the profile's
                         // rider picks an ATV, then practises on Stadium 2.
@@ -996,6 +1006,29 @@ fn navigate(
                 fe.screen = Screen::Main;
             }
         }
+        // Straight to the course's first lesson, the profile's rider on
+        // the last ATV picked (0xbd520, 0xbbee0).
+        Screen::Training => match nav {
+            Nav::Up | Nav::Down => {
+                if let Some(l) = list.as_mut() {
+                    l.step(nav);
+                }
+            }
+            Nav::Accept | Nav::Start => {
+                let first = if list.as_ref().is_some_and(|l| l.selected == 1) { lessons::PER_COURSE + 1 } else { 1 };
+                fe.mode = Mode::Training;
+                sel.mode = Mode::Training;
+                sel.lesson = first;
+                sel.lessons_passed = 0;
+                sel.track = lessons::track(first).into();
+                if let Some(p) = &career.profile {
+                    sel.rider = p.rider.clone();
+                }
+                next.set(AppState::Loading);
+            }
+            Nav::Back => fe.screen = Screen::Main,
+            _ => {}
+        },
         Screen::FreestyleType => match nav {
             Nav::Up | Nav::Down => {
                 if let Some(l) = list.as_mut() {
@@ -1435,6 +1468,7 @@ fn rebuild(
         Screen::CareerStatus => (career.run.as_ref().map_or("Career_Status_Amateur", |r| r.champ.status_screen()), "CAREER"),
         Screen::CareerComplete => ("Career_Complete", "CAREER"),
         Screen::FreestyleType => ("Freestyle_Picktype", "FREESTYLE"),
+        Screen::Training => ("Training_New_Game", "ATV ACADEMY"),
         Screen::Challenges => ("Freestyle_Challenge", "FREESTYLE"),
         Screen::MpMode => ("Multiplayer_New_Game", ""),
         Screen::MpPlayers => ("Multiplayer_Num_Players", label),
@@ -1758,6 +1792,11 @@ fn rebuild(
         }
         Screen::FreestyleType => {
             let list = MenuList::new(&["OPEN FREESTYLE", "FREESTYLE CHALLENGE"], 320.0).with_row(36.0).select(usize::from(fe.mode == Mode::Challenge));
+            kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 170.0));
+        }
+        // "Control Training" (0x2dd) and "Trick Training" (0x2dc).
+        Screen::Training => {
+            let list = MenuList::new(&["CONTROL TRAINING", "TRICK TRAINING"], 320.0).with_row(36.0).select(usize::from(sel.lesson > lessons::PER_COURSE));
             kids.push(menu(&mut commands, &ui, list, (SCREEN_W - 320.0) / 2.0, 170.0));
         }
         Screen::Challenges => {

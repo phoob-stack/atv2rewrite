@@ -143,6 +143,10 @@ impl Zone {
         }
     }
 
+    pub fn centre(&self) -> Vec3 {
+        self.centre
+    }
+
     pub fn contains(&self, p: Vec3) -> bool {
         let d = p - self.centre;
         (0..3).all(|i| self.axes[i].dot(d).abs() <= self.half[i])

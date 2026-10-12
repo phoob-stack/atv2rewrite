@@ -4,7 +4,7 @@
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
 //!             [--rider Male1] [--laps 3] [--frontend [--screen rider|tricks]]
 //!             [--mode race|timetrial|arcade|freestyle|career|training]
-//!             [--minutes N] [--round N] [--opponents N] [--challenge N]
+//!             [--minutes N] [--round N] [--opponents N] [--challenge N] [--lesson N]
 //!             [--players N] [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
 //!             [--resolution 1280x720] [--fullscreen] [--cheat ALLOFEM]
@@ -15,7 +15,8 @@
 //! the Stadium, which has no laps; `--minutes` is Open Freestyle's limit, 0 for
 //! none; arcade races its rounds' tracks, `--round` starts on one; career
 //! with `--round` races the saved championship's next round; training is
-//! ATV Academy, always on Stadium 2).
+//! ATV Academy, always on Stadium 2; `--lesson N` runs one of the retail
+//! disc's ATV Academy lessons).
 
 mod aitricks;
 mod arcade;
@@ -37,6 +38,7 @@ mod mud;
 mod hud;
 mod intro;
 mod knock;
+mod lessons;
 mod lit;
 mod loading;
 mod water;
@@ -122,6 +124,8 @@ struct Args {
     opponents: usize,
     /// Freestyle challenge to run (1-based).
     challenge: usize,
+    /// Retail ATV Academy lesson to run (1-based, 0 for none).
+    lesson: usize,
     /// Humans in split screen (1 to 4).
     players: usize,
     /// Cheats to enter (see [`unlocks::CHEATS`]).
@@ -206,13 +210,21 @@ struct Selection {
     /// each after the first.
     players: usize,
     others: Vec<(String, String)>,
+    /// Retail ATV Academy: the lesson (1 to 10, 0 for none; see
+    /// [`lessons`]), and the lessons of its course passed so far.
+    lesson: usize,
+    lessons_passed: usize,
 }
 
 impl Selection {
-    /// Player 1's slot on the grid: Arcade's from the last round, else
-    /// the front.
+    /// Player 1's slot on the grid: Arcade's from the last round, a
+    /// lesson's own start, else the front.
     fn player_slot(&self) -> usize {
-        if self.mode == Mode::Arcade { self.grid.max(1) } else { 1 }
+        match self.mode {
+            Mode::Arcade => self.grid.max(1),
+            Mode::Training if self.lesson > 0 => self.lesson,
+            _ => 1,
+        }
     }
 }
 
@@ -294,6 +306,7 @@ fn parse_args() -> anyhow::Result<Args> {
         // The original's default field (`mNumAIPlayers` in user.xml).
         opponents: 5,
         challenge: 1,
+        lesson: 0,
         players: 1,
         cheats: Vec::new(),
         no_intro: false,
@@ -325,6 +338,7 @@ fn parse_args() -> anyhow::Result<Args> {
                     "career" => Screen::CareerChamp,
                     "status" => Screen::CareerStatus,
                     "freestyle" => Screen::FreestyleType,
+                    "academy" | "training" => Screen::Training,
                     "challenges" => Screen::Challenges,
                     "multiplayer" => Screen::MpMode,
                     "players" => Screen::MpPlayers,
@@ -355,6 +369,12 @@ fn parse_args() -> anyhow::Result<Args> {
             "--challenge" => {
                 a.challenge = val().parse::<usize>()?.clamp(1, challenge::COUNT);
                 a.mode = Mode::Challenge;
+                a.mode_given = true;
+                a.direct = true;
+            }
+            "--lesson" => {
+                a.lesson = val().parse::<usize>()?.clamp(1, lessons::LESSONS);
+                a.mode = Mode::Training;
                 a.mode_given = true;
                 a.direct = true;
             }
@@ -424,6 +444,8 @@ fn main() -> anyhow::Result<()> {
         challenge: args.challenge,
         players: args.players,
         others: Vec::new(),
+        lesson: args.lesson,
+        lessons_passed: 0,
     };
     // Split screen is Single Race and Freestyle (Battle) only.
     if selection.players > 1 && !matches!(args.mode, Mode::SingleRace | Mode::Freestyle) {
@@ -438,7 +460,7 @@ fn main() -> anyhow::Result<()> {
         selection.laps = 1;
     }
     if args.mode == Mode::Training {
-        selection.track = TRAINING_TRACK.into();
+        selection.track = if args.lesson > 0 { lessons::track(args.lesson) } else { TRAINING_TRACK }.into();
     }
     // Arcade races its rounds' tracks (`--round N` starts on one), a lap
     // each.
@@ -530,6 +552,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(ghost::GhostPlugin)
         .add_plugins(screens::ScreensPlugin)
         .add_plugins(lit::LitPlugin)
+        .add_plugins(lessons::LessonsPlugin)
         .add_plugins(sky::SkyPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
@@ -817,6 +840,12 @@ fn setup(
             commands.entity(arrow).insert((challenge::GuideArrow, hud::HudRoot, scoped.clone()));
         }
         commands.insert_resource(c);
+    }
+    if sel.mode == Mode::Training
+        && sel.lesson > 0
+        && let Some(arrow) = loader.spawn_loose(&mut commands, "arrow", "Generic")
+    {
+        commands.entity(arrow).insert((lessons::LessonArrow, hud::HudRoot, scoped.clone(), Visibility::Hidden));
     }
 }
 
