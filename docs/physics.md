@@ -2,8 +2,9 @@
 
 `atv-sim` is a port of the original handling code in `default.xbe`, not a
 fresh model. The constants come from each quad's `.params` file; anything a
-file leaves out falls back to the engine's built-in defaults. Addresses below are virtual addresses in the retail XBE, for
-anyone checking the port against a disassembly.
+file leaves out falls back to the engine's built-in defaults. Addresses below are virtual addresses in the prototype
+disc's XBE (built 2002-10-02), for anyone checking the port against a
+disassembly; "Retail" lists what the USA retail XBE (2002-12-22) changes.
 
 ## Model
 
@@ -42,6 +43,29 @@ anyone checking the port against a disassembly.
 | ATV update | `preload_update`, `landing_stabiliser` | Preload hop and landing pitch damping |
 | Dyne vtable `0x1c5788` | `integrate`, `post_step` | Integration, gearbox, engine revs |
 | `0xb5bf0`, `0x59aa0` | `params.rs` | `.params` parser and curve sampling |
+
+## Retail
+
+The retail disc's tuning goes with retail handling code, so the port picks
+the code by the data: `.params` with `ENGINEREVRATEREVVING` (retail's
+Generic has it, the prototype's doesn't) set `VehicleParams::retail`. On the
+prototype's files nothing below applies. Retail addresses:
+
+| Retail | Port | What changed from the prototype |
+|---|---|---|
+| `0x6f750` (ATV update) | `substep` | Rider lean, wheelies and the pre-load are off on the grid |
+| `0x6e0b0` (ATV vtable `0x1bb1e8` slot 18) | `controls` | Runs the Dyne's smoothing (`0xda3f0`) and then its own copy, so pedals and steering move twice per tick |
+| `0x6cfa0` | `wheelies` | Torque scale lerps WHEELIETORQUE0MPH..100MPH by speed, times the 0 mph value again |
+| `0x6e6e0` | `ground_forces` | Wheelspin only above 3/4 throttle; side grip × ground normal.y²; reversing yaw damping 0.8 (was 0.4); CONSTMASSTORQUE only going forward; turbo drive |
+| `0x6db90` | `preload_update` | The hop also spins: (lean − throttle + brake) × PRELOADVERTSPINMAG about right, steer × PRELOADHORIZSPINMAG about up |
+| `0x6d1b0` | `stabiliser` | On one or two wheels, `speed × BICYCLETORQUE × (ground side.y − right.y − BICYCLEDAMPING × roll rate)` about the forward axis, at the front right wheel (the bicycle trick's resting state; the trick itself isn't ported) |
+| `0x6e2e0` | `post_step` | ENGINEREVRATENORMAL/REVVING are RPM/s slew limits on the target revs; revs then ease toward it at 50/s (`0x6e540`) |
+| `0x6e470`, `0x6d490`, `0x6d570` | `set_grid`, `start_race` | Held on the grid (only the springs move it, Dyne `0xd9190`) the rider can rev. Letting go with the revs between MINTURBOREVSCALE and MAXTURBOREVSCALE of the range gives a turbo start: drive × DRIVEFORCETURBOSCALE for MAXTURBOTIME seconds |
+
+Unchanged: air forces and gravity (`0x6de40`, `0x6d5d0`), landing
+stabiliser (`0x6ce20`), integrator (`0xd1970`), surface grip (`0xdfc20`),
+pedals and reverse (`0x1c150`), brakes and cornering. Most ATV fields sit 4
+bytes later than in the prototype (in-air gravity `0x80c` vs `0x808`).
 
 ## Crashes
 
@@ -136,7 +160,7 @@ Loose_Mud 5. Plain Mud has none, only less grip (0.45).
 
 ## Not ported yet
 
-* Turbo, the bicycle trick, and the bumpy-terrain wheel offset.
+* The bicycle trick and the bumpy-terrain wheel offset.
 * The original's own body collision spheres. `body_collision` uses five
   hand-placed spheres instead, answered the way the original answers a
   contact: a position fix plus an impulse at the contact point (`0xad9b0`).

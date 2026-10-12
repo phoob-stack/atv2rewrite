@@ -332,10 +332,10 @@ pub fn spawn(
     let track = setup::entries(&String::from_utf8_lossy(&game.read("/Setup/Tracks.xml").unwrap_or_default()))
         .into_iter()
         .find(|e| e.name.eq_ignore_ascii_case(&sel.track));
-    let lap_time = |k: &str| track.as_ref().and_then(|e| e.num(k)).unwrap_or(0.0);
+    let lap_time = |worst| track.as_ref().and_then(|e| e.ai_lap_time(worst)).unwrap_or(0.0);
     let pacer = Pacer::new(
-        lap_time("mAIBestLapTime"),
-        lap_time("mAIWorstLapTime"),
+        lap_time(false),
+        lap_time(true),
         racers.len() + 1,
         1 + humans.len(),
         line.lap_length(),
@@ -441,8 +441,16 @@ fn drive_opponents(
         let time_up = battle && session.as_ref().is_some_and(|s| s.over(progress.clock));
         let crashed = r.wreck.fall.is_some();
         let mut held = false;
-        r.input = if !r.progress.started() || crashed {
-            // On the grid, or thrown off: the quad rolls on by itself.
+        r.input = if !r.progress.started() && !crashed {
+            // Held on the grid, where players can rev for a turbo start.
+            match r.human {
+                Some(n) if !args.autodrive => {
+                    Input { throttle: crate::read_input(&controls, false, Some(n - 1)).throttle, ..default() }
+                }
+                _ => Input::default(),
+            }
+        } else if crashed {
+            // Thrown off: the quad rolls on by itself.
             Input::default()
         } else if time_up {
             Input { brake: if r.vehicle.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
@@ -479,6 +487,7 @@ fn drive_opponents(
         let before = (r.vehicle.velocity, r.vehicle.angular_velocity);
         // The Air Gravity option is the players'; computer riders keep the original's.
         r.vehicle.air_gravity = if r.human.is_some() { settings.air_gravity_scale() } else { 1.0 };
+        r.vehicle.set_grid(!r.progress.started());
         r.vehicle.step(&r.input, dt, &race.collision);
         let mut back_on = false;
         if crashed {

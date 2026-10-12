@@ -6,6 +6,22 @@
 
 use std::collections::HashMap;
 
+/// Keys that belong to the `WHEEL n` block they follow. Every other key,
+/// even one starting with WHEEL (WHEELIETORQUE0MPH after the last wheel
+/// in the retail files), is a vehicle value.
+const WHEEL_KEYS: [&str; 10] = [
+    "WHEELOFFSET",
+    "WHEELAXIS",
+    "WHEELMASS",
+    "WHEELRADIUS",
+    "WHEELWIDTH",
+    "WHEELMINPOS",
+    "WHEELMAXPOS",
+    "WHEELMAXVEL",
+    "WHEELSTIFFNESS",
+    "WHEELDAMPING",
+];
+
 #[derive(Debug, Clone, Default)]
 pub struct RawParams {
     pub values: HashMap<String, Vec<f32>>,
@@ -44,15 +60,7 @@ impl RawParams {
                     }
                     wheel = Some(n);
                 }
-                k if k.starts_with("WHEEL")
-                    && wheel.is_some()
-                    && k != "WHEELSPINDIFF"
-                    && k != "WHEELSPINREVSCALE"
-                    && k != "WHEELLOCKSTEERSCALE"
-                    && k != "WHEELIETORQUE"
-                    && k != "WHEELIERETURNTORQUE"
-                    && k != "WHEELIEDAMPING" =>
-                {
+                k if wheel.is_some() && WHEEL_KEYS.contains(&k) => {
                     out.wheels[wheel.unwrap()].insert(key, nums);
                 }
                 _ => {
@@ -150,6 +158,10 @@ pub struct Gear {
 /// surface grip: the first value on full grip, the second on none.
 #[derive(Debug, Clone)]
 pub struct VehicleParams {
+    /// Tuning from the retail disc, which goes with the retail executable's
+    /// handling code (see `docs/physics.md`); the prototype's files lack
+    /// its ENGINEREVRATEREVVING key.
+    pub retail: bool,
     pub mass: f32,
     pub friction: f32,
     pub resistance: [f32; 3],
@@ -164,7 +176,17 @@ pub struct VehicleParams {
     pub min_revs: f32,
     pub max_revs: f32,
     pub engine_friction: f32,
+    /// The prototype's lerp rate toward the target revs; retail's revs
+    /// slew limit in RPM per second while racing.
     pub rev_rate: f32,
+    /// Retail's revs slew limit on the starting grid, RPM per second.
+    pub rev_rate_revving: f32,
+    /// Retail's turbo start: released with the revs in this fraction of
+    /// the rev range, drive is scaled for `max_turbo_time` seconds.
+    pub max_turbo_time: f32,
+    pub min_turbo_rev_scale: f32,
+    pub max_turbo_rev_scale: f32,
+    pub drive_force_turbo_scale: f32,
     pub brake_curve: Curve,
     pub brake_min_vel: f32,
     pub handbrake_force_max: f32,
@@ -227,6 +249,9 @@ pub struct VehicleParams {
     pub lean_rate: f32,
     pub lean_force: f32,
     pub wheelie_torque: f32,
+    /// Retail: the wheelie torque scale at 0 and 100 mph.
+    pub wheelie_torque_0mph: f32,
+    pub wheelie_torque_100mph: f32,
     pub wheelie_return_torque: f32,
     pub wheelie_damping: f32,
     pub endo_torque: f32,
@@ -238,6 +263,14 @@ pub struct VehicleParams {
     pub preload_rate: f32,
     pub preload_hold_time: f32,
     pub preload_fade_rate: f32,
+    /// Retail: spin from releasing the pre-load, about the right axis
+    /// (lean and pedals) and the up axis (steering).
+    pub preload_vert_spin: f32,
+    pub preload_horiz_spin: f32,
+    /// Retail: rolls the quad back onto all four wheels when only one or
+    /// two touch the ground.
+    pub bicycle_torque: f32,
+    pub bicycle_damping: f32,
 }
 
 impl VehicleParams {
@@ -303,6 +336,7 @@ impl VehicleParams {
             })
             .collect();
         VehicleParams {
+            retail: r.values.contains_key("ENGINEREVRATEREVVING"),
             mass: g("MASS", 1.0),
             friction: g("FRICTION", 1.0),
             resistance: [
@@ -339,6 +373,11 @@ impl VehicleParams {
             max_revs: g("ENGINEMAXREVS", 13500.0),
             engine_friction: g("ENGINEFRICTION", 3.0),
             rev_rate: g("ENGINEREVRATENORMAL", 50.0),
+            rev_rate_revving: g("ENGINEREVRATEREVVING", 0.0),
+            max_turbo_time: g("MAXTURBOTIME", 0.0),
+            min_turbo_rev_scale: g("MINTURBOREVSCALE", 0.0),
+            max_turbo_rev_scale: g("MAXTURBOREVSCALE", 0.0),
+            drive_force_turbo_scale: g("DRIVEFORCETURBOSCALE", 1.0),
             brake_curve: Curve {
                 bins: r
                     .values
@@ -456,6 +495,8 @@ impl VehicleParams {
             lean_rate: g("LEANRATE", 10.0),
             lean_force: g("LEANFORCE", 0.0),
             wheelie_torque: g("WHEELIETORQUE", 0.0),
+            wheelie_torque_0mph: g("WHEELIETORQUE0MPH", 0.0),
+            wheelie_torque_100mph: g("WHEELIETORQUE100MPH", 0.0),
             wheelie_return_torque: g("WHEELIERETURNTORQUE", 0.0),
             wheelie_damping: g("WHEELIEDAMPING", 0.0),
             endo_torque: g("ENDOTORQUE", 0.0),
@@ -467,6 +508,10 @@ impl VehicleParams {
             preload_rate: g("PRELOADRATE", 1.0),
             preload_hold_time: g("PRELOADHOLDTIME", 1.0),
             preload_fade_rate: g("PRELOADFADERATE", 1.0),
+            preload_vert_spin: g("PRELOADVERTSPINMAG", 0.0),
+            preload_horiz_spin: g("PRELOADHORIZSPINMAG", 0.0),
+            bicycle_torque: g("BICYCLETORQUE", 0.0),
+            bicycle_damping: g("BICYCLEDAMPING", 0.0),
         }
     }
 }
@@ -494,8 +539,21 @@ mod tests {
         assert_eq!(p.wheels[0].offset, [-0.5, -0.17, -0.58]);
         assert!(p.wheels[0].front);
         assert_eq!(p.const_mass_torque, -2.0);
+        assert!(!p.retail);
         // Bins are max_x / n wide: 0.1 at 0, 0.5 at 3333, 1.0 at 6667 and beyond.
         assert!((p.torque_curve.sample(5000.0) / 0.26 - 0.75).abs() < 1e-5);
         assert!((p.torque_curve.sample(20000.0) / 0.26 - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn atv_keys_after_the_last_wheel() {
+        let text = "ENGINEREVRATEREVVING 9000\nWHEEL 0\nWHEELRADIUS 0.25\nEND\nATV_BEGIN\n\
+                    WHEELIETORQUE0MPH 0.7\nWHEELIETORQUE100MPH 4.0\nWHEELIERETURNTORQUE 8.0\nATV_END";
+        let p = VehicleParams::from_files(text, None);
+        assert!(p.retail);
+        assert_eq!(p.wheels[0].radius, 0.25);
+        assert_eq!(p.wheelie_torque_0mph, 0.7);
+        assert_eq!(p.wheelie_torque_100mph, 4.0);
+        assert_eq!(p.wheelie_return_torque, 8.0);
     }
 }

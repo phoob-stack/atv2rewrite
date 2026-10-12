@@ -394,3 +394,38 @@ fn boost_pulls_harder() {
     println!("after 3 s: {plain:.1} mph, boosted {boosted:.1} mph");
     assert!(boosted > plain + 5.0);
 }
+
+/// Retail only: revving on the grid holds the quad in place, and letting
+/// go with the revs in the turbo window gives a faster start.
+#[test]
+fn turbo_start_from_the_grid() {
+    let Some((_, world)) = settled() else { return };
+    let launch = |rev: f32| {
+        let (mut v, _) = settled().unwrap();
+        v.hold_on_grid();
+        let start = v.position;
+        let revving = Input {
+            throttle: rev,
+            ..Default::default()
+        };
+        run(&mut v, &world, revving, 2.0);
+        let moved = (v.position - start).with_y(0.0).length();
+        v.start_race();
+        let turbo = v.turbo();
+        let full = Input {
+            throttle: 1.0,
+            ..Default::default()
+        };
+        run(&mut v, &world, full, 1.0);
+        (moved, turbo, v.speed_mph(), v.revs)
+    };
+    if !params().unwrap().retail {
+        return;
+    }
+    let (moved, turbo, mph, _) = launch(0.75);
+    let (moved_flat, turbo_flat, mph_flat, _) = launch(1.0);
+    println!("turbo {turbo} {mph:.1} mph, flat out {turbo_flat} {mph_flat:.1} mph, moved {moved:.3} {moved_flat:.3}");
+    assert!(moved < 0.01 && moved_flat < 0.01, "crept off the grid");
+    assert!(turbo && !turbo_flat);
+    assert!(mph > mph_flat + 2.0);
+}

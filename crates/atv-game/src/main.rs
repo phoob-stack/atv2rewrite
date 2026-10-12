@@ -924,9 +924,13 @@ fn drive(
     let mut input = if crashed {
         // Thrown off: the quad rolls on by itself.
         Input::default()
-    } else if !progress.started() || (over && (freestyle || race.course || progress.out_of_time() || progress.dnf)) {
+    } else if !progress.started() {
+        // Held on the grid, where the rider can rev for a turbo start.
+        let rev = if demo.is_none() && !args.autodrive { read_input(&ctl, false, slot).throttle } else { 0.0 };
+        Input { throttle: rev, ..default() }
+    } else if over && (freestyle || race.course || progress.out_of_time() || progress.dnf) {
         // Brake to a stop (braking at a standstill would reverse).
-        Input { brake: if over && v.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
+        Input { brake: if v.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
     } else if let Some(opp) = opponents.as_mut().filter(|_| demo.is_some()) {
         // The attract demo: a computer rider has player 1's seat.
         held = progress.finished.is_none() && boost.as_ref().is_some_and(|b| b.on || b.meter >= 1.0);
@@ -978,6 +982,7 @@ fn drive(
     let air = v.air_time;
     // The Air Gravity option; the attract demo's computer rider keeps the original's.
     v.air_gravity = if demo.is_some() { 1.0 } else { settings.air_gravity_scale() };
+    v.set_grid(!progress.started());
     v.step(&input, dt, &race.collision);
     let surface = water.as_deref().and_then(|w| w.surface(v.position));
     if let Some(w) = wreck.as_mut() {
