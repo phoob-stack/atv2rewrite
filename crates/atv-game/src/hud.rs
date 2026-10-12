@@ -207,7 +207,15 @@ const NEEDLE_PER_1K: f32 = 22.1;
 #[derive(Component, Default)]
 struct NeedleHub {
     shown: f32,
+    /// Which way the needle sprite points on its page (degrees clockwise
+    /// from up): up in the prototype's, left in retail's.
+    drawn: f32,
 }
+
+/// Retail's speed window, the blue tab at the dial's lower right, in the
+/// gauge's -1..1 space (y up) over the dial sprite: left, bottom, width,
+/// height (0xc4a50).
+const RETAIL_SPEED_BOX: [f32; 4] = [0.27, -0.7, 0.42, 0.35];
 #[derive(Component)]
 struct PreloadArc;
 /// The speed boost meter: the disc in the small dial, filling clockwise.
@@ -394,6 +402,13 @@ fn spawn_view_hud(commands: &mut Commands, ui: &UiAssets, sel: &Selection, roste
     let boost_slot = hud.get("DIAL_BOOST").rect;
     let dot = hud.get("WEIRD_DOT").rect;
     let dial_size = dial.rect.size() * GAUGE;
+    // Retail's redesigned gauge (HUDTPAGE_b, 0xc5560): the boost meter
+    // fills the middle of the dial inside a ring, the speed sits in the
+    // tab at the lower right, there's no gear and the preload arc shows
+    // through the dial's outer band.
+    let retail = hud.sprites.contains_key("boost_ring");
+    let needle_dir = needle.rect.center() - needle_pivot;
+    let needle_drawn = needle_dir.x.atan2(-needle_dir.y).to_degrees();
 
     let mut root = commands.spawn((fullscreen(), HudRoot, Propagate(HudOf(slot)), DespawnOnExit(AppState::Race), Pickable::IGNORE));
     if let Some(cam) = cam {
@@ -410,13 +425,18 @@ fn spawn_view_hud(commands: &mut Commands, ui: &UiAssets, sel: &Selection, roste
                 ..default()
             })
             .with_children(|g| {
-                g.spawn(placed(hud.node("DIAL", GAUGE), 0.0, 0.0));
+                if !retail {
+                    g.spawn(placed(hud.node("DIAL", GAUGE), 0.0, 0.0));
+                }
                 let p = local(preload.min);
                 let (mut n, _) = hud.tex.region(preload, GAUGE);
                 n.position_type = PositionType::Absolute;
                 n.left = px(p.x);
                 n.top = px(p.y);
                 g.spawn((n, ImageNode::new(ui.preload_steps[0].clone()).with_mode(bevy::ui::widget::NodeImageMode::Stretch), PreloadArc, Visibility::Hidden));
+                if retail {
+                    g.spawn(placed(hud.node("DIAL", GAUGE), 0.0, 0.0));
+                }
                 // The boost meter in the small dial, the gear over it,
                 // speed in the display window.
                 let p = local(boost_slot.min);
@@ -425,36 +445,68 @@ fn spawn_view_hud(commands: &mut Commands, ui: &UiAssets, sel: &Selection, roste
                 n.left = px(p.x);
                 n.top = px(p.y);
                 g.spawn((n, ImageNode::new(ui.boost_steps[0].clone()).with_mode(bevy::ui::widget::NodeImageMode::Stretch), BoostDisc, Visibility::Hidden));
-                let b = local(boost_slot.center());
-                g.spawn((BitmapText::new(FontId::Chrome, 15.0, "N"), centred(b.x, b.y - 8.0, 20.0), Readout::Gear));
-                let speed_box = local(Vec2::new(152.0, 132.0) * hud.tex.size / Vec2::new(512.0, 256.0));
-                g.spawn((
-                    BitmapText::new(FontId::Chrome, 13.0, "0"),
-                    Node {
-                        position_type: PositionType::Absolute,
-                        right: px(dial_size.x - speed_box.x),
-                        top: px(speed_box.y - 6.0),
-                        ..default()
-                    },
-                    Readout::Speed,
-                ));
+                if retail {
+                    // The ring over the boost meter, a hair larger.
+                    let ring = Rect { min: boost_slot.min - 1.2, max: boost_slot.max + 1.2 };
+                    let p = local(ring.min);
+                    let (mut n, mut img) = hud.tex.region(hud.get("BOOST_RING").rect, GAUGE);
+                    n.position_type = PositionType::Absolute;
+                    n.left = px(p.x);
+                    n.top = px(p.y);
+                    n.width = px(ring.width() * GAUGE);
+                    n.height = px(ring.height() * GAUGE);
+                    img.image_mode = bevy::ui::widget::NodeImageMode::Stretch;
+                    g.spawn((n, img));
+                    // Right-aligned in the box, like the prototype's window.
+                    let [x, y, w, h] = RETAIL_SPEED_BOX;
+                    let size = dial.rect.size();
+                    let to_texels = |u: f32, v: f32| dial.rect.min + Vec2::new((u + 1.0) / 2.0 * size.x, (1.0 - v) / 2.0 * size.y);
+                    let (right, mid) = (local(to_texels(x + w, 0.0)).x, local(to_texels(0.0, y + h / 2.0)).y);
+                    let text = 18.0;
+                    g.spawn((
+                        BitmapText::new(FontId::Chrome, text, "0"),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: px(dial_size.x - right),
+                            top: px(mid - text / 2.0),
+                            ..default()
+                        },
+                        Readout::Speed,
+                    ));
+                } else {
+                    let b = local(boost_slot.center());
+                    g.spawn((BitmapText::new(FontId::Chrome, 15.0, "N"), centred(b.x, b.y - 8.0, 20.0), Readout::Gear));
+                    let speed_box = local(Vec2::new(152.0, 132.0) * hud.tex.size / Vec2::new(512.0, 256.0));
+                    g.spawn((
+                        BitmapText::new(FontId::Chrome, 13.0, "0"),
+                        Node {
+                            position_type: PositionType::Absolute,
+                            right: px(dial_size.x - speed_box.x),
+                            top: px(speed_box.y - 6.0),
+                            ..default()
+                        },
+                        Readout::Speed,
+                    ));
+                }
                 // The needle turns about the dial's hub; it hangs off a
                 // zero-size node there so it rotates about its own pivot.
                 g.spawn((
                     Node { position_type: PositionType::Absolute, left: px(hub.x), top: px(hub.y), ..default() },
-                    UiTransform::from_rotation(Rot2::degrees(NEEDLE_AT_1K - NEEDLE_PER_1K)),
-                    NeedleHub::default(),
+                    UiTransform::from_rotation(Rot2::degrees(NEEDLE_AT_1K - NEEDLE_PER_1K - needle_drawn)),
+                    NeedleHub { shown: 0.0, drawn: needle_drawn },
                 ))
                 .with_children(|h| {
                     let off = (needle.rect.min - needle_pivot) * GAUGE;
                     h.spawn(placed(hud.tex.region(needle.rect, GAUGE), off.x, off.y));
                 });
-                let d = dot.size() * GAUGE * 0.7;
-                let (mut n, img) = hud.tex.region(dot, GAUGE * 0.7);
-                n.position_type = PositionType::Absolute;
-                n.left = px(hub.x - d.x / 2.0);
-                n.top = px(hub.y - d.y / 2.0);
-                g.spawn((n, img));
+                if !retail {
+                    let d = dot.size() * GAUGE * 0.7;
+                    let (mut n, img) = hud.tex.region(dot, GAUGE * 0.7);
+                    n.position_type = PositionType::Absolute;
+                    n.left = px(hub.x - d.x / 2.0);
+                    n.top = px(hub.y - d.y / 2.0);
+                    g.spawn((n, img));
+                }
             });
 
             if !racing {
@@ -624,7 +676,7 @@ fn update_gauge(
     for (mut t, mut hub, hud) in &mut needle {
         let Some(f) = riders.of(hud.0) else { continue };
         hub.shown += (f.vehicle.revs.clamp(0.0, 8600.0) - hub.shown) * k;
-        t.rotation = Rot2::degrees(NEEDLE_AT_1K + (hub.shown / 1000.0 - 1.0) * NEEDLE_PER_1K);
+        t.rotation = Rot2::degrees(NEEDLE_AT_1K + (hub.shown / 1000.0 - 1.0) * NEEDLE_PER_1K - hub.drawn);
     }
     for (mut img, mut vis, hud) in &mut arc {
         let Some(f) = riders.of(hud.0) else { continue };

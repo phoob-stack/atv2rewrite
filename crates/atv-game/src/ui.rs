@@ -245,36 +245,43 @@ struct GlyphNode;
 fn layout_bitmap_text(
     mut commands: Commands,
     assets: Option<Res<UiAssets>>,
-    mut texts: Query<(Entity, &BitmapText, &mut Node, Option<&Children>), Changed<BitmapText>>,
-    glyphs: Query<(), With<GlyphNode>>,
+    mut texts: Query<(Entity, &BitmapText, &mut Node, Option<&Children>), (Changed<BitmapText>, Without<GlyphNode>)>,
+    mut glyphs: Query<(&mut Node, &mut ImageNode), With<GlyphNode>>,
 ) {
     let Some(assets) = assets else { return };
     for (e, t, mut node, children) in &mut texts {
-        for &c in children.into_iter().flatten() {
-            if glyphs.contains(c) {
-                commands.entity(c).despawn();
-            }
-        }
         let font = assets.font(t.font);
         let (glyph_list, size) = font.layout(&t.text, t.size);
         node.width = px(size.x);
         node.height = px(size.y);
-        commands.entity(e).with_children(|p| {
-            for (rect, at, sz) in glyph_list {
-                p.spawn((
-                    GlyphNode,
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: px(at.x),
-                        top: px(at.y),
-                        width: px(sz.x),
-                        height: px(sz.y),
-                        ..default()
-                    },
-                    ImageNode { image: font.tex.image.clone(), rect: Some(font.tex.image_rect(rect)), color: t.color, image_mode: NodeImageMode::Stretch, ..default() },
-                ));
+        // Glyphs already there are moved and retextured rather than
+        // respawned: a new entity isn't drawn until the frame after it
+        // appears, so a figure changing every frame (the speed) would
+        // never show.
+        let old: Vec<Entity> = children.into_iter().flatten().copied().filter(|&c| glyphs.contains(c)).collect();
+        let mut old = old.into_iter();
+        let mut fresh = Vec::new();
+        for (rect, at, sz) in glyph_list {
+            let image = ImageNode { image: font.tex.image.clone(), rect: Some(font.tex.image_rect(rect)), color: t.color, image_mode: NodeImageMode::Stretch, ..default() };
+            let place = Node { position_type: PositionType::Absolute, left: px(at.x), top: px(at.y), width: px(sz.x), height: px(sz.y), ..default() };
+            match old.next().and_then(|c| glyphs.get_mut(c).ok()) {
+                Some((mut n, mut img)) => {
+                    *n = place;
+                    *img = image;
+                }
+                None => fresh.push((GlyphNode, place, image)),
             }
-        });
+        }
+        for c in old {
+            commands.entity(c).despawn();
+        }
+        if !fresh.is_empty() {
+            commands.entity(e).with_children(|p| {
+                for g in fresh {
+                    p.spawn(g);
+                }
+            });
+        }
     }
 }
 
