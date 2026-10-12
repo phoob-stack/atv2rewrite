@@ -62,6 +62,9 @@ const FAR: f32 = 50.0;
 const SPLASH_SPEED: f32 = 4.8;
 /// The most ripples on the water at once (0x1d360c).
 const MAX_RIPPLES: usize = 256;
+/// The brightest a particle's colour gets: the original packs colours
+/// 128 per 1.0 into a byte (0x15cd0), and draws them doubled.
+const BRIGHTEST: f32 = 255.0 / 128.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Pool {
@@ -106,7 +109,7 @@ impl Pool {
 }
 
 /// One particle. Colours are the original's: 1.0 leaves the sprite as it
-/// is, more brightens it (up to 2).
+/// is, more brightens it (up to `BRIGHTEST`).
 #[derive(Clone, Debug)]
 struct Particle {
     pos: Vec3,
@@ -613,10 +616,12 @@ fn wheel_spray(fx: &mut Effects, v: &Vehicle, body: Entity, centres: &HashMap<(E
     }
 }
 
-/// A Materials.xml colour as a particle tint: the original stores it as
-/// bytes and scales them by 1/128, so 0.5 is the sprite as drawn.
+/// A Materials.xml colour as a particle tint. The original's reader packs
+/// it as a vertex colour, 128 per 1.0 (retail 0x113ce0 via 0x15cd0), and the
+/// wheel effects unpack it with 1/128 (0xa83b0), so the file's value is
+/// the tint itself: sand's dust (0.8, 0.7, 0.6) is sand coloured.
 fn tint(c: [f32; 4]) -> Vec3 {
-    Vec3::new(c[0], c[1], c[2]) * (255.0 / 128.0)
+    Vec3::new(c[0], c[1], c[2]).clamp(Vec3::ZERO, Vec3::splat(BRIGHTEST))
 }
 
 /// The exhaust (0x8b330): a puff now and then at low speed, more with the
@@ -732,7 +737,8 @@ fn draw(fx: Option<Res<Effects>>, cams: Query<&GlobalTransform, With<Camera3d>>,
                 uv.push(t.to_array());
             }
             let rgba = p.colour(spec.life);
-            let linear = Color::srgba(rgba.x.min(1.0), rgba.y.min(1.0), rgba.z.min(1.0), rgba.w).to_linear().to_f32_array();
+            let rgb = rgba.truncate().clamp(Vec3::ZERO, Vec3::splat(BRIGHTEST));
+            let linear = Color::srgba(rgb.x, rgb.y, rgb.z, rgba.w).to_linear().to_f32_array();
             col.extend([linear; 4]);
             idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
         }
@@ -856,7 +862,9 @@ mod tests {
 
     #[test]
     fn material_tint() {
-        // 0.5 in the file leaves the sprite as drawn.
-        assert!((tint([0.5, 0.5, 0.5, 1.0]) - Vec3::ONE).length() < 0.01);
+        // The file's colour is the tint: sand's dust stays sand coloured
+        // instead of going white, and nothing passes the brightest.
+        assert_eq!(tint([0.8, 0.7, 0.6, 1.0]), Vec3::new(0.8, 0.7, 0.6));
+        assert_eq!(tint([3.0, 0.5, -1.0, 1.0]), Vec3::new(BRIGHTEST, 0.5, 0.0));
     }
 }
