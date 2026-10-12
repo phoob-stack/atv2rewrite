@@ -572,3 +572,18 @@ fn a_shown_quad_is_drawn_where_it_was_told() {
     }
     assert!((puppet.speed_mph() - v.speed_mph()).abs() < 1e-3 && puppet.grounded() == v.grounded());
 }
+
+#[test]
+fn the_game_plays_by_the_last_ticks_pose() {
+    let Some((mut v, world)) = settled() else { return };
+    let input = Input { throttle: 1.0, ..Input::default() };
+    for _ in 0..90 {
+        // A 120 Hz caller: every other step runs a tick.
+        v.step(&input, 1.0 / 120.0, &world);
+        let pose = v.pose();
+        assert_eq!(v.position, pose.position);
+        assert!(v.rotation.dot(pose.rotation).abs() > 1.0 - 1e-6);
+    }
+    // Drawn just after a step, the quad is still on its way there.
+    assert!(v.drawn(0.0).0.distance(v.position) > 0.0);
+}
