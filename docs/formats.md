@@ -1295,6 +1295,31 @@ the ROW spatial tree and effect records, and the material record fields.
   twice. Riders bank (56): a thrown rider's body thud is 48–55 louder with
   speed (`0xaeaf0`, speed over 2.2347, every 0.5 s), then 61% of the time
   a cry, at most twice a crash: male 12–22, female 37–47 (`0xae930`).
+- Retail race music (XBE addresses). `Setup/Music.xml` lists the licensed
+  songs as `<Track1>`, `<Track2>`... (`ArtistName`, `SongName`,
+  `LevelSpecific`, `FileName` `Licensed\TrackN` -> `/Licensed/TrackN.wav`,
+  48 kHz stereo Xbox ADPCM); `0xae300` reads them in order until a number
+  is missing and nothing reads `LevelSpecific`. The race start `0x9f5c0`
+  picks the music: Training (game type 12) gets one song, any not yet
+  played this session (`0xadfe0`); challenges (5) and game types 10 and
+  11 (10 is the attract demo) get none; everything else goes by the profile's
+  Playlist choice, `PlaylistOption0-3` (profile `+0x34..+0x40`, page
+  labels `ENVIRONMENT`, `PLAYLIST`, `RANDOM`, `MUTE_ALL`): the area's
+  first `TrackSection` only (count 1, so `<Area>2/3` are never asked
+  for), the songs in playlist order starting one song further on each
+  race (`mTrackInc`, `0x13fa0`), the songs in a random order, or nothing.
+  A new profile has `RANDOM` (`0x13e40`). The song lists come from
+  `0xaf360`: the playlist order (`Track0-7`, profile `+0x14`) without the
+  songs `mMusicTracksLockedOut` (`+0x1c`) leaves out. Songs then play in
+  the list's order and round again (stream flag `0x10000`); an area's
+  sections would be picked at random, never the same twice running, when
+  there are more than two (`0x896c0`). On a North American console
+  (`XGetGameRegion` 1, `0x157be`) Track5 is always left out and sits last
+  in the order (`0x13290`, `0x13770`; the Playlist page `0x58c50` resets
+  both whenever it finds it in the order). Two front-end pages (`0x3b7f0`,
+  `0x5e010`) play one song, Track8 in North America and Track5 elsewhere,
+  and leaving them plays `Music\FrontEnd` from Sound.xml (`0xb0290`); the
+  rewrite has no front-end music yet.
 - Banks load into slots: 0 Vehicles, 1 Riders, 2 SpotFX, 3 the track's
   ambient or crowd bank. One-shots go through `0x92e30` (bank, index,
   volume, pitch).

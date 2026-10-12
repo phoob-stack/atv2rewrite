@@ -195,8 +195,12 @@ fn check(game: &GameSource) -> Result<()> {
             music.extend(m.intro.iter().chain(&m.sections).filter(|n| !music.contains(n)).cloned().collect::<Vec<_>>());
         }
     }
-    for name in music {
-        let path = format!("/{}.wav", name.replace('\\', "/"));
+    let mut paths: Vec<String> = music.iter().map(|name| format!("/{}.wav", name.replace('\\', "/"))).collect();
+    // Retail's licensed songs (Setup/Music.xml), which races play.
+    if let Ok(xml) = game.read("/Setup/Music.xml") {
+        paths.extend(atv_formats::music::parse(&String::from_utf8_lossy(&xml)).iter().map(|s| s.path()));
+    }
+    for path in paths {
         // Retail lists sections its disc doesn't ship; the game skips them.
         if !game.exists(&path) {
             println!("skip {path}: not on this disc");

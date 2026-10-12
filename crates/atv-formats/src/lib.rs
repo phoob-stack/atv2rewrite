@@ -14,6 +14,7 @@ pub mod ink;
 pub mod kdt;
 pub mod lzss;
 pub mod materials;
+pub mod music;
 pub mod rom;
 pub mod row;
 pub mod setup;

@@ -68,7 +68,10 @@ impl GameSource {
         self.archive.get(path).is_some()
             || match &self.backing {
                 Backing::Disc(d) => d.lock().unwrap().entry(path).is_some(),
-                Backing::Folder(_) => self.read(path).is_ok(),
+                Backing::Folder(root) => {
+                    let mut p = root.clone();
+                    xiso::normalize(path).split('/').filter(|s| !s.is_empty()).all(|part| find_ci(&p, part).map(|f| p = f).is_ok()) && p.is_file()
+                }
             }
     }
 
