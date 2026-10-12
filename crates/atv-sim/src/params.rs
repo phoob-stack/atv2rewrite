@@ -5,6 +5,9 @@
 //! per-wheel block. Each quad's file only overrides `Cars/Generic/Generic.params`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::body::Body;
 
 /// Keys that belong to the `WHEEL n` block they follow. Every other key,
 /// even one starting with WHEEL (WHEELIETORQUE0MPH after the last wheel
@@ -166,7 +169,12 @@ pub struct VehicleParams {
     /// tuning (`tuning.cfg`) changes it.
     pub gravity: f32,
     pub mass: f32,
+    /// The body's own friction and bounce, multiplied into every contact
+    /// with the track (by its surface's) or another body (by its own).
     pub friction: f32,
+    pub hardness: f32,
+    /// Collision shape (`Generic.hsc`); see [`Body::from_game`].
+    pub body: Arc<Body>,
     pub resistance: [f32; 3],
     pub ang_resistance: [f32; 3],
     pub air_resistance: f32,
@@ -343,6 +351,8 @@ impl VehicleParams {
             gravity: crate::vehicle::GRAVITY,
             mass: g("MASS", 1.0),
             friction: g("FRICTION", 1.0),
+            hardness: g("HARDNESS", 0.2),
+            body: Arc::default(),
             resistance: [
                 r.get("RESISTANCE", 0, 0.0),
                 r.get("RESISTANCE", 1, 0.0),

@@ -153,6 +153,24 @@ Damping is what slows a quad: Water and Deep_Water 30, Dirt_Bank 20,
 Mud_Bank and Sand_Bank 15, Loose_Sand and Snow_Bank 10, Loose_Dirt and
 Loose_Mud 5. Plain Mud has none, only less grip (0.45).
 
+## Collisions
+
+The quad's body is `Cars/Generic/Generic.hsc` (loaded at `0x1f9f8`), the same
+shape for every quad: ten spheres and a 30-plane convex hull, hung 0.42 m
+below the physics body as the quad setup at `0xa4f4e` hangs its model
+(`body.rs`). The original also gives the rider two spheres from the rider's
+bones (`0x1abb0`); those aren't ported.
+
+| Retail | Port | What it does |
+|---|---|---|
+| `0x6fef0`, `0xd6490` | `body_collision`, `TrackCollision::face_contact` | Each sphere against the `.kdt` faces: it touches a face when its centre is over it, at most radius + 0.03 in front of it, and its last centre was at most radius + 0.03 behind it. Faces are solid on their front only. Friction is the surface's `Friction` × the quad's `FRICTION`, bounce its `Hardness` × the quad's `HARDNESS` (0.2); a face within 45 degrees of the quad's up (the ground under its belly) bounces by -0.5, grips a tenth as hard and pushes at 0.4 of the lever |
+| `0xd5090` | `solve` | One pass over the contacts in order: push out (largest push per axis), then the impulse `-(1 + bounce) × speed into the face` at the contact (whichever way it points), then, after every push, friction against what slide is left for each contact that pushed |
+| `0x6fa00`, `0xd5dc0` | `bump` (wheels) | Quad against quad: the wheels as spheres (WHEELOFFSET, WHEELRADIUS); spheres that met during the tick push apart sideways from where they met. Bounce is the product of the quads' `HARDNESS`, grip the product of their `FRICTION`, and the push acts at the bodies' height |
+| `0xd7680`, `0xd7190` | `bump` (bodies) | One quad's spheres inside the other's hull push out through the face they came in by (or the nearest), bouncing by the harder quad's `HARDNESS`, without friction. The original tries one way round only; the rewrite tries both, so neither quad sinks into the other (one way round, riders in a pack lock together) |
+
+The wheels test the `.kdt` the same one-sided way, so a wheel under an
+overhang (Glacier 1's snow banks) doesn't stand on its underside.
+
 ## Player tuning
 
 The launcher's Config tab writes `tuning.cfg` (`atv_sim::tuning`). The game
@@ -172,15 +190,12 @@ Computer riders keep the game's tuning unless `computer_riders = true`.
 ## Not ported yet
 
 * The bicycle trick and the bumpy-terrain wheel offset.
-* The original's own body collision spheres. `body_collision` uses five
-  hand-placed spheres instead, answered the way the original answers a
-  contact: a position fix plus an impulse at the contact point (`0xad9b0`).
+* The rider's own collision spheres (see Collisions).
 * Only the automatic gearbox (mode 0).
 * Knock-over props (cones, signs, deckchairs, umbrellas) collide with the
   quads by their `.hsc` shapes as the original's do (a sphere inside the
   other body's hull, `0xb3da0`, or touching one of its spheres, `0xb29d0`),
-  in the fixed physics tick, but the quads themselves don't collide by
-  `Generic.hsc` with the track or each other yet. They are bodies of mass 0.05
+  in the fixed physics tick. They are bodies of mass 0.05
   and hardness 0.3 (`0x2e100` over the defaults at `0xada50`) against the
   quad's 1 and 0.2, so a hit costs the quad `1.06 × 0.05 / 1.05` (about
   5%) of its closing speed, as the original's body contact (`0xb29d0`,

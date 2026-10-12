@@ -206,15 +206,6 @@ impl Fall {
     }
 }
 
-/// Chassis spheres (centre relative to the centre of mass, game frame,
-/// radius), as the simulation's body collision has them.
-const SPHERES: [([f32; 3], f32); 5] = [
-    ([0.0, 0.05, 0.0], 0.22),
-    ([0.0, 0.3, 0.75], 0.25),
-    ([0.0, 0.7, 0.3], 0.25),
-    ([0.0, 0.5, -0.35], 0.3),
-    ([0.0, 0.4, -0.85], 0.25),
-];
 const BODY_RADIUS: f32 = 0.2;
 const LIE_STILL: f32 = 1.0;
 /// How hard the ground slows a sliding rider, m/s².
@@ -263,9 +254,9 @@ impl Wreck {
     pub fn check(&mut self, v: &Vehicle, before: (Vec3, Vec3), world: &TrackCollision, dt: f32) -> Option<(Cause, Way)> {
         let mut touching = false;
         let mut impact: Option<(f32, Vec3)> = None;
-        for &(local, radius) in &SPHERES {
-            let r = v.rotation * Vec3::new(local[0], local[1], -local[2]);
-            let Some(hit) = world.sphere(v.position + r, radius + 0.03) else { continue };
+        for (centre, radius) in v.body_spheres() {
+            let r = centre - v.position;
+            let Some(hit) = world.sphere(centre, radius + 0.03) else { continue };
             touching = true;
             let speed = -(before.0 + before.1.cross(r)).dot(hit.normal);
             if impact.is_none_or(|(s, _)| speed > s) {

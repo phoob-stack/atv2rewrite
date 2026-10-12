@@ -9,6 +9,9 @@ pub struct TrackCollision {
     tris: Vec<[Vec3; 3]>,
     /// Surface id of each triangle ([`surface::UNKNOWN`] when untagged).
     surface_ids: Vec<u8>,
+    /// Which side of each triangle is solid to bodies: 1 in front of its
+    /// winding normal, -1 behind it, 0 either (see [`Self::face_contact`]).
+    facing: Vec<i8>,
     surfaces: Surfaces,
     min: Vec2,
     cell: f32,
@@ -57,6 +60,7 @@ impl TrackCollision {
         }
         Self {
             surface_ids: vec![surface::UNKNOWN; tris.len()],
+            facing: vec![0; tris.len()],
             surfaces: Surfaces::default(),
             tris,
             min,
@@ -91,6 +95,15 @@ impl TrackCollision {
         self.surfaces = surfaces;
     }
 
+    /// Makes the first `facing.len()` triangles one-sided (see `facing`).
+    /// The `.kdt` stores each face's outward normal; mirrored into the sim
+    /// frame its triangles wind the other way, so they take -1.
+    pub fn set_facing(&mut self, facing: &[i8]) {
+        for (f, &s) in self.facing.iter_mut().zip(facing) {
+            *f = s;
+        }
+    }
+
     pub fn triangles(&self) -> &[[Vec3; 3]] {
         &self.tris
     }
@@ -107,6 +120,18 @@ impl TrackCollision {
     /// Closest hit along `origin + dir * t` for `t` in `0..=max_t`.
     /// Walks the grid cells under the ray's XZ footprint.
     pub fn raycast(&self, origin: Vec3, dir: Vec3, max_t: f32) -> Option<Hit> {
+        self.cast(origin, dir, max_t, false)
+    }
+
+    /// [`Self::raycast`] that passes through faces solid on one side only
+    /// when it meets them from behind, as the original's wheels do (they
+    /// test faces as the body's spheres do, [`Self::face_contact`]): a
+    /// wheel under a snow bank's overhang doesn't stand on its underside.
+    pub fn raycast_front(&self, origin: Vec3, dir: Vec3, max_t: f32) -> Option<Hit> {
+        self.cast(origin, dir, max_t, true)
+    }
+
+    fn cast(&self, origin: Vec3, dir: Vec3, max_t: f32, front_only: bool) -> Option<Hit> {
         let end = origin + dir * max_t;
         let lo = origin.xz().min(end.xz());
         let hi = origin.xz().max(end.xz());
@@ -117,6 +142,10 @@ impl TrackCollision {
             for x in x0..=x1 {
                 for &i in &self.cells[z * self.dims.0 + x] {
                     let [a, b, c] = self.tris[i as usize];
+                    let facing = self.facing[i as usize];
+                    if front_only && facing != 0 && (b - a).cross(c - a).dot(dir) * facing as f32 > 0.0 {
+                        continue;
+                    }
                     if let Some(t) = ray_tri(origin, dir, a, b, c)
                         && t <= max_t
                         && best.is_none_or(|h| t < h.t)
@@ -166,6 +195,68 @@ impl TrackCollision {
             point: p,
             normal,
             surface,
+        })
+    }
+}
+
+impl TrackCollision {
+    /// The triangles that may lie within `radius` of `centre` (each once),
+    /// for [`Self::face_contact`].
+    pub fn near(&self, centre: Vec3, radius: f32) -> Vec<u32> {
+        let r = Vec2::splat(radius);
+        let (x0, z0) = Self::cell_of(self.min, self.cell, self.dims, centre.xz() - r);
+        let (x1, z1) = Self::cell_of(self.min, self.cell, self.dims, centre.xz() + r);
+        let mut out = Vec::new();
+        for z in z0..=z1 {
+            for x in x0..=x1 {
+                out.extend(self.cells[z * self.dims.0 + x].iter().copied().filter(|&i| {
+                    let t = &self.tris[i as usize];
+                    let lo = t[0].min(t[1]).min(t[2]) - radius;
+                    let hi = t[0].max(t[1]).max(t[2]) + radius;
+                    centre.cmpge(lo).all() && centre.cmple(hi).all()
+                }));
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// A body sphere against triangle `i`, as the original tests one
+    /// (0xd6490, edge contacts off): it touches when its centre is over the
+    /// face, within the radius (plus 0.03) in front of it, and was not
+    /// right through it last step (`prev` no more than the radius plus
+    /// 0.03 behind it; `centre` stands in for a `prev` that isn't finite).
+    /// Returns the depth as `t` (0 within the 0.03 margin), the point on
+    /// the sphere's surface and the face's normal. A triangle solid on
+    /// either side takes the side `prev` was on.
+    pub fn face_contact(&self, i: u32, centre: Vec3, prev: Vec3, radius: f32) -> Option<Hit> {
+        const MARGIN: f32 = 0.03;
+        let [a, b, c] = self.tris[i as usize];
+        let wind = (b - a).cross(c - a);
+        let w = wind.try_normalize()?;
+        // Without a last step (just placed), where it is now stands in.
+        let prev = if prev.is_finite() { prev } else { centre };
+        let n = match self.facing[i as usize] {
+            0 => {
+                if w.dot(prev - a) < 0.0 { -w } else { w }
+            }
+            f => w * f as f32,
+        };
+        let d = n.dot(centre - a);
+        if d > radius + MARGIN || n.dot(prev - a) < -radius - MARGIN {
+            return None;
+        }
+        // Over the face: inside all three edges.
+        let inside = [(a, b), (b, c), (c, a)].iter().all(|&(p, q)| (q - p).cross(centre - p).dot(wind) >= 0.0);
+        if !inside {
+            return None;
+        }
+        Some(Hit {
+            t: (radius - d).max(0.0),
+            point: centre - n * radius,
+            normal: n,
+            surface: self.surface_ids[i as usize],
         })
     }
 }
@@ -251,5 +342,25 @@ mod tests {
         let s = col.sphere(Vec3::new(1.0, 0.2, 2.0), 0.5).unwrap();
         assert!((s.t - 0.3).abs() < 1e-5 && s.normal.y > 0.99);
         assert!(col.sphere(Vec3::new(1.0, 0.6, 2.0), 0.5).is_none());
+    }
+
+    #[test]
+    fn one_sided_faces() {
+        // Wound downwards, solid on top as a `.kdt` face is in the sim frame.
+        let (a, b, c) = (Vec3::new(-10.0, 0.0, -10.0), Vec3::new(10.0, 0.0, -10.0), Vec3::new(10.0, 0.0, 10.0));
+        let mut col = TrackCollision::new(vec![[a, b, c]], 4.0);
+        col.set_facing(&[-1]);
+        let p = Vec3::new(5.0, 0.3, -2.0);
+        let hit = col.face_contact(0, p, p, 0.4).unwrap();
+        assert!(hit.normal.y > 0.99 && (hit.t - 0.1).abs() < 1e-5);
+        // Far under it, just placed: no contact to drag it down.
+        let under = Vec3::new(5.0, -2.0, -2.0);
+        assert!(col.face_contact(0, under, Vec3::NAN, 0.4).is_none());
+        // Sunk through it within a radius since the last step: pushed back up.
+        assert!(col.face_contact(0, Vec3::new(5.0, -0.2, -2.0), p, 0.4).is_some());
+        // Rays meet it from the top only with `raycast_front`.
+        assert!(col.raycast_front(Vec3::new(5.0, 1.0, -2.0), Vec3::NEG_Y, 2.0).is_some());
+        assert!(col.raycast_front(under, Vec3::Y, 3.0).is_none());
+        assert!(col.raycast(under, Vec3::Y, 3.0).is_some());
     }
 }

@@ -180,8 +180,11 @@ pub struct Vehicle {
     shown_pos: Vec3,
     shown_rot: Mat3,
     shown_wheels: Vec<WheelPose>,
-    /// Where each body sphere was last step, for catching tunnelling.
-    body_prev: [Vec3; 5],
+    /// Where each body sphere was last step (the original keeps it to tell
+    /// which side of a face a sphere came from).
+    body_prev: Vec<Vec3>,
+    /// Ticks run by the last [`Vehicle::step`].
+    ticks: u32,
 
     struts: Vec<Strut>,
     ground: Ground,
@@ -216,6 +219,212 @@ pub struct Vehicle {
     turbo_timer: f32,
     /// Grid spot the quad is pinned to (game frame).
     hold: Option<Vec3>,
+}
+
+/// A body touching something, game frame.
+#[derive(Debug, Clone, Copy)]
+struct Contact {
+    /// From the centre of mass to the contact point.
+    at: Vec3,
+    /// Out of the thing touched, towards the body.
+    normal: Vec3,
+    depth: f32,
+    friction: f32,
+    /// The bounce: how much of the speed into the contact comes back out.
+    bounce: f32,
+    /// How much of the contact's leverage turns the body (0x6fef0 sets it
+    /// below 1 for track contacts).
+    lever: f32,
+}
+
+/// Two quads touching (0x6fa00), each with the other's pose before and
+/// after their last ticks: their wheels as spheres against each other's
+/// (0xd5dc0), and each one's body spheres against the other's hull
+/// (0xd7680; the original only tries one way round). Solved as the
+/// original solves contacts between bodies (0xd5090): the overlap shared
+/// out by mass, the impulse that turns the speed between the two points
+/// around by the bounce, and friction on `a`. Wheels bounce by the product of the quads' `HARDNESS` and grip by
+/// the product of their `FRICTION`; a body against a hull bounces by the
+/// harder of the two, without friction.
+pub fn bump(a: &mut Vehicle, b: &mut Vehicle) {
+    if a.ticks == 0 && b.ticks == 0 {
+        return;
+    }
+    if a.pos.distance(b.pos) > a.params.body.reach + b.params.body.reach + 1.0 {
+        return;
+    }
+    let mut contacts = wheel_contacts(a, b);
+    contacts.extend(hull_contacts(a, b));
+    // The rewrite's: `b`'s spheres against `a`'s hull too, so neither quad
+    // sinks into the other. One way round, pack riders lock together and
+    // three times as many get respotted in a six-rider race.
+    for c in hull_contacts(b, a) {
+        contacts.push(PairContact { at_a: c.at_b, at_b: c.at_a, normal: -c.normal, ..c });
+    }
+    if contacts.is_empty() {
+        return;
+    }
+    let (ma, mb) = (a.params.mass, b.params.mass);
+    let (mut fix_a, mut fix_b) = (Vec3::ZERO, Vec3::ZERO);
+    let mut pushed = Vec::with_capacity(contacts.len());
+    for c in &contacts {
+        let share = 1.0 / (ma + mb);
+        Vehicle::add_fix(&mut fix_a, c.normal * (c.depth * mb * share));
+        Vehicle::add_fix(&mut fix_b, -c.normal * (c.depth * ma * share));
+        let v = (a.vel + a.ang_vel.cross(c.at_a)) - (b.vel + b.ang_vel.cross(c.at_b));
+        let vn = v.dot(c.normal);
+        let k = a.inv_mass_at(c.at_a, c.normal) + b.inv_mass_at(c.at_b, c.normal);
+        let j = if k.abs() > 1e-6 { -(1.0 + c.bounce) * vn / k } else { 0.0 };
+        a.impulse(c.normal * j, c.at_a);
+        b.impulse(-c.normal * j, c.at_b);
+        pushed.push(j);
+    }
+    let slides: Vec<Vec3> = contacts
+        .iter()
+        .map(|c| {
+            let v = (a.vel + a.ang_vel.cross(c.at_a)) - (b.vel + b.ang_vel.cross(c.at_b));
+            v - c.normal * v.dot(c.normal)
+        })
+        .collect();
+    for ((c, &j), &slide) in contacts.iter().zip(&pushed).zip(&slides) {
+        if j > 0.0 && c.friction > 0.0 {
+            let own = Contact { at: c.at_a, normal: c.normal, depth: c.depth, friction: c.friction, bounce: c.bounce, lever: 1.0 };
+            a.friction(&own, slide, c.friction * j);
+        }
+    }
+    for (v, fix) in [(a, fix_a), (b, fix_b)] {
+        v.pos += fix;
+        v.shown_pos += fix;
+        for p in &mut v.body_prev {
+            *p += fix;
+        }
+        v.sync_out();
+    }
+}
+
+/// A contact between two bodies, game frame.
+#[derive(Debug, Clone, Copy)]
+struct PairContact {
+    /// From each body's centre of mass to the contact point.
+    at_a: Vec3,
+    at_b: Vec3,
+    /// From `b` towards `a`.
+    normal: Vec3,
+    depth: f32,
+    friction: f32,
+    bounce: f32,
+}
+
+/// A quad's wheels as spheres (its WHEELOFFSETs and WHEELRADIUSes, the
+/// set built at 0x1d840), where they were before its last tick and now.
+fn wheel_spheres(v: &Vehicle) -> impl Iterator<Item = (Vec3, Vec3, f32)> + '_ {
+    v.params.wheels.iter().map(|w| {
+        let at = Vec3::from(w.game_offset);
+        (v.shown_pos + v.shown_rot * at, v.pos + v.rot * at, w.radius)
+    })
+}
+
+/// `a`'s wheels against `b`'s (0xd5dc0). Overlapping spheres push apart
+/// along the line between their centres; spheres that passed into or
+/// through each other during the tick push apart sideways from where they
+/// first met. Either way the contact acts at the bodies' own height, so it
+/// shoves and turns a quad but doesn't tip it.
+fn wheel_contacts(a: &Vehicle, b: &Vehicle) -> Vec<PairContact> {
+    let mut out = Vec::new();
+    for (pa, ca, ra) in wheel_spheres(a) {
+        for (pb, cb, rb) in wheel_spheres(b) {
+            let reach = ra + rb;
+            let (d0, d1) = (pb - pa, cb - ca);
+            let (normal, depth, meet) = if d1.length_squared() < reach * reach {
+                // Overlapping now.
+                let gap = d1.length();
+                if gap < 1e-4 {
+                    continue;
+                }
+                (-d1 / gap, reach - gap, d1 / gap)
+            } else {
+                // Met during the tick: when the gap first closed to `reach`.
+                let m = d1 - d0;
+                let mm = m.length_squared();
+                let dm = d0.dot(m);
+                let c0 = d0.length_squared() - reach * reach;
+                if mm < 1e-6 || c0 < 0.0 || dm * dm < mm * c0 {
+                    continue;
+                }
+                let t = (-dm - (dm * dm - mm * c0).sqrt()) / mm;
+                if !(0.0..=1.0).contains(&t) {
+                    continue;
+                }
+                let Some(u) = (d0 + m * t).with_y(0.0).try_normalize() else { continue };
+                (-u, reach - d1.dot(u), u)
+            };
+            if depth <= 0.0 {
+                continue;
+            }
+            let at_a = (ca + meet * ra - a.pos).with_y(0.0);
+            let at_b = (cb - meet * rb - b.pos).with_y(0.0);
+            out.push(PairContact {
+                at_a,
+                at_b,
+                normal,
+                depth,
+                friction: a.params.friction * b.params.friction,
+                bounce: a.params.hardness * b.params.hardness,
+            });
+        }
+    }
+    out
+}
+
+/// `a`'s body spheres inside `b`'s hull (0xd7190): pushed out through the
+/// face they are nearest to leaving by, or, a sphere that moved in this
+/// tick, back out through the face it came in by.
+fn hull_contacts(a: &Vehicle, b: &Vehicle) -> Vec<PairContact> {
+    let mut out = Vec::new();
+    let hull = b.posed_hull();
+    if hull.is_empty() {
+        return out;
+    }
+    for (&(local, _), (c, r)) in a.params.body.spheres.iter().zip(a.posed_spheres()) {
+        let dist = |p: Vec3, &(n, d): &(Vec3, f32)| n.dot(p) + d;
+        let Some(mut best) = hull.iter().max_by(|x, y| dist(c, x).total_cmp(&dist(c, y))).copied() else { continue };
+        if dist(c, &best) > r {
+            continue;
+        }
+        // Where it was before the tick (nowhere else if `a` didn't tick).
+        let prev = if a.ticks > 0 { a.shown_pos + a.shown_rot * local } else { c };
+        let moved = c - prev;
+        if prev.is_finite() && moved.length_squared() > 0.005_548_87 && hull.iter().any(|h| dist(prev, h) > -r) {
+            // The face its surface crossed last on the way in.
+            let mut latest = -1e-6;
+            for h in &hull {
+                if moved.dot(h.0) > 0.0 {
+                    continue;
+                }
+                let (s1, s0) = (c - h.0 * r, c - h.0 * r - moved);
+                let (d0, d1) = (dist(s0, h), dist(s1, h));
+                if (d0 < 0.0) != (d1 < 0.0) && (d1 - d0).abs() >= 1e-6 {
+                    let t = d0 / (d0 - d1);
+                    if t > latest {
+                        latest = t;
+                        best = *h;
+                    }
+                }
+            }
+        }
+        let n = best.0;
+        let depth = r - dist(c, &best);
+        let point = c - n * r;
+        out.push(PairContact {
+            at_a: point - a.pos,
+            at_b: point - b.pos,
+            normal: n,
+            depth,
+            friction: 0.0,
+            bounce: a.params.hardness.max(b.params.hardness),
+        });
+    }
+    out
 }
 
 /// Moves `cur` toward `target`. `rate` applies when heading toward a
@@ -287,7 +496,8 @@ impl Vehicle {
             shown_pos: Vec3::ZERO,
             shown_rot: Mat3::IDENTITY,
             shown_wheels: vec![WheelPose::default(); n],
-            body_prev: [Vec3::NAN; 5],
+            body_prev: Vec::new(),
+            ticks: 0,
             struts: vec![Strut::default(); n],
             ground: Ground {
                 grip: 1.0,
@@ -372,7 +582,7 @@ impl Vehicle {
         self.prev_vel = Vec3::ZERO;
         self.local_acc = Vec3::ZERO;
         self.pos_fix = Vec3::ZERO;
-        self.body_prev = [Vec3::NAN; 5];
+        self.body_prev.clear();
         for (i, s) in self.struts.iter_mut().enumerate() {
             *s = Strut {
                 pos: self.params.wheels[i].max_pos.min(0.0),
@@ -403,7 +613,7 @@ impl Vehicle {
         self.airborne = false;
         self.air_time = 0.0;
         self.in_water = false;
-        self.pending = 0.0;
+        // `pending` carries on, so the quad keeps ticking with the others.
         if self.hold.is_some() {
             self.hold = Some(self.pos);
         }
@@ -464,7 +674,7 @@ impl Vehicle {
     }
 
     /// Moves the quad by `offset` and changes its velocity by `delta_v`
-    /// (sim frame), as a bump from another quad does.
+    /// (sim frame), as knocking a prop over does.
     pub fn nudge(&mut self, offset: Vec3, delta_v: Vec3) {
         self.pos += offset * FLIP;
         self.shown_pos += offset * FLIP;
@@ -479,7 +689,9 @@ impl Vehicle {
     pub fn step(&mut self, input: &Input, dt: f32, world: &TrackCollision) {
         // As the original, at most 0.1 s per frame.
         self.pending += dt.clamp(0.0, 0.1);
+        self.ticks = 0;
         while self.pending >= TICK - 1e-5 {
+            self.ticks += 1;
             self.pending = (self.pending - TICK).max(0.0);
             self.shown_pos = self.pos;
             self.shown_rot = self.rot;
@@ -669,7 +881,7 @@ impl Vehicle {
         max: f32,
     ) -> Option<(f32, Vec3, Vec3, u8)> {
         world
-            .raycast(origin * FLIP, dir * FLIP, max)
+            .raycast_front(origin * FLIP, dir * FLIP, max)
             .map(|h| (h.t, h.point * FLIP, h.normal * FLIP, h.surface))
     }
 
@@ -1288,68 +1500,133 @@ impl Vehicle {
         self.body_collision(world);
     }
 
-    /// Spheres around the chassis keep it out of the ground and walls. The
-    /// original collides body spheres with the world and answers each
-    /// contact with a position fix plus an impulse at the contact point;
-    /// this does the same for a hand-placed set covering the Bandit-sized
-    /// chassis (positions from the model's hard points, relative to the
-    /// centre of mass, game frame).
+    /// The body's spheres against the track (0x6fef0), answered the way
+    /// the original's contact solver answers them (0xd5090): one pass over
+    /// the contacts in order, each pushing the body out of the face and
+    /// giving it the impulse that turns its speed into the face around by
+    /// the bounce, `-(1 + bounce) × speed in`, at the contact; then friction
+    /// for each contact that pushed. A face within 45 degrees of the quad's
+    /// up (the ground under its belly) is soft: half the push, a tenth of
+    /// the friction and less leverage.
     fn body_collision(&mut self, world: &TrackCollision) {
-        const SPHERES: [([f32; 3], f32); 5] = [
-            ([0.0, 0.05, 0.0], 0.22),  // belly
-            ([0.0, 0.3, 0.75], 0.25),  // front rack
-            ([0.0, 0.7, 0.3], 0.25),   // handlebars
-            ([0.0, 0.5, -0.35], 0.3),  // seat
-            ([0.0, 0.4, -0.85], 0.25), // rear rack
-        ];
-        const BOUNCE: f32 = 0.1;
-        const FRICTION: f32 = 0.6;
-        let mass = self.params.mass;
-        for (k, &(local, radius)) in SPHERES.iter().enumerate() {
-            let r = self.rot * Vec3::from(local);
-            let centre = self.pos + r;
-            let prev = self.body_prev[k];
-            self.body_prev[k] = centre;
-            // Surfaces are thin shells, so a centre that crossed one (moving
-            // fast, or shoved by another contact) would be pushed out the
-            // wrong side: catch that with a ray from where it was.
-            let travel = centre - prev;
-            let hit = match (prev.is_finite() && travel.length() > 1e-4)
-                .then(|| Self::cast(world, prev, travel.normalize(), travel.length()))
-                .flatten()
-            {
-                Some((t, _, n, _)) => Some((n, travel.length() - t + radius)),
-                None => world
-                    .sphere(centre * FLIP, radius)
-                    .map(|h| (h.normal * FLIP, h.t)),
-            };
-            let Some((n, depth)) = hit else { continue };
-            let push = n * depth;
-            self.pos += push;
-            self.body_prev[k] += push;
-            // Impulse that stops the point moving into the surface, with
-            // a little bounce and Coulomb friction along it.
-            let inv_i = self.inv_inertia_world();
-            let v_point = self.vel + self.ang_vel.cross(r);
-            let vn = v_point.dot(n);
-            if vn >= 0.0 {
-                continue;
-            }
-            let k_n = 1.0 / mass + n.dot((inv_i * r.cross(n)).cross(r));
-            let jn = -(1.0 + BOUNCE) * vn / k_n;
-            let vt = v_point - n * vn;
-            let mut j = n * jn;
-            if vt.length() > 1e-4 {
-                let t = vt.normalize();
-                let k_t = 1.0 / mass + t.dot((inv_i * r.cross(t)).cross(r));
-                let jt = (vt.length() / k_t).min(FRICTION * jn);
-                j -= t * jt;
-            }
-            self.momentum += j;
-            self.ang_momentum += r.cross(j);
-            self.vel = self.momentum / mass;
-            self.ang_vel = inv_i * self.ang_momentum;
+        let body = self.params.body.clone();
+        if self.body_prev.len() != body.spheres.len() {
+            self.body_prev = vec![Vec3::NAN; body.spheres.len()];
         }
+        let centres: Vec<Vec3> = body.spheres.iter().map(|&(c, _)| self.pos + self.rot * c).collect();
+        let travel = self.body_prev.iter().zip(&centres).filter(|(p, _)| p.is_finite()).map(|(p, c)| p.distance(*c)).fold(0.0, f32::max);
+        let near = world.near(self.pos * FLIP, body.reach + travel + 0.05);
+        let up = self.rot.y_axis;
+        let mut contacts = Vec::new();
+        for (k, (&(_, radius), &centre)) in body.spheres.iter().zip(&centres).enumerate() {
+            let prev = self.body_prev[k];
+            for &i in &near {
+                let Some(hit) = world.face_contact(i, centre * FLIP, prev * FLIP, radius) else { continue };
+                let n = hit.normal * FLIP;
+                let surface = world.surface(hit.surface);
+                let mut c = Contact {
+                    at: centre - n * radius - self.pos,
+                    normal: n,
+                    depth: hit.t,
+                    friction: surface.friction * self.params.friction,
+                    bounce: surface.hardness * self.params.hardness,
+                    lever: (n.y.abs() + 1.0) * 0.5,
+                };
+                if n.dot(up) > std::f32::consts::FRAC_1_SQRT_2 {
+                    c.lever = 0.4;
+                    c.bounce = -0.5;
+                    c.friction *= 0.1;
+                }
+                contacts.push(c);
+            }
+        }
+        let fix = self.solve(&contacts);
+        self.pos += fix;
+        for (p, c) in self.body_prev.iter_mut().zip(&centres) {
+            *p = *c + fix;
+        }
+    }
+
+    /// The original's contact solver for the body's contacts with fixed
+    /// things (0xd5090). Returns the position fix, each contact's push
+    /// combined per axis as [`Self::add_fix`] does.
+    fn solve(&mut self, contacts: &[Contact]) -> Vec3 {
+        let mut fix = Vec3::ZERO;
+        let mut pushed = Vec::with_capacity(contacts.len());
+        for c in contacts {
+            Self::add_fix(&mut fix, c.normal * c.depth);
+            let vn = (self.vel + self.ang_vel.cross(c.at)).dot(c.normal);
+            let k = self.inv_mass_at(c.at, c.normal);
+            let j = if k.abs() > 1e-6 { -(1.0 + c.bounce) * vn / k } else { 0.0 };
+            self.impulse(c.normal * j, c.at * c.lever);
+            pushed.push(j);
+        }
+        // The slides are measured once every push is in.
+        let slides: Vec<Vec3> = contacts
+            .iter()
+            .map(|c| {
+                let v = self.vel + self.ang_vel.cross(c.at);
+                v - c.normal * v.dot(c.normal)
+            })
+            .collect();
+        for ((c, &j), &slide) in contacts.iter().zip(&pushed).zip(&slides) {
+            if j > 0.0 && c.friction > 0.0 {
+                self.friction(c, slide, c.friction * j);
+            }
+        }
+        fix
+    }
+
+    /// Friction against the slide `slide` at a contact: up to `max`, as
+    /// much as stops it (0xd5090's second pass).
+    fn friction(&mut self, c: &Contact, slide: Vec3, max: f32) {
+        let speed = slide.length();
+        if speed < 0.01 {
+            return;
+        }
+        let t = slide / speed;
+        let k = self.inv_mass_at(c.at, t);
+        let j = if speed < max * k { speed / k } else { max };
+        self.impulse(-t * j, c.at * c.lever);
+    }
+
+    /// How easily the body moves along `n` at `at` (from the centre of
+    /// mass): the inverse of its effective mass there (0xd2040).
+    fn inv_mass_at(&self, at: Vec3, n: Vec3) -> f32 {
+        1.0 / self.params.mass + n.dot((self.inv_inertia_world() * at.cross(n)).cross(at))
+    }
+
+    /// An impulse `j` at `at` (from the centre of mass), then the
+    /// velocities that follow (0xd1410).
+    fn impulse(&mut self, j: Vec3, at: Vec3) {
+        self.momentum += j;
+        self.ang_momentum += at.cross(j);
+        self.vel = self.momentum / self.params.mass;
+        self.ang_vel = self.inv_inertia_world() * self.ang_momentum;
+    }
+
+    /// The body's spheres placed where it is, game frame.
+    fn posed_spheres(&self) -> Vec<(Vec3, f32)> {
+        self.params.body.spheres.iter().map(|&(c, r)| (self.pos + self.rot * c, r)).collect()
+    }
+
+    /// The body's hull placed where it is, game frame.
+    fn posed_hull(&self) -> Vec<(Vec3, f32)> {
+        self.params
+            .body
+            .hull
+            .iter()
+            .map(|&(n, d)| {
+                let n = self.rot * n;
+                (n, d - n.dot(self.pos))
+            })
+            .collect()
+    }
+
+    /// The body's spheres where it is now, sim frame: centre and radius.
+    pub fn body_spheres(&self) -> impl Iterator<Item = (Vec3, f32)> + '_ {
+        let (pos, rot) = (self.position * FLIP, mirror(Mat3::from_quat(self.rotation)));
+        self.params.body.spheres.iter().map(move |&(c, r)| ((pos + rot * c) * FLIP, r))
     }
 
     /// Strut dynamics, engine revs and the gearbox.

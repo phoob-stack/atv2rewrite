@@ -9,7 +9,8 @@
 //!   look-ahead distance down the line. The look-ahead is the corridor
 //!   width, but at least 1.05 s of travel (0x66730). Other quads ahead in
 //!   the way push the target sideways into the free part of the corridor
-//!   (0x67050, 0x671e0).
+//!   (0x67050, 0x671e0), and one alongside (or closing fast from just
+//!   behind) walls off its side of the corridor (retail 0x7a850).
 //! - **Target speed** (0x68760, 0x67f70): every node within braking
 //!   distance (v^2 / 2a, at most 200 m; 0x67e40) caps the speed to the one
 //!   from which the quad can still slow to the node's limit,
@@ -42,6 +43,15 @@ const NO_LIMIT: f32 = 1000.0;
 const MAX_BRAKE_LOOKAHEAD: f32 = 200.0;
 /// Rough quad half-width for passing, metres.
 const QUAD_HALF_WIDTH: f32 = 1.0;
+/// A quad's half-width and half-length, metres: the original measures its
+/// model's bounding box (0x7bed0); these are where the port's quads touch
+/// (side by side about 1.5 m apart).
+const BODY_HALF_WIDTH: f32 = 0.8;
+const BODY_HALF_LENGTH: f32 = 1.1;
+/// A quad this far behind a computer rider and this much faster
+/// (metres, m/s) counts as alongside it (0x79fc0 sets both).
+const OVERTAKER_REACH: f32 = 5.0;
+const OVERTAKER_SPEED: f32 = 10.0;
 /// A driver that stays within this many metres for this many seconds is
 /// respotted.
 const PROGRESS_RADIUS: f32 = 10.0;
@@ -749,7 +759,7 @@ impl AiDriver {
 
         // Passing: the nearest quad ahead within the look-ahead that sits in
         // our lane moves the target to the roomier side of it.
-        let gap = self.plan_passing(line, pos, fwd, lateral, left, right, traffic, dt);
+        let gap = self.plan_passing(line, pos, v.velocity, fwd, lateral, left, right, traffic, dt);
 
         let look = width.min(gap).max(1.05 * speed.abs()).max(1.0);
         let decel = 0.8 * v.params.brake_curve.scale.abs();
@@ -811,7 +821,11 @@ impl AiDriver {
                 break;
             }
             dist = reach;
-            match self.peek_edge(line, e) {
+            // The steering target past a split: pick the branch now, so the
+            // quad isn't aimed down one branch and switched to the other at
+            // the split (Glacier 1's routes round the snow mound).
+            let next = if target.is_none() { self.next_edge(line, e) } else { self.peek_edge(line, e) };
+            match next {
                 Some(n) => e = n,
                 None => break,
             }
@@ -998,6 +1012,7 @@ impl AiDriver {
         &mut self,
         line: &RacingLine,
         pos: Vec3,
+        vel: Vec3,
         fwd: Vec3,
         lateral: f32,
         left: f32,
@@ -1038,6 +1053,35 @@ impl AiDriver {
         // Ease across rather than snapping.
         let k = 1.0 - (-1.5 * dt).exp();
         self.offset += (want - self.offset) * k;
+        // 0x7a850: a quad alongside (the two overlapping along the line)
+        // walls off its side of the corridor, so the rider doesn't steer
+        // into it; with no room left between, it holds its line.
+        let dir = line.edges[self.edge].dir.with_y(0.0).normalize_or(fwd);
+        let (mut lo, mut hi) = (lateral.min(left), lateral.max(right));
+        for t in traffic {
+            let d = t.position - pos;
+            let along = d.dot(dir);
+            let closing = (t.velocity - vel).dot(dir);
+            let reach = 2.0 * BODY_HALF_LENGTH;
+            let alongside = along.abs() < reach;
+            // ...and so does one coming up fast from just behind.
+            let overtaking = along < 0.0 && along >= -(reach + OVERTAKER_REACH) && closing >= OVERTAKER_SPEED;
+            if !alongside && !overtaking {
+                continue;
+            }
+            let lat = lateral + d.dot(side);
+            if lat < lateral {
+                lo = lo.max(lat + BODY_HALF_WIDTH);
+            } else {
+                hi = hi.min(lat - BODY_HALF_WIDTH);
+            }
+        }
+        let (lo, hi) = (lo + BODY_HALF_WIDTH, hi - BODY_HALF_WIDTH);
+        if lo <= hi {
+            self.offset = (mid + self.offset).clamp(lo, hi) - mid;
+        } else {
+            self.offset = lateral - mid;
+        }
         nearest.map_or(f32::MAX, |n| n.0)
     }
 
@@ -1325,26 +1369,9 @@ pub fn pace_rating(
     ((ability + technique) * 0.2 * 0.5 + (top_speed + acceleration + handling) * 0.2 / 3.0) * 0.5
 }
 
-/// Pushes two quads apart when they touch, trading the closing part of
-/// their velocities (equal masses, a soft bump).
+/// Two quads touching: see [`crate::vehicle::bump`].
 pub fn bump(a: &mut Vehicle, b: &mut Vehicle) {
-    const RADIUS: f32 = 1.0;
-    let d = (b.position - a.position).with_y(0.0);
-    let dist = d.length();
-    let dy = (b.position.y - a.position.y).abs();
-    if dist >= 2.0 * RADIUS || dist < 1e-4 || dy > 1.5 {
-        return;
-    }
-    let n = d / dist;
-    let push = (2.0 * RADIUS - dist) * 0.5;
-    let closing = (a.velocity - b.velocity).dot(n);
-    let dv = if closing > 0.0 {
-        n * closing * 0.65
-    } else {
-        Vec3::ZERO
-    };
-    a.nudge(-n * push, -dv);
-    b.nudge(n * push, dv);
+    crate::vehicle::bump(a, b);
 }
 
 #[cfg(test)]
@@ -1448,6 +1475,36 @@ mod tests {
         assert_eq!(d.torque_scale(), PROTOTYPE.engine_boost);
         // Every side of the square turns 90 degrees into the next.
         assert_eq!(d.straight_ahead(&l), 0.0);
+    }
+
+    #[test]
+    fn riders_keep_off_quads_alongside() {
+        let l = square();
+        let pos = Vec3::new(0.0, 0.0, -50.0);
+        let fwd = Vec3::NEG_Z;
+        let vel = fwd * 20.0;
+        let quad = |x: f32, z: f32, speed: f32| Traffic {
+            position: Vec3::new(x, 0.0, z),
+            velocity: fwd * speed,
+            player: false,
+            boosting: false,
+        };
+        let mut d = AiDriver::new(&l, pos, 1);
+        d.follow(&l, pos);
+        let offset = |d: &mut AiDriver, traffic: &[Traffic]| {
+            d.offset = 0.0;
+            d.plan_passing(&l, pos, vel, fwd, 0.0, -5.0, 5.0, traffic, 1.0 / 60.0);
+            d.offset
+        };
+        // Alone, it keeps to the middle.
+        assert_eq!(offset(&mut d, &[]), 0.0);
+        // A quad touching its right side moves its line left, clear of it.
+        assert!((offset(&mut d, &[quad(1.0, -50.5, 20.0)]) + 0.6).abs() < 1e-4);
+        // Hemmed in on both sides, it holds its line.
+        assert_eq!(offset(&mut d, &[quad(1.0, -50.0, 20.0), quad(-1.0, -50.0, 20.0)]), 0.0);
+        // A quad 4 m behind counts only when it closes 10 m/s faster.
+        assert_eq!(offset(&mut d, &[quad(1.0, -46.0, 25.0)]), 0.0);
+        assert!(offset(&mut d, &[quad(1.0, -46.0, 31.0)]) < -0.5);
     }
 
     #[test]

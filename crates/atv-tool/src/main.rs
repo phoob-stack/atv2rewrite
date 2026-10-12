@@ -224,7 +224,10 @@ fn sim(game: &GameSource, track: &str, quad: &str, seconds: f32) -> Result<()> {
     let col = trk::collision(&world, game, track);
     let generic = String::from_utf8_lossy(&game.read("/Cars/Generic/Generic.params")?).into_owned();
     let own = game.read(&format!("/Cars/{quad}/{quad}.params")).ok().map(|b| String::from_utf8_lossy(&b).into_owned());
-    let params = VehicleParams::from_files(&generic, own.as_deref());
+    let mut params = VehicleParams::from_files(&generic, own.as_deref());
+    if let Some(body) = atv_sim::body::Body::from_game(game) {
+        params.body = body;
+    }
     let (pos, rot) = trk::start_pose(&world, &col, 1);
     println!("{} collision triangles; start {pos:?}", col.triangle_count());
     let cps = trk::checkpoints(&world);
@@ -307,6 +310,7 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
         }
     }
     let generic = String::from_utf8_lossy(&game.read("/Cars/Generic/Generic.params")?).into_owned();
+    let body = atv_sim::body::Body::from_game(game);
     let mut cars = Vec::new();
     for (i, default) in QUADS.iter().enumerate().take(riders.clamp(1, 8)) {
         let q = quads.get(i).map_or(*default, String::as_str);
@@ -316,6 +320,9 @@ fn race(game: &GameSource, track: &str, riders: usize, laps: u32) -> Result<()> 
             .map(|b| String::from_utf8_lossy(&b).into_owned());
         let (pos, rot) = trk::start_pose(&world, &col, i + 1);
         let mut params = VehicleParams::from_files(&generic, own.as_deref());
+        if let Some(body) = &body {
+            params.body = body.clone();
+        }
         if std::env::var_os("ATV2_STOCK").is_none() {
             tune_for_ai(&mut params, 0.6);
         }
