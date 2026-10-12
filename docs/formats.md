@@ -569,29 +569,45 @@ with something in its meter.
   track's Biggest Air record (raised by any higher jump), then not for
   7 s; not in game types 5, 10 and 11.
 - `VehicleCameras.xml`: the follow cameras the Options menu offers,
-  `FollowNear` (CAM_FOLLOW_CLOSE), `FollowFar` and `FollowVeryClose`, plus
+  `FollowNear` (CAM_FOLLOW_CLOSE), `FollowFar`, `FollowVeryClose` and
+  retail's `BouncyFollowClose`, plus
   the replay mounts (`MountOnFront`, `MountOnWheel`, ...) and the
   lead-back cameras. Each follow camera has a `PosOffset` and a
   `LookOffset` (vehicle frame, Z forward) and `On/OffGroundPos/RotStiffness`.
   The children repeat `X`/`Y`/`Z`, so they are read with `setup::child`
-  rather than flattened. Where the offsets are measured from is not known:
-  taken from the centre of mass they look down on the quad at 20-37
-  degrees and lose the horizon, so the rewrite aims 1 m above it. The
-  original's follow camera (0x6e760, loaded by 0x6f2d0 into the camera
-  manager at 0x1dd5b0) is a chain of steps: the offset point behind the
-  quad's heading (0x72390; its full orientation, wheels down, inside a
-  track's `FUNNYCAM` boxes, which only Stadium 1 has and the rewrite
-  skips); the position eased towards it at the position stiffness, which
-  drops at once on takeoff and climbs back at 1/s after landing
-  (0x71ed0/0x71dd0), so the camera lags climbs, drops and speed too; the
-  distance on a critically damped spring (k 50), pulled in to 0.8 of the
-  way to anything in between (0x72150, 0x71f50); kept between 1 and 1.3
-  times the offset's length (0x71b20, 0x71c40); then aimed straight at the
-  look point, ahead along the quad's own heading and pitch (0x6f520). The
-  rotation stiffnesses are read but unused. The zoom (view tangents
-  divided by it) eases at 1/s towards 0.9 standing, 0.5 at 70 mph and 0.9
-  again by 150 mph (0x6fc90). Very Close sits at the rider's head, so the rider
-  is hidden in it. `CameraDirector.xml` lists the replay director's
+  rather than flattened. Retail builds each follow camera as a chain
+  (0x819d0, set up by 0x7e350; the prototype's differs, at 0x6e760): the
+  subject is the rider, not the quad (0x84800), so offsets are measured
+  from the seated pelvis, 0.62 m up the quad's up axis and 0.29 m behind
+  its centre of mass (0x2f3a0). The offset point is placed behind a level
+  heading (0x85ae0): the quad's forward axis, or its up axis when that is
+  nearer level (backwards with the nose up), so flips and wheelies don't
+  swing it; inside a track's `FUNNYCAM` boxes, which only Stadium 1 has
+  and the rewrite skips, its full orientation. The position eases there at
+  the off-ground stiffness whatever the wheels do, since retail asks the
+  rider's body, which has none (0x85f20); the stiffness creeps up to it at
+  1/s and gains 10/s, up to 50 more, while the quad backs up on its wheels
+  (0x85d60). Then it is kept within 1.3 times the offset's length
+  (0x85820) and no nearer than 1 (1.5 for Very Close and Bouncy Near)
+  times it, pushed out level (0x85680); its distance follows a spring
+  (k 50, damping 2 sqrt 50, 0x83660) pulled in to 0.8 of the way to
+  anything between the pelvis and the camera (0x861a0, 0x85fa0); over a
+  crash it holds where it was and rises at 1 m/s (0x85a10). It looks at
+  the look offset turned by the rider, at the pelvis's height plus its Y
+  (0x836a0). Last the camera base (0x7f390) pushes a ball of radius
+  sqrt 2 x 0.5 + 0.2 just ahead of the lens out of the track (0x7f1c0)
+  and eases the camera there per axis, at 10/s after any contact,
+  climbing 5/s a second to 40/s in the clear (Bouncy Near: 30/s). The
+  zoom (view tangents divided by it) eases at 1/s to 1.0 standing, 0.7
+  at 30 mph and 1.0 again by 90 mph (0x832e0). The rotation stiffnesses
+  are read but unused. Every step eases by `min(dt x rate, 1)` of the
+  gap per frame; the rewrite runs them at that 60 Hz pace at any frame
+  rate. Split screen uses Follow Near on every view (0x7da60). `Cameras.xml`
+  marks which are offered (Follow Near, Far, Very Close and Bouncy Near)
+  and that all of them draw the rider. Not ported: the zoom in on a
+  thrown rider (0x833e0) and a per-player flag doubling the nearest
+  distance.
+  `CameraDirector.xml` lists the replay director's
   camera sets.
 - Options pages (`Frontend.xml` `Options*` screens): Audio has Music and
   Sound Effects volume as 16-segment bars (`FrontEnd/SoundBar`: `BAR_ON`
