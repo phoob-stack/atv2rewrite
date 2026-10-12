@@ -52,6 +52,7 @@ mod rider;
 mod screens;
 mod settings;
 mod trickbook;
+mod tuning;
 mod ui;
 mod unlocks;
 mod xinput;
@@ -74,7 +75,7 @@ use atv_formats::aid::AiPath;
 use atv_formats::GameSource;
 use atv_sim::ai::RacingLine;
 use atv_sim::track as trk;
-use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
+use atv_sim::{Input, TrackCollision, Vehicle};
 
 use controller::Action;
 use convert::{SkyDome, WheelVisual};
@@ -636,10 +637,12 @@ fn setup(
         None => trk::checkpoints(&scene.world),
     };
 
-    let generic = game.0.read("/Cars/Generic/Generic.params").map(|b| String::from_utf8_lossy(&b).into_owned());
-    let own = game.0.read(&format!("/Cars/{q}/{q}.params", q = sel.quad)).ok();
-    let own = own.map(|b| String::from_utf8_lossy(&b).into_owned());
-    let mut params = VehicleParams::from_files(&generic.unwrap_or_default(), own.as_deref());
+    let tuning = tuning::load();
+    if !tuning.is_empty() {
+        info!("playing with the launcher's tuning: {}", tuning.to_text().lines().skip(1).collect::<Vec<_>>().join(", "));
+    }
+    // The demo's rider is a computer rider.
+    let mut params = tuning::quad_params(&game.0, &tuning, &sel.quad, demo.is_none());
     if demo.is_some() {
         // The demo's computer rider gets a computer rider's handling.
         let ability = roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&sel.rider)).map_or(0.6, |r| r.stats[0] / 5.0);

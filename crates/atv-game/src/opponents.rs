@@ -14,7 +14,7 @@ use atv_formats::setup;
 use atv_formats::row::World as TrackWorld;
 use atv_sim::ai::{AiDriver, Pacer, RacingLine, Traffic, bump, pace_rating, tune_for_ai};
 use atv_sim::track as trk;
-use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
+use atv_sim::{Input, TrackCollision, Vehicle};
 
 use crate::convert::{self, Loader, WheelVisual};
 use crate::crash::{CrashClips, Wreck};
@@ -227,10 +227,7 @@ pub fn spawn(
         .copied()
         .filter(|q| !q.eq_ignore_ascii_case(&sel.quad) && !humans.iter().any(|h| h.1.eq_ignore_ascii_case(q)))
         .collect();
-    let generic = game
-        .read("/Cars/Generic/Generic.params")
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
-        .unwrap_or_default();
+    let tuning = crate::tuning::load();
     let scoped = DespawnOnExit(AppState::Race);
     let mut racers = Vec::new();
     let mut ratings = Vec::new();
@@ -253,11 +250,7 @@ pub fn spawn(
             Some(h) => h.1.clone(),
             None => quads.swap_remove(pick(quads.len())).to_string(),
         };
-        let own = game
-            .read(&format!("/Cars/{quad}/{quad}.params"))
-            .ok()
-            .map(|b| String::from_utf8_lossy(&b).into_owned());
-        let mut params = VehicleParams::from_files(&generic, own.as_deref());
+        let mut params = crate::tuning::quad_params(game, &tuning, &quad, human.is_some());
         if human.is_none() {
             tune_for_ai(&mut params, (rider.stats[0] / 5.0).clamp(0.0, 1.0));
         }

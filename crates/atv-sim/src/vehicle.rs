@@ -476,7 +476,7 @@ impl Vehicle {
                 self.torque += right * self.lean * self.params.lean_force;
                 self.wheelies();
             }
-            self.force += Vec3::NEG_Y * GRAVITY * self.params.mass;
+            self.force += Vec3::NEG_Y * self.params.gravity * self.params.mass;
             self.ground_forces(h);
         } else {
             self.air_forces();
@@ -1082,7 +1082,7 @@ impl Vehicle {
             p.in_air_grav_down
         };
         self.force +=
-            Vec3::NEG_Y * GRAVITY * p.in_air_grav_scale * scale * self.gravity_scale * p.mass;
+            Vec3::NEG_Y * p.gravity * p.in_air_grav_scale * scale * self.gravity_scale * p.mass;
         let (right, up, fwd) = (self.rot.x_axis, self.rot.y_axis, self.rot.z_axis);
         self.torque += up * (p.in_air_steer_vel * self.steer - self.ang_vel.dot(up));
         if up.y > -0.3 {

@@ -149,6 +149,22 @@ Damping is what slows a quad: Water and Deep_Water 30, Dirt_Bank 20,
 Mud_Bank and Sand_Bank 15, Loose_Sand and Snow_Bank 10, Loose_Dirt and
 Loose_Mud 5. Plain Mud has none, only less grip (0.45).
 
+## Player tuning
+
+The launcher's Config tab writes `tuning.cfg` (`atv_sim::tuning`). The game
+reads it for every race (`atv-game/src/tuning.rs`) and builds each quad's
+`VehicleParams` as usual, then:
+
+* per-quad lines (`Bandit.MASS = 1.3`) replace the first number of that key
+  after the quad's own file. `FRONT.`/`REAR.` wheel keys set the wheels in
+  front of or behind the centre. `AIRGRAVITYSCALE` wins over `INAIRGRAVSCALE`.
+* percentages scale the parsed values on every quad: `gravity` scales
+  `VehicleParams::gravity` (the engine's 25 m/s², on the ground and in the
+  air), `air_gravity` the in-air gravity scale, and so on.
+
+Computer riders keep the game's tuning unless `computer_riders = true`.
+`atv-tool` ignores the file.
+
 ## Not ported yet
 
 * The bicycle trick and the bumpy-terrain wheel offset.
