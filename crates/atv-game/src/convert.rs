@@ -168,6 +168,8 @@ pub struct Loader<'a> {
     lit_cache: HashMap<(String, Look, bool), Handle<LitMaterial>>,
     models: HashMap<String, Option<Model>>,
     model_paths: HashMap<String, Vec<String>>,
+    /// Knock-over props' collision shapes, by model.
+    shapes: HashMap<String, Option<std::sync::Arc<crate::knock::Shape>>>,
     /// The race's ground: picks the tyres and, when set, gives vehicles
     /// and riders a dirt layer that builds up (see [`Mud`]).
     pub dirt: Option<Ground>,
@@ -451,6 +453,7 @@ impl<'a> Loader<'a> {
             lit_cache: HashMap::new(),
             models: HashMap::new(),
             model_paths,
+            shapes: HashMap::new(),
             dirt: None,
             challenge: None,
             last_quad: None,
@@ -687,19 +690,41 @@ impl<'a> Loader<'a> {
         if let Some(m) = self.models.get(&key) {
             return m.clone();
         }
-        let paths = self.model_paths.get(&key).cloned().unwrap_or_default();
-        let pref = prefer_dir.to_ascii_lowercase();
-        let path = paths
-            .iter()
-            .find(|p| p.to_ascii_lowercase().contains(&pref))
-            .or_else(|| paths.iter().find(|p| !p.to_ascii_lowercase().contains("frontend")))
-            .or(paths.first());
-        let m = path.and_then(|p| Model::parse(&self.game.read(p).ok()?).ok());
+        let m = self.model_path(&key, prefer_dir).and_then(|p| Model::parse(&self.game.read(&p).ok()?).ok());
         if m.is_none() {
             warn!("model not found: {stem}");
         }
         self.models.insert(key, m.clone());
         m
+    }
+
+    /// Where the model `key` (lower case) is read from.
+    fn model_path(&self, key: &str, prefer_dir: &str) -> Option<String> {
+        let paths = self.model_paths.get(key)?;
+        let pref = prefer_dir.to_ascii_lowercase();
+        paths
+            .iter()
+            .find(|p| p.to_ascii_lowercase().contains(&pref))
+            .or_else(|| paths.iter().find(|p| !p.to_ascii_lowercase().contains("frontend")))
+            .or(paths.first())
+            .cloned()
+    }
+
+    /// A knock-over prop's collision shape: the `.hsc` beside its model,
+    /// `<model>_Collision.hsc` (0x2e100).
+    fn prop_shape(&mut self, stem: &str, prefer_dir: &str) -> Option<std::sync::Arc<crate::knock::Shape>> {
+        let key = stem.to_ascii_lowercase();
+        if let Some(s) = self.shapes.get(&key) {
+            return s.clone();
+        }
+        let path = self.model_path(&key, prefer_dir).map(|p| format!("{}_Collision.hsc", &p[..p.len() - ".rom".len()]));
+        let shape = path.and_then(|p| atv_formats::hsc::BodyShape::parse(&self.game.read(&p).ok()?).ok());
+        let shape = shape.map(|h| crate::knock::Shape::from_hsc(&h)).filter(|s| !s.is_empty()).map(std::sync::Arc::new);
+        if shape.is_none() {
+            debug!("no collision shape for {stem}: knocked over as its box");
+        }
+        self.shapes.insert(key, shape.clone());
+        shape
     }
 
     /// Spawns one model as children of `parent`, one entity per material.
@@ -814,7 +839,8 @@ impl<'a> Loader<'a> {
                 let holder = self.spawn_model(commands, &model, root, t, Look::Baked);
                 if inst.flags.split_whitespace().next().is_some_and(|f| f.eq_ignore_ascii_case("free")) {
                     let (a, b) = (Vec3::from(flip(model.bbox_min)), Vec3::from(flip(model.bbox_max)));
-                    commands.entity(holder).insert(crate::knock::Knockable::from_box(a.min(b), a.max(b), &t));
+                    let shape = self.prop_shape(stem, &env).unwrap_or_else(|| std::sync::Arc::new(crate::knock::Shape::cuboid(a.min(b), a.max(b))));
+                    commands.entity(holder).insert(crate::knock::Knockable::new(shape));
                 }
                 props += 1;
             }

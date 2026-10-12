@@ -158,6 +158,10 @@ fn check(game: &GameSource) -> Result<()> {
             atv_formats::ink::CollisionMesh::parse(&data)
                 .map(|m| format!("{} collision triangles", m.triangles.len()))
                 .map_err(Into::into)
+        } else if lower.ends_with(".hsc") {
+            atv_formats::hsc::BodyShape::parse(&data)
+                .map(|s| format!("{} hull planes, {} spheres", s.hulls.iter().map(|h| h.planes.len()).sum::<usize>(), s.spheres.len()))
+                .map_err(Into::into)
         } else if lower.ends_with(".xwb") {
             atv_formats::xwb::WaveBank::parse(&data).map(|b| format!("{} sounds", b.waves.len())).map_err(Into::into)
         } else if lower.ends_with(".bed") {
