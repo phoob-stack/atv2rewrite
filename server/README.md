@@ -12,7 +12,9 @@ rustup target add x86_64-unknown-linux-musl
 cargo build --release -p atv-lobby --bin atv2-server --target x86_64-unknown-linux-musl
 ```
 
-The result, `target/x86_64-unknown-linux-musl/release/atv2-server`, is a
+This works on Windows too: `.cargo/config.toml` links it with Rust's own
+`rust-lld`, so no Linux C toolchain is needed. The result,
+`target/x86_64-unknown-linux-musl/release/atv2-server` (no `.exe`), is a
 static Linux binary that runs anywhere, Pterodactyl's containers included.
 
 ## Pterodactyl
