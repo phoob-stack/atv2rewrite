@@ -299,7 +299,9 @@ impl Plugin for IntroPlugin {
 /// Loads the track's intro cameras, if it has any.
 fn start(mut commands: Commands, game: Res<Game>, sel: Res<Selection>, args: Res<Args>) {
     commands.remove_resource::<Intro>();
-    if args.no_intro || args.camera.is_some() || args.orbit.is_some() {
+    // A retail lesson's own page stands in for it.
+    let lesson = sel.mode == crate::Mode::Training && sel.lesson > 0;
+    if args.no_intro || args.camera.is_some() || args.orbit.is_some() || lesson {
         return;
     }
     let xml = game.0.read(&format!("/Levels/{0}/World/{0}.xml", sel.track)).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();

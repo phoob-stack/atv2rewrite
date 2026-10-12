@@ -108,7 +108,7 @@ impl Action {
         }
     }
 
-    fn index(self) -> usize {
+    pub fn index(self) -> usize {
         Self::ALL.iter().position(|&a| a == self).unwrap_or(0)
     }
 
