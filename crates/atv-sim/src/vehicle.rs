@@ -239,11 +239,11 @@ struct Contact {
 
 /// Two quads touching (0x6fa00), each with the other's pose before and
 /// after their last ticks: their wheels as spheres against each other's
-/// (0xd5dc0), and `a`'s body spheres against `b`'s hull (0xd7680, one way
-/// round as the original). Solved as the original solves contacts between
-/// bodies (0xd5090): the overlap shared out by mass, the impulse that turns
-/// the speed between the two points around by the bounce, and friction on
-/// `a`. Wheels bounce by the product of the quads' `HARDNESS` and grip by
+/// (0xd5dc0), and each one's body spheres against the other's hull
+/// (0xd7680; the original only tries one way round). Solved as the
+/// original solves contacts between bodies (0xd5090): the overlap shared
+/// out by mass, the impulse that turns the speed between the two points
+/// around by the bounce, and friction on `a`. Wheels bounce by the product of the quads' `HARDNESS` and grip by
 /// the product of their `FRICTION`; a body against a hull bounces by the
 /// harder of the two, without friction.
 pub fn bump(a: &mut Vehicle, b: &mut Vehicle) {
@@ -255,6 +255,12 @@ pub fn bump(a: &mut Vehicle, b: &mut Vehicle) {
     }
     let mut contacts = wheel_contacts(a, b);
     contacts.extend(hull_contacts(a, b));
+    // The rewrite's: `b`'s spheres against `a`'s hull too, so neither quad
+    // sinks into the other. One way round, pack riders lock together and
+    // three times as many get respotted in a six-rider race.
+    for c in hull_contacts(b, a) {
+        contacts.push(PairContact { at_a: c.at_b, at_b: c.at_a, normal: -c.normal, ..c });
+    }
     if contacts.is_empty() {
         return;
     }
