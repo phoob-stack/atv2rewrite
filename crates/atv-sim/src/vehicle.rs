@@ -99,6 +99,20 @@ struct Ground {
     drag: f32,
 }
 
+/// Where the quad is in the race start (retail's state at +0x294).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Start {
+    Racing,
+    /// Held on the grid: free to rev, pinned in place.
+    Grid,
+    /// A turbo start's extra drive.
+    Turbo,
+}
+
+/// Retail sets the engine's lerp toward the slew-limited target revs to
+/// 50 per second when it builds an ATV (0x6e540).
+const RETAIL_REV_LERP: f32 = 50.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Preload {
     Idle,
@@ -185,6 +199,11 @@ pub struct Vehicle {
     gravity_timer: f32,
     landing_stab: f32,
     airborne: bool,
+
+    start: Start,
+    turbo_timer: f32,
+    /// Grid spot the quad is pinned to (game frame).
+    hold: Option<Vec3>,
 }
 
 /// Moves `cur` toward `target`. `rate` applies when heading toward a
@@ -282,6 +301,9 @@ impl Vehicle {
             gravity_timer: 0.0,
             landing_stab: 0.0,
             airborne: false,
+            start: Start::Racing,
+            turbo_timer: 0.0,
+            hold: None,
             params,
         };
         v.reset(position, rotation);
@@ -356,9 +378,62 @@ impl Vehicle {
         self.air_time = 0.0;
         self.in_water = false;
         self.pending = 0.0;
+        if self.hold.is_some() {
+            self.hold = Some(self.pos);
+        }
         self.shown_pos = self.pos;
         self.shown_rot = self.rot;
         self.sync_out();
+    }
+
+    /// Holds the quad on the starting grid until [`Vehicle::start_race`]:
+    /// it can only settle on its springs, so the rider can rev the engine
+    /// (0x6e470 with 1, and the Dyne's grid hold at 0xd9190).
+    pub fn hold_on_grid(&mut self) {
+        self.start = Start::Grid;
+        self.hold = Some(self.pos);
+    }
+
+    pub fn on_grid(&self) -> bool {
+        self.start == Start::Grid
+    }
+
+    /// Lets go of the grid. On retail tuning, revs held between
+    /// MINTURBOREVSCALE and MAXTURBOREVSCALE of the rev range give a turbo
+    /// start (0x6e470 with 0, 0x6d570).
+    pub fn start_race(&mut self) {
+        self.hold = None;
+        if self.start != Start::Grid {
+            return;
+        }
+        if self.turbo_window() {
+            self.throttle = self.throttle_target;
+            self.turbo_timer = 0.0;
+            self.start = Start::Turbo;
+        } else {
+            self.start = Start::Racing;
+        }
+    }
+
+    /// Holds the quad on the grid while `held`, and starts the race the
+    /// first step it isn't.
+    pub fn set_grid(&mut self, held: bool) {
+        if held && self.hold.is_none() {
+            self.hold_on_grid();
+        } else if !held && self.hold.is_some() {
+            self.start_race();
+        }
+    }
+
+    /// Whether a turbo start is giving extra drive.
+    pub fn turbo(&self) -> bool {
+        self.start == Start::Turbo
+    }
+
+    fn turbo_window(&self) -> bool {
+        let p = &self.params;
+        let x = (self.revs - p.min_revs) / (p.max_revs - p.min_revs);
+        p.min_turbo_rev_scale < x && x < p.max_turbo_rev_scale
     }
 
     /// Moves the quad by `offset` and changes its velocity by `delta_v`
@@ -392,22 +467,44 @@ impl Vehicle {
         self.wheel_contacts(world);
         self.ground_frame();
         self.springs();
+        // Retail holds the rider's weight and the pre-load back on the
+        // grid (0x6f750).
+        let racing = !(self.params.retail && self.start == Start::Grid);
         if self.ground.contacts > 0 {
-            let right = self.rot.x_axis;
-            self.torque += right * self.lean * self.params.lean_force;
-            self.wheelies();
+            if racing {
+                let right = self.rot.x_axis;
+                self.torque += right * self.lean * self.params.lean_force;
+                self.wheelies();
+            }
             self.force += Vec3::NEG_Y * GRAVITY * self.params.mass;
             self.ground_forces(h);
         } else {
             self.air_forces();
         }
+        if self.params.retail {
+            self.stabiliser();
+        }
         if self.in_water {
             self.force -= self.vel * WATER_DRAG;
             self.torque -= self.ang_vel * WATER_SPIN_DRAG;
         }
-        self.preload_update(input.jump, h);
+        if racing {
+            self.preload_update(input.jump, h);
+        }
         self.landing_stabiliser(h);
+        if self.params.retail && self.start == Start::Turbo {
+            self.turbo_timer += h;
+            if self.turbo_timer > self.params.max_turbo_time {
+                self.turbo_timer = 0.0;
+                self.start = Start::Racing;
+            }
+        }
+        self.pin_to_grid();
         self.integrate(h, world);
+        if let Some(at) = self.hold {
+            self.pos.x = at.x;
+            self.pos.z = at.z;
+        }
         self.post_step(h);
     }
 
@@ -501,6 +598,23 @@ impl Vehicle {
         if self.lean < -0.2 {
             let lim = self.lean + 1.2;
             self.steer = self.steer.clamp(-lim, lim);
+        }
+        if p.retail {
+            // Retail's ATV runs the Dyne's smoothing and then its own
+            // copy of it (0x6e0b0), so the pedals and steering move twice
+            // per tick.
+            approach(&mut self.throttle, self.throttle_target, p.acc_rate, p.acc_return_rate, h);
+            approach(&mut self.brake, self.brake_target, p.brake_rate, p.brake_return_rate, h);
+            approach(
+                &mut self.steer,
+                input.steer.clamp(-1.0, 1.0),
+                steer_rate,
+                by_grip(p.steer_return_rate, grip),
+                h,
+            );
+            self.throttle = self.throttle.clamp(0.0, 1.0);
+            self.brake = self.brake.clamp(0.0, 1.0);
+            self.steer = self.steer.clamp(-1.0, 1.0);
         }
     }
 
@@ -689,7 +803,17 @@ impl Vehicle {
         let acc = self.local_acc.z;
         let speed = self.ground.speed;
         if c(2) && c(3) && self.ground.vel.z > 0.0 {
-            let lift = p.wheelie_torque * self.lean * acc;
+            let lift = if p.retail {
+                // Scaled by speed, then by the 0 mph value again (0x6cfa0).
+                let mph = self.vel.length() * MPS_TO_MPH;
+                ((p.wheelie_torque_100mph - p.wheelie_torque_0mph) * mph * 0.01
+                    + p.wheelie_torque_0mph)
+                    * acc
+                    * self.lean
+                    * p.wheelie_torque_0mph
+            } else {
+                p.wheelie_torque * self.lean * acc
+            };
             let t = if !c(0) && !c(1) {
                 (self.lean + 1.0) * p.wheelie_return_torque + lift - pitch_rate * p.wheelie_damping
             } else if self.lean <= 0.0 && acc >= 0.0 {
@@ -763,17 +887,34 @@ impl Vehicle {
         } else {
             0.0
         };
-        let mut spin_target = ((self.steer.abs() + low_speed) * slide_scale)
-            .clamp(0.0, self.throttle_target.max(0.0));
-        if self.lean < 0.0 {
-            spin_target = -(spin_target * self.lean);
-        }
-        if spin_target > self.wheelspin {
-            self.wheelspin += (low_speed + self.throttle_target) * h;
+        if p.retail && self.start == Start::Grid {
+            // Revving on the grid spins the wheels in the turbo window.
+            let target = if self.turbo_window() { 1.0 } else { 0.0 };
+            if target > self.wheelspin {
+                self.wheelspin += 2.0 * h;
+            } else {
+                self.wheelspin -= 2.0 * h;
+            }
         } else {
-            self.wheelspin -= 2.0 * h;
+            let mut spin_target = if !p.retail {
+                ((self.steer.abs() + low_speed) * slide_scale)
+                    .clamp(0.0, self.throttle_target.max(0.0))
+            } else if self.throttle_target > 0.75 {
+                // Retail: only near full throttle (0x6e6e0).
+                (self.steer.abs() * slide_scale + low_speed).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            if self.lean < 0.0 {
+                spin_target = -(spin_target * self.lean);
+            }
+            if spin_target > self.wheelspin {
+                self.wheelspin += (low_speed + self.throttle_target) * h;
+            } else {
+                self.wheelspin -= 2.0 * h;
+            }
+            self.wheelspin = self.wheelspin.clamp(0.0, self.throttle);
         }
-        self.wheelspin = self.wheelspin.clamp(0.0, self.throttle);
         let slip = self.slide.max(self.wheelspin);
         let front_lock = self.brake > p.front_wheel_lock_point;
 
@@ -802,7 +943,10 @@ impl Vehicle {
                 * p.torque_curve.sample(self.revs)
                 * self.throttle
                 * self.clutch;
-            if self.lean < 0.0 {
+            if self.start == Start::Turbo {
+                drive *= p.drive_force_turbo_scale;
+            }
+            if self.lean < 0.0 && !(p.retail && self.start == Start::Grid) {
                 drive *= 1.0 - 2.0 * low_speed * self.lean;
             }
             let engine_brake = (self.revs / p.max_revs - self.throttle)
@@ -860,6 +1004,10 @@ impl Vehicle {
         if lx > 0.0 {
             side = -side;
         }
+        if p.retail {
+            // Less side grip the steeper the ground.
+            side *= g.normal.y * g.normal.y;
+        }
 
         // Yaw damping, relaxed while sliding.
         let low = if speed < 2.234_72 {
@@ -872,7 +1020,7 @@ impl Vehicle {
             * by_grip(p.ang_damping_max, grip)
             * damp_in;
         if lz < 0.0 {
-            yaw_damp *= 0.4;
+            yaw_damp *= if p.retail { 0.8 } else { 0.4 };
         }
 
         // Air and surface drag.
@@ -911,7 +1059,8 @@ impl Vehicle {
             self.force += f;
             self.torque += at.cross(f);
         }
-        let front_contact = self.struts.iter().take(2).any(|s| s.contact);
+        let front_contact = self.struts.iter().take(2).any(|s| s.contact)
+            && (!p.retail || lz > 0.0);
         let pitch = (brake + drive) * -0.25
             + if front_contact {
                 p.const_mass_torque
@@ -1000,6 +1149,15 @@ impl Vehicle {
                         + p.preload_grav_scale_0mph;
                     self.gravity_scale = 1.0 - (1.0 - g) * self.preload;
                     self.gravity_timer = 0.5;
+                    if p.retail {
+                        // Retail's hop also spins the quad: lean and the
+                        // pedals pitch it, steering turns it (0x6db90).
+                        let pitch = (self.lean - self.throttle + self.brake)
+                            * p.preload_vert_spin
+                            * self.preload;
+                        let yaw = self.steer * p.preload_horiz_spin * self.preload;
+                        self.torque += self.rot.x_axis * pitch + self.rot.y_axis * yaw;
+                    }
                 }
                 self.preload = 0.0;
                 if !held {
@@ -1007,6 +1165,42 @@ impl Vehicle {
                 }
             }
         }
+    }
+
+    /// Retail: with only one or two wheels down, a roll torque that grows
+    /// with speed brings the quad back level with the ground. It is the
+    /// resting state of the original's bicycle-trick code (0x6d1b0), applied
+    /// at the front right wheel.
+    fn stabiliser(&mut self) {
+        if !matches!(self.ground.contacts, 1 | 2) {
+            return;
+        }
+        let p = &self.params;
+        let (right, fwd) = (self.rot.x_axis, self.rot.z_axis);
+        let roll_rate = self.ang_vel.dot(fwd);
+        let t = self.vel.length()
+            * p.bicycle_torque
+            * ((self.ground.side.y - right.y) - p.bicycle_damping * roll_rate);
+        let t = fwd * t;
+        let at = self
+            .params
+            .wheels
+            .get(1)
+            .map_or(Vec3::ZERO, |w| self.rot * Vec3::from(w.game_offset));
+        self.torque += t;
+        self.force += at.cross(t);
+    }
+
+    /// On the grid only the springs move the quad: no sliding, no turning
+    /// (the Dyne's hold at 0xd9190; the position is put back after the step).
+    fn pin_to_grid(&mut self) {
+        if self.hold.is_none() {
+            return;
+        }
+        self.force = Vec3::new(0.0, self.force.y, 0.0);
+        self.momentum = Vec3::new(0.0, self.momentum.y, 0.0);
+        self.torque.y = 0.0;
+        self.ang_momentum.y = 0.0;
     }
 
     /// Pitch damping that builds up in the air and fades after landing.
@@ -1134,7 +1328,9 @@ impl Vehicle {
     fn post_step(&mut self, h: f32) {
         if self.ground.contacts == 0 {
             self.air_time += h;
-            self.airborne = self.air_time > AIRBORNE_DELAY;
+            // Retail stays in its turbo state through a hop (0x6d490).
+            self.airborne = self.air_time > AIRBORNE_DELAY
+                && !(self.params.retail && self.start == Start::Turbo);
         } else {
             self.air_time = 0.0;
             self.airborne = false;
@@ -1165,7 +1361,7 @@ impl Vehicle {
         let wheel_w = ratio(self.gear_target) * p.gear_multiplier * self.ground_fwd;
         let wheel_w = (max_w - wheel_w) * self.wheelspin + wheel_w;
         let free_w = self.throttle * max_w;
-        let w = if self.ground.contacts == 0 {
+        let w = if self.ground.contacts == 0 || (p.retail && self.start == Start::Grid) {
             free_w
         } else if self.gear_target == 1 {
             let s = (1.0 - self.clutch).max(0.0).sqrt();
@@ -1173,8 +1369,23 @@ impl Vehicle {
         } else {
             wheel_w
         };
-        let target = (w * RAD_TO_RPM).max(p.min_revs);
-        self.revs += (target - self.revs) * (p.rev_rate * h).min(1.0);
+        if p.retail {
+            // Retail limits how fast the target moves, in RPM per second
+            // (slower on the grid), then eases the revs toward it (0x6e2e0).
+            let rate = if self.start == Start::Grid {
+                p.rev_rate_revving
+            } else {
+                p.rev_rate
+            };
+            let lo = self.revs - rate * h;
+            let hi = (self.revs + rate * h).min(p.max_revs);
+            let target = w * RAD_TO_RPM;
+            let target = if target < lo { lo } else { target.min(hi) }.max(p.min_revs);
+            self.revs += (target - self.revs) * (RETAIL_REV_LERP * h).min(1.0);
+        } else {
+            let target = (w * RAD_TO_RPM).max(p.min_revs);
+            self.revs += (target - self.revs) * (p.rev_rate * h).min(1.0);
+        }
 
         // Automatic gearbox: picks the gear with the most usable torque.
         let mut shift = None;
