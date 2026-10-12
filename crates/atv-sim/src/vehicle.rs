@@ -244,6 +244,9 @@ pub struct Vehicle {
     turbo_timer: f32,
     /// Grid spot the quad is pinned to (game frame).
     hold: Option<Vec3>,
+    /// Stopped with no pedal pressed: held like on the grid (see
+    /// [`Vehicle::park`]).
+    parked: bool,
 }
 
 /// A body touching something, game frame.
@@ -553,6 +556,7 @@ impl Vehicle {
             start: Start::Racing,
             turbo_timer: 0.0,
             hold: None,
+            parked: false,
             params,
         };
         v.reset(position, rotation);
@@ -639,6 +643,7 @@ impl Vehicle {
         self.airborne = false;
         self.air_time = 0.0;
         self.in_water = false;
+        self.parked = false;
         // `pending` carries on, so the quad keeps ticking with the others.
         if self.hold.is_some() {
             self.hold = Some(self.pos);
@@ -818,6 +823,7 @@ impl Vehicle {
             }
         }
         self.pin_to_grid();
+        self.park(input);
         self.integrate(h, world);
         if let Some(at) = self.hold {
             self.pos.x = at.x;
@@ -1513,6 +1519,40 @@ impl Vehicle {
     /// (the Dyne's hold at 0xd9190; the position is put back after the step).
     fn pin_to_grid(&mut self) {
         if self.hold.is_none() {
+            return;
+        }
+        self.force = Vec3::new(0.0, self.force.y, 0.0);
+        self.momentum = Vec3::new(0.0, self.momentum.y, 0.0);
+        self.torque.y = 0.0;
+        self.ang_momentum.y = 0.0;
+    }
+
+    /// A quad stopped on all four wheels with neither pedal pressed stays
+    /// where it is. The original's auto brake (0x1c150) only comes on
+    /// below 0.1 mph and its brake force fades to nothing at a standstill,
+    /// so on a slope (Forest 1's grid is about 8 degrees) the quad rolled
+    /// back at the 1 m/s where the reversing brake catches it, and slid
+    /// sideways the same way. Like the grid hold, this cancels the push
+    /// along the ground; the springs still work, and a pedal, a jump, a
+    /// knock from another quad or a steep slope lets go.
+    fn park(&mut self, input: &Input) {
+        const PARK_SPEED: f32 = 0.5 * MPH_TO_MPS;
+        let idle = input.throttle < 0.2 && input.brake < 0.2 && !input.jump;
+        let flat_enough = self.ground.normal.y > 0.85;
+        let all_down = self.struts.iter().all(|s| s.contact);
+        let slow = self.vel.with_y(0.0).length() < PARK_SPEED;
+        self.parked = idle
+            && all_down
+            && flat_enough
+            && self.hold.is_none()
+            && !self.in_water
+            && (self.parked || slow);
+        if !self.parked {
+            return;
+        }
+        // A knock speeds it up past the hold: let it roll.
+        if self.vel.with_y(0.0).length() > 2.0 * PARK_SPEED {
+            self.parked = false;
             return;
         }
         self.force = Vec3::new(0.0, self.force.y, 0.0);
