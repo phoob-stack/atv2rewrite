@@ -301,7 +301,8 @@ fn start(mut commands: Commands, game: Res<Game>, sel: Res<Selection>, args: Res
     commands.remove_resource::<Intro>();
     // A retail lesson's own page stands in for it.
     let lesson = sel.mode == crate::Mode::Training && sel.lesson > 0;
-    if args.no_intro || args.camera.is_some() || args.orbit.is_some() || lesson {
+    // Online, the countdown goes when every game is in.
+    if args.no_intro || args.camera.is_some() || args.orbit.is_some() || lesson || sel.net.is_some() {
         return;
     }
     let xml = game.0.read(&format!("/Levels/{0}/World/{0}.xml", sel.track)).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();

@@ -181,7 +181,8 @@ impl eframe::App for Launcher {
             Scan::Done(c) => Some(c.clone()),
             _ => None,
         };
-        let ready = catalog.is_some() && self.running.is_none() && self.build.is_none();
+        // Joining needs somewhere to join.
+        let ready = catalog.is_some() && self.running.is_none() && self.build.is_none() && (self.cfg.start != Start::Join || !self.cfg.address.trim().is_empty());
 
         egui::Panel::top("header").frame(egui::Frame::new().inner_margin(egui::Margin { left: 20, right: 20, top: 16, bottom: 10 }).fill(ui.visuals().extreme_bg_color)).show(ui, |ui| {
             ui.label(egui::RichText::new("ATV Quad Power Racing 2").size(28.0).strong().color(ACCENT));
@@ -213,6 +214,8 @@ impl eframe::App for Launcher {
                 "Running…".to_string()
             } else if self.cfg.start == Start::Menu {
                 "Play".to_string()
+            } else if matches!(self.cfg.start, Start::Host | Start::Join) {
+                self.cfg.start.label().to_string()
             } else {
                 format!("Play {}", self.cfg.start.label())
             };
@@ -371,7 +374,12 @@ impl Launcher {
                 ui.end_row();
             }
             match start {
-                Start::SingleRace | Start::TimeTrial => {
+                Start::Join => {
+                    ui.label("Host's address");
+                    ui.add(egui::TextEdit::singleline(&mut self.cfg.address).hint_text("e.g. 81.2.69.160").desired_width(220.0));
+                    ui.end_row();
+                }
+                Start::SingleRace | Start::TimeTrial | Start::Host => {
                     ui.label("Laps");
                     ui.add(egui::Slider::new(&mut self.cfg.laps, 1..=9));
                     ui.end_row();
