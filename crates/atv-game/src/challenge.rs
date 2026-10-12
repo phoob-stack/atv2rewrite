@@ -538,7 +538,7 @@ mod tests {
 
     fn world(locators: &[(&str, [f32; 3])]) -> World {
         let box_ = |(name, pos): &(&str, [f32; 3])| atv_formats::rom::Locator { name: name.to_string(), pos: *pos, scale: [10.0, 6.0, 2.0], rotation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] };
-        World { fog_color: 0, materials: vec![], locators: locators.iter().map(box_).collect(), lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] }
+        World { fog_color: 0, materials: vec![], material_wraps: vec![], locators: locators.iter().map(box_).collect(), lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] }
     }
 
     #[test]

@@ -26,42 +26,117 @@ impl Pcm {
 
 /// Reads a RIFF WAV holding 16-bit PCM or Xbox ADPCM.
 pub fn decode(bytes: &[u8]) -> Result<Pcm> {
-    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return Err(Error::Magic { what: "WAV", expected: "RIFF....WAVE" });
-    }
-    let mut fmt = None;
-    let mut data = None;
-    let mut at = 12;
-    while at + 8 <= bytes.len() {
-        let id = &bytes[at..at + 4];
-        let len = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
-        let body = &bytes[at + 8..(at + 8 + len).min(bytes.len())];
-        match id {
-            b"fmt " => fmt = Some(body),
-            b"data" => data = Some(body),
-            _ => {}
+    let h = Header::parse(bytes)?;
+    let data = &bytes[h.data.clone()];
+    let samples = if h.adpcm {
+        xbox_adpcm(data, h.channels as usize, h.block_align)?
+    } else {
+        data.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)).collect()
+    };
+    Ok(Pcm { channels: h.channels, rate: h.rate, samples })
+}
+
+/// A WAV's format and where its samples are.
+struct Header {
+    channels: u16,
+    rate: u32,
+    block_align: usize,
+    adpcm: bool,
+    data: std::ops::Range<usize>,
+}
+
+impl Header {
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+            return Err(Error::Magic { what: "WAV", expected: "RIFF....WAVE" });
         }
-        at += 8 + len + (len & 1);
+        let mut fmt = None;
+        let mut data = None;
+        let mut at = 12;
+        while at + 8 <= bytes.len() {
+            let id = &bytes[at..at + 4];
+            let len = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().unwrap()) as usize;
+            let body = at + 8..(at + 8 + len).min(bytes.len());
+            match id {
+                b"fmt " => fmt = Some(&bytes[body]),
+                b"data" => data = Some(body),
+                _ => {}
+            }
+            at += 8 + len + (len & 1);
+        }
+        let (Some(fmt), Some(data)) = (fmt, data) else {
+            return Err(Error::Format("WAV without fmt or data chunk".into()));
+        };
+        let mut r = Reader::at(fmt, 0, "WAV fmt");
+        let tag = r.u16()?;
+        let channels = r.u16()?;
+        let rate = r.u32()?;
+        let _byte_rate = r.u32()?;
+        let block_align = r.u16()? as usize;
+        let bits = r.u16()?;
+        if channels == 0 {
+            return Err(Error::Format("WAV with no channels".into()));
+        }
+        let adpcm = match (tag, bits) {
+            (1, 16) => false,
+            (0x69, 4) => true,
+            _ => return Err(Error::Format(format!("unsupported WAV format {tag:#x}, {bits} bits"))),
+        };
+        if adpcm && block_align != 36 * channels as usize {
+            return Err(Error::Format(format!("Xbox ADPCM block of {block_align} bytes for {channels} channels")));
+        }
+        Ok(Header { channels, rate, block_align: if adpcm { block_align } else { 2 * channels as usize }, adpcm, data })
     }
-    let (Some(fmt), Some(data)) = (fmt, data) else {
-        return Err(Error::Format("WAV without fmt or data chunk".into()));
-    };
-    let mut r = Reader::at(fmt, 0, "WAV fmt");
-    let tag = r.u16()?;
-    let channels = r.u16()?;
-    let rate = r.u32()?;
-    let _byte_rate = r.u32()?;
-    let block_align = r.u16()? as usize;
-    let bits = r.u16()?;
-    if channels == 0 {
-        return Err(Error::Format("WAV with no channels".into()));
+}
+
+/// A WAV decoded as it plays, a block at a time: the retail disc's songs
+/// are minutes of 48 kHz stereo, tens of megabytes once decoded.
+pub struct Stream {
+    pub channels: u16,
+    pub rate: u32,
+    bytes: Vec<u8>,
+    adpcm: bool,
+    block_align: usize,
+    data: std::ops::Range<usize>,
+    /// Byte offset of the next block to decode.
+    next: usize,
+    frame: Vec<i16>,
+    at: usize,
+}
+
+impl Stream {
+    pub fn open(bytes: Vec<u8>) -> Result<Self> {
+        let h = Header::parse(&bytes)?;
+        Ok(Stream { channels: h.channels, rate: h.rate, adpcm: h.adpcm, block_align: h.block_align, next: h.data.start, data: h.data, bytes, frame: Vec::new(), at: 0 })
     }
-    let samples = match (tag, bits) {
-        (1, 16) => data.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)).collect(),
-        (0x69, 4) => xbox_adpcm(data, channels as usize, block_align)?,
-        _ => return Err(Error::Format(format!("unsupported WAV format {tag:#x}, {bits} bits"))),
-    };
-    Ok(Pcm { channels, rate, samples })
+
+    /// Samples (all channels) not yet played.
+    pub fn remaining(&self) -> usize {
+        let blocks = (self.data.end.saturating_sub(self.next)) / self.block_align;
+        let per_block = if self.adpcm { 65 } else { 1 } * self.channels as usize;
+        blocks * per_block + self.frame.len() - self.at
+    }
+}
+
+impl Iterator for Stream {
+    type Item = i16;
+
+    fn next(&mut self) -> Option<i16> {
+        if self.at == self.frame.len() {
+            let block = self.bytes.get(self.next..self.next + self.block_align).filter(|_| self.next + self.block_align <= self.data.end)?;
+            self.frame.clear();
+            if self.adpcm {
+                self.frame.resize(65 * self.channels as usize, 0);
+                adpcm_block(block, self.channels as usize, &mut self.frame);
+            } else {
+                self.frame.extend(block.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)));
+            }
+            self.next += self.block_align;
+            self.at = 0;
+        }
+        self.at += 1;
+        Some(self.frame[self.at - 1])
+    }
 }
 
 const STEPS: [i32; 89] = [
@@ -95,27 +170,32 @@ pub(crate) fn xbox_adpcm(data: &[u8], channels: usize, block_align: usize) -> Re
     let mut out = Vec::with_capacity(data.len() / block_align * per_block * channels);
     let mut frame = vec![0i16; per_block * channels];
     for block in data.chunks_exact(block_align) {
-        let mut state: Vec<Ima> = (0..channels)
-            .map(|c| {
-                let h = &block[c * 4..c * 4 + 4];
-                Ima { sample: i16::from_le_bytes([h[0], h[1]]) as i32, index: (h[2] as i32).clamp(0, 88) }
-            })
-            .collect();
-        for (c, s) in state.iter().enumerate() {
-            frame[c] = s.sample as i16;
-        }
-        let body = &block[channels * 4..];
-        for (run, bytes) in body.as_chunks::<4>().0.iter().enumerate() {
-            let (round, c) = (run / channels, run % channels);
-            for (k, &b) in bytes.iter().enumerate() {
-                let i = 1 + round * 8 + k * 2;
-                frame[i * channels + c] = state[c].next(b & 0x0F);
-                frame[(i + 1) * channels + c] = state[c].next(b >> 4);
-            }
-        }
+        adpcm_block(block, channels, &mut frame);
         out.extend_from_slice(&frame);
     }
     Ok(out)
+}
+
+/// One block's 65 samples per channel, interleaved, into `frame`.
+fn adpcm_block(block: &[u8], channels: usize, frame: &mut [i16]) {
+    let mut state: Vec<Ima> = (0..channels)
+        .map(|c| {
+            let h = &block[c * 4..c * 4 + 4];
+            Ima { sample: i16::from_le_bytes([h[0], h[1]]) as i32, index: (h[2] as i32).clamp(0, 88) }
+        })
+        .collect();
+    for (c, s) in state.iter().enumerate() {
+        frame[c] = s.sample as i16;
+    }
+    let body = &block[channels * 4..];
+    for (run, bytes) in body.as_chunks::<4>().0.iter().enumerate() {
+        let (round, c) = (run / channels, run % channels);
+        for (k, &b) in bytes.iter().enumerate() {
+            let i = 1 + round * 8 + k * 2;
+            frame[i * channels + c] = state[c].next(b & 0x0F);
+            frame[(i + 1) * channels + c] = state[c].next(b >> 4);
+        }
+    }
 }
 
 /// Wraps PCM in a minimal RIFF WAV (tests and tools).
@@ -163,5 +243,14 @@ mod tests {
         assert_eq!(out[0], 1000);
         // Code 7 at step 7: diff = (2*7 + 1) * 7 / 8 = 13.
         assert_eq!(out[1], 1013);
+    }
+
+    #[test]
+    fn stream_matches_decode() {
+        let pcm = Pcm { channels: 2, rate: 48000, samples: (0..200).map(|i| i * 7 - 300).collect() };
+        let bytes = encode_pcm16(&pcm);
+        let stream = Stream::open(bytes.clone()).unwrap();
+        assert_eq!((stream.channels, stream.rate, stream.remaining()), (2, 48000, 200));
+        assert_eq!(stream.collect::<Vec<_>>(), decode(&bytes).unwrap().samples);
     }
 }

@@ -129,6 +129,7 @@ fn pick(roster: &Roster, sel: &Selection, seed: &mut u32) -> Option<(Selection, 
     demo.others.clear();
     demo.field.clear();
     demo.grid = 1;
+    demo.lesson = 0;
     let views = if rand(3) != 0 {
         1
     } else if rand(2) != 0 {
@@ -233,6 +234,8 @@ mod tests {
             challenge: 1,
             players: 2,
             others: vec![("Male2".into(), "Nitro".into())],
+            lesson: 3,
+            lessons_passed: 2,
         }
     }
 
@@ -242,7 +245,7 @@ mod tests {
         let mut seed = 7;
         let (demo, _) = pick(&roster(), &sel, &mut seed).unwrap();
         assert_eq!((demo.track.as_str(), demo.rider.as_str(), demo.quad.as_str()), ("Forest2", "Male1", "Bandit"));
-        assert_eq!((demo.mode, demo.players, demo.others.len()), (Mode::SingleRace, 1, 0));
+        assert_eq!((demo.mode, demo.players, demo.others.len(), demo.lesson), (Mode::SingleRace, 1, 0, 0));
         let mut none = roster();
         none.demo_tracks.clear();
         assert!(pick(&none, &sel, &mut seed).is_none());

@@ -1,4 +1,5 @@
 //! The Options menu's settings: music and sound effects volume, the race
+//! music (retail's Playlist choice, see [`crate::audio::Playlist`]), the race
 //! camera, each controller's layout and vibration (see
 //! [`crate::controller`]), and the player profile last loaded (see
 //! [`crate::career::Profile`]). They are remembered between runs in the player's
@@ -13,6 +14,7 @@ use bevy::prelude::*;
 
 use atv_formats::{setup, GameSource};
 
+use crate::audio::Playlist;
 use crate::controller::{self, PadSetup, PadStyle, PORTS};
 use crate::xinput::PadReader;
 
@@ -70,6 +72,8 @@ pub struct Settings {
     /// Volume bar levels, 0 to [`VOLUME_STEPS`].
     pub music: u8,
     pub effects: u8,
+    /// What races play on the retail disc (`playlist` in the file).
+    pub playlist: Playlist,
     pub camera: CameraView,
     /// Each controller port's layout and vibration.
     pub pads: [PadSetup; PORTS],
@@ -86,7 +90,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { music: VOLUME_STEPS, effects: VOLUME_STEPS, camera: CameraView::default(), pads: controller::default_setups(), profile: None, pad_pictures: None, pad_reader: PadReader::Auto }
+        Self { music: VOLUME_STEPS, effects: VOLUME_STEPS, playlist: Playlist::default(), camera: CameraView::default(), pads: controller::default_setups(), profile: None, pad_pictures: None, pad_reader: PadReader::Auto }
     }
 }
 
@@ -114,6 +118,7 @@ impl Settings {
             match k.trim() {
                 "music" => s.music = v.parse::<u8>().map_or(s.music, |n| n.min(VOLUME_STEPS)),
                 "effects" => s.effects = v.parse::<u8>().map_or(s.effects, |n| n.min(VOLUME_STEPS)),
+                "playlist" => s.playlist = Playlist::parse(v).unwrap_or(s.playlist),
                 "camera" => s.camera = CameraView::ALL.into_iter().find(|c| c.key() == v).unwrap_or(s.camera),
                 // Before each controller had its own.
                 "vibration" => s.pads.iter_mut().for_each(|p| p.vibration = v == "true"),
@@ -135,6 +140,9 @@ impl Settings {
         let mut s = format!("music = {}\neffects = {}\ncamera = {}\n", self.music, self.effects, self.camera.key());
         for (n, p) in self.pads.iter().enumerate() {
             s += &p.to_text(n);
+        }
+        if self.playlist != Playlist::default() {
+            s += &format!("playlist = {}\n", self.playlist.key());
         }
         if self.pad_reader != PadReader::Auto {
             s += &format!("pad_reader = {}\n", self.pad_reader.key());
@@ -220,7 +228,7 @@ mod tests {
         s.pads[2].layout = 2;
         s.pads[3].rebind(3, crate::controller::Action::Hop, 2, Some(crate::controller::Input::Key(KeyCode::KeyJ)));
         assert_eq!(Settings::parse(&s.to_text()), s);
-        let s = Settings { profile: Some(9), pad_pictures: Some(PadStyle::Nintendo), pad_reader: PadReader::Native, ..s };
+        let s = Settings { profile: Some(9), pad_pictures: Some(PadStyle::Nintendo), pad_reader: PadReader::Native, playlist: Playlist::Environment, ..s };
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse("music = 99\njunk\ncamera = sideways\npad9_layout = 2"), Settings { music: VOLUME_STEPS, ..default() });
     }

@@ -370,7 +370,7 @@ mod tests {
     fn arcade_seconds_from_names() {
         let locator = |name: &str| atv_formats::rom::Locator { name: name.to_string(), pos: [0.0; 3], scale: [1.0; 3], rotation: [0.0; 9] };
         let names = ["Startpoint 1", "Checkpoint 2", "Checkpoint 3 Arcade 30", "checkpoint 4 Arcade 15", "Checkpoint 5 arcade 30", "Checkpoint 6 Acade 30", "Checkpoint 7 Arcade 20", "Checkpoint 7 Arcade 20", "Checkpoint 8 Arcade 0"];
-        let world = atv_formats::row::World { fog_color: 0, materials: vec![], locators: names.map(locator).to_vec(), lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] };
+        let world = atv_formats::row::World { fog_color: 0, materials: vec![], material_wraps: vec![], locators: names.map(locator).to_vec(), lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] };
         // The start line and checkpoints 2..8 are indices 0..7; a repeated
         // one adds twice.
         assert_eq!(arcade_gates(&world), vec![(2, 30.0), (3, 15.0), (4, 30.0), (5, 30.0), (6, 40.0)]);
@@ -380,7 +380,7 @@ mod tests {
     fn lap_gates_from_the_line() {
         let locator = |name: &str, x: f32, z: f32| atv_formats::rom::Locator { name: name.to_string(), pos: [x, 0.0, z], scale: [20.0, 10.0, 1.0], rotation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] };
         let locators = vec![locator("Checkpoint 3", 0.0, 200.0), locator("Startpoint 1", 0.0, 0.0), locator("Checkpoint 2", 0.0, 100.0), locator("checkpoint 2 ", 80.0, 100.0), locator("Respot", 0.0, 50.0)];
-        let world = atv_formats::row::World { fog_color: 0, materials: vec![], locators, lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] };
+        let world = atv_formats::row::World { fog_color: 0, materials: vec![], material_wraps: vec![], locators, lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] };
         let gates = lap_gates(&world);
         assert_eq!(gates.len(), 3);
         // The line first; game z 0.5 is sim -0.5.

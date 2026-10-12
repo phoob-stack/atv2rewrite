@@ -54,6 +54,10 @@ enum Look {
     Water,
     /// Translucent foam, wakes and spray.
     Foam,
+    /// Alpha blended by texture alpha × vertex alpha (mesh flag 0x4): the
+    /// beach edges where sand meets water, Forest's wall tops, Glacier's
+    /// thin ice water.
+    Blend,
     /// Additive light (Stadium 1's lamp beams): adds texture × vertex
     /// colour, scaled by their alphas, over what is behind.
     Glow,
@@ -86,6 +90,8 @@ impl Look {
             // 0x8 adds (ONE, ONE), 0x10 adds by alpha (SRC_ALPHA, ONE),
             // both without depth writes (0x1060b0 / 0x1060f0).
             Look::Glow
+        } else if flags & 0x4 != 0 {
+            Look::Blend
         } else if flags & 0x2 != 0 {
             Look::Cutout
         } else {
@@ -96,7 +102,7 @@ impl Look {
     /// Whether vertex alpha is coverage for this look (otherwise it drives
     /// effects and is ignored).
     fn uses_vertex_alpha(self) -> bool {
-        matches!(self, Look::Water | Look::Foam | Look::Glow | Look::Mist | Look::Shadow | Look::Overlay | Look::Dirt)
+        matches!(self, Look::Water | Look::Foam | Look::Blend | Look::Glow | Look::Mist | Look::Shadow | Look::Overlay | Look::Dirt)
     }
 
     /// Vertex colour for this look. Lit surfaces keep the stored value:
@@ -157,11 +163,13 @@ pub struct Loader<'a> {
     /// Lower-case texture stem -> archive path, for name-based lookup.
     texture_paths: HashMap<String, String>,
     textures: HashMap<String, Option<(Handle<Image>, bool)>>,
-    material_cache: HashMap<(String, Look), Handle<StandardMaterial>>,
+    material_cache: HashMap<(String, Look, [bool; 2]), Handle<StandardMaterial>>,
     /// Lit materials by texture, look and whether they shine.
     lit_cache: HashMap<(String, Look, bool), Handle<LitMaterial>>,
     models: HashMap<String, Option<Model>>,
     model_paths: HashMap<String, Vec<String>>,
+    /// Knock-over props' collision shapes, by model.
+    shapes: HashMap<String, Option<std::sync::Arc<crate::knock::Shape>>>,
     /// The race's ground: picks the tyres and, when set, gives vehicles
     /// and riders a dirt layer that builds up (see [`Mud`]).
     pub dirt: Option<Ground>,
@@ -445,6 +453,7 @@ impl<'a> Loader<'a> {
             lit_cache: HashMap::new(),
             models: HashMap::new(),
             model_paths,
+            shapes: HashMap::new(),
             dirt: None,
             challenge: None,
             last_quad: None,
@@ -455,9 +464,10 @@ impl<'a> Loader<'a> {
     }
 
     /// Loads a texture by name; returns it and whether it has alpha. Shadow
-    /// decals are converted to black-with-alpha.
-    fn texture(&mut self, name: &str, shadow: bool) -> Option<(Handle<Image>, bool)> {
-        let key = format!("{}{}", name.to_ascii_lowercase(), if shadow { "#shadow" } else { "" });
+    /// decals are converted to black-with-alpha. `wrap`: whether it repeats
+    /// across U and V, as its material says; it is clamped otherwise.
+    fn texture(&mut self, name: &str, shadow: bool, wrap: [bool; 2]) -> Option<(Handle<Image>, bool)> {
+        let key = format!("{}{}{:?}", name.to_ascii_lowercase(), if shadow { "#shadow" } else { "" }, wrap);
         if let Some(t) = self.textures.get(&key) {
             return t.clone();
         }
@@ -505,9 +515,10 @@ impl<'a> Loader<'a> {
                     RenderAssetUsages::RENDER_WORLD,
                 );
                 img.texture_descriptor.mip_level_count = mips.max(1);
+                let mode = |w: bool| if w { ImageAddressMode::Repeat } else { ImageAddressMode::ClampToEdge };
                 img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-                    address_mode_u: ImageAddressMode::Repeat,
-                    address_mode_v: ImageAddressMode::Repeat,
+                    address_mode_u: mode(wrap[0]),
+                    address_mode_v: mode(wrap[1]),
                     anisotropy_clamp: 8,
                     ..ImageSamplerDescriptor::linear()
                 });
@@ -522,15 +533,15 @@ impl<'a> Loader<'a> {
         loaded
     }
 
-    fn material(&mut self, name: Option<&str>, look: Look) -> Handle<StandardMaterial> {
-        let key = (name.unwrap_or("").to_ascii_lowercase(), look);
+    fn material(&mut self, name: Option<&str>, look: Look, wrap: [bool; 2]) -> Handle<StandardMaterial> {
+        let key = (name.unwrap_or("").to_ascii_lowercase(), look, wrap);
         if let Some(m) = self.material_cache.get(&key) {
             return m.clone();
         }
-        let tex = name.and_then(|n| self.texture(n, look == Look::Shadow));
+        let tex = name.and_then(|n| self.texture(n, look == Look::Shadow, wrap));
         let has_alpha = tex.as_ref().is_some_and(|t| t.1);
         let alpha_mode = match look {
-            Look::Water | Look::Foam | Look::Mist | Look::Shadow | Look::Overlay => AlphaMode::Blend,
+            Look::Water | Look::Foam | Look::Blend | Look::Mist | Look::Shadow | Look::Overlay => AlphaMode::Blend,
             Look::Cutout => AlphaMode::Mask(0.5),
             Look::Glow => AlphaMode::Add,
             Look::Baked if has_alpha => AlphaMode::Mask(0.5),
@@ -546,6 +557,7 @@ impl<'a> Loader<'a> {
             alpha_mode,
             // Layers drawn on top of a surface win the depth test.
             depth_bias: match look {
+                Look::Blend => 1.0,
                 Look::Overlay => 2.0,
                 Look::Foam | Look::Mist => 4.0,
                 Look::Shadow => 8.0,
@@ -565,7 +577,7 @@ impl<'a> Loader<'a> {
         let m = match self.lit_cache.get(&key) {
             Some(m) => m.clone(),
             None => {
-                let tex = name.and_then(|n| self.texture(n, false));
+                let tex = name.and_then(|n| self.texture(n, false, [true; 2]));
                 // Rider textures and the quads' gloss-masked ones are opaque.
                 let cutout = look == Look::Lit && tex.as_ref().is_some_and(|t| t.1) && !name.is_some_and(alpha_is_gloss);
                 let flags = if shiny { lit::GLOSS } else { 0 } | if cutout { lit::CUTOUT } else { 0 };
@@ -605,14 +617,14 @@ impl<'a> Loader<'a> {
         let ground = self.dirt.unwrap_or_default();
         let lower = name.to_ascii_lowercase();
         let tex = if lower.starts_with("gen_quad") {
-            self.texture(&format!("GEN_quad{}_01", ground.dirt()), false).map(|t| t.0)
+            self.texture(&format!("GEN_quad{}_01", ground.dirt()), false, [true; 2]).map(|t| t.0)
         } else if lower.starts_with("ch_quad") {
             // The rider's snow has no alpha: borrow the mud's coverage.
             self.composite(&format!("CH_quad{}_01", ground.dirt()), "CH_quadmud_01")
         } else if lower.starts_with("uni_tyreoverlay") {
             self.composite(&format!("UNI_TyreOverlay_{}Palette", ground.tyre_palette()), "UNI_TyreOverlay")
         } else {
-            self.texture(name, false).map(|t| t.0)
+            self.texture(name, false, [true; 2]).map(|t| t.0)
         };
         let mut dirt = LitMaterial::new(tex, lit::DIRT, AlphaMode::Blend);
         dirt.uniform.opacity = 0.0;
@@ -678,19 +690,41 @@ impl<'a> Loader<'a> {
         if let Some(m) = self.models.get(&key) {
             return m.clone();
         }
-        let paths = self.model_paths.get(&key).cloned().unwrap_or_default();
-        let pref = prefer_dir.to_ascii_lowercase();
-        let path = paths
-            .iter()
-            .find(|p| p.to_ascii_lowercase().contains(&pref))
-            .or_else(|| paths.iter().find(|p| !p.to_ascii_lowercase().contains("frontend")))
-            .or(paths.first());
-        let m = path.and_then(|p| Model::parse(&self.game.read(p).ok()?).ok());
+        let m = self.model_path(&key, prefer_dir).and_then(|p| Model::parse(&self.game.read(&p).ok()?).ok());
         if m.is_none() {
             warn!("model not found: {stem}");
         }
         self.models.insert(key, m.clone());
         m
+    }
+
+    /// Where the model `key` (lower case) is read from.
+    fn model_path(&self, key: &str, prefer_dir: &str) -> Option<String> {
+        let paths = self.model_paths.get(key)?;
+        let pref = prefer_dir.to_ascii_lowercase();
+        paths
+            .iter()
+            .find(|p| p.to_ascii_lowercase().contains(&pref))
+            .or_else(|| paths.iter().find(|p| !p.to_ascii_lowercase().contains("frontend")))
+            .or(paths.first())
+            .cloned()
+    }
+
+    /// A knock-over prop's collision shape: the `.hsc` beside its model,
+    /// `<model>_Collision.hsc` (0x2e100).
+    fn prop_shape(&mut self, stem: &str, prefer_dir: &str) -> Option<std::sync::Arc<crate::knock::Shape>> {
+        let key = stem.to_ascii_lowercase();
+        if let Some(s) = self.shapes.get(&key) {
+            return s.clone();
+        }
+        let path = self.model_path(&key, prefer_dir).map(|p| format!("{}_Collision.hsc", &p[..p.len() - ".rom".len()]));
+        let shape = path.and_then(|p| atv_formats::hsc::BodyShape::parse(&self.game.read(&p).ok()?).ok());
+        let shape = shape.map(|h| crate::knock::Shape::from_hsc(&h)).filter(|s| !s.is_empty()).map(std::sync::Arc::new);
+        if shape.is_none() {
+            debug!("no collision shape for {stem}: knocked over as its box");
+        }
+        self.shapes.insert(key, shape.clone());
+        shape
     }
 
     /// Spawns one model as children of `parent`, one entity per material.
@@ -733,6 +767,7 @@ impl<'a> Loader<'a> {
                 continue;
             }
             let name = mat.and_then(|i| model.materials.get(i)).map(|m| m.name.clone());
+            let wrap = mat.and_then(|i| model.materials.get(i)).map_or([true; 2], |m| m.wraps());
             let look = if name.as_deref().is_some_and(|n| n.to_ascii_lowercase().contains("shad")) {
                 Look::Shadow
             } else {
@@ -745,7 +780,7 @@ impl<'a> Loader<'a> {
             let child = if look.is_lit() {
                 commands.spawn((mesh, MeshMaterial3d(self.lit_material(name.as_deref(), look, shiny)))).id()
             } else {
-                commands.spawn((mesh, MeshMaterial3d(self.material(name.as_deref(), look)))).id()
+                commands.spawn((mesh, MeshMaterial3d(self.material(name.as_deref(), look, wrap)))).id()
             };
             commands.entity(holder).add_child(child);
         }
@@ -789,7 +824,8 @@ impl<'a> Loader<'a> {
 
         for ((mat, look), batch) in batches {
             let name = usize::try_from(mat).ok().and_then(|i| world.materials.get(i)).cloned();
-            let material = self.material(name.as_deref(), look);
+            let wrap = usize::try_from(mat).ok().and_then(|i| world.material_wraps.get(i)).copied().unwrap_or([true; 2]);
+            let material = self.material(name.as_deref(), look, wrap);
             let mesh = self.meshes.add(batch.into_mesh());
             let e = commands.spawn((Mesh3d(mesh), MeshMaterial3d(material))).id();
             commands.entity(root).add_child(e);
@@ -803,7 +839,8 @@ impl<'a> Loader<'a> {
                 let holder = self.spawn_model(commands, &model, root, t, Look::Baked);
                 if inst.flags.split_whitespace().next().is_some_and(|f| f.eq_ignore_ascii_case("free")) {
                     let (a, b) = (Vec3::from(flip(model.bbox_min)), Vec3::from(flip(model.bbox_max)));
-                    commands.entity(holder).insert(crate::knock::Knockable::from_box(a.min(b), a.max(b), &t));
+                    let shape = self.prop_shape(stem, &env).unwrap_or_else(|| std::sync::Arc::new(crate::knock::Shape::cuboid(a.min(b), a.max(b))));
+                    commands.entity(holder).insert(crate::knock::Knockable::new(shape));
                 }
                 props += 1;
             }
@@ -982,8 +1019,8 @@ mod tests {
         // ST_Rays (0x412): additive by alpha, though double-sided (0x2).
         assert_eq!(Look::from_flags(0x412), Look::Glow);
         assert_eq!(Look::from_flags(0x8), Look::Glow);
-        // Neon strips and hanging arrows stay cut out.
+        // Neon strips stay cut out; the hanging arrows (0x486) blend.
         assert_eq!(Look::from_flags(0x82), Look::Cutout);
-        assert_eq!(Look::from_flags(0x486), Look::Cutout);
+        assert_eq!(Look::from_flags(0x486), Look::Blend);
     }
 }

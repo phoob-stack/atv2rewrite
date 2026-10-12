@@ -23,7 +23,7 @@ use bevy::transform::TransformSystems;
 
 use bevy::camera::visibility::VisibilitySystems;
 
-use crate::convert::{self, SkyDome, WheelVisual};
+use crate::convert::WheelVisual;
 use crate::crash::Wreck;
 use crate::freestyle::Session;
 use crate::frontend::Roster;
@@ -285,7 +285,6 @@ fn broadcast(
     live: Option<ResMut<Broadcast>>,
     mut cams: Query<(Entity, &mut Projection, Option<&crate::mp::Split>), With<ChaseCam>>,
     mut transforms: Query<&mut Transform>,
-    sky: Query<Entity, With<SkyDome>>,
     mut riders: Query<&mut Visibility, With<Rider>>,
     demo: Option<Res<crate::demo::Demo>>,
 ) {
@@ -334,9 +333,6 @@ fn broadcast(
     }
     if let Projection::Perspective(p) = proj.as_mut() {
         p.fov = shot.fov;
-    }
-    if let Some(mut t) = sky.iter().next().and_then(|e| transforms.get_mut(e).ok()) {
-        t.translation = shot.eye - Vec3::Y * convert::SKY_RADIUS * 0.08;
     }
     // Every rider shows, whatever the race camera hid.
     for mut v in &mut riders {
@@ -410,7 +406,6 @@ fn play(
     ui: Option<Res<UiAssets>>,
     mut transforms: Query<&mut Transform>,
     mut cams: Query<(Entity, &mut Projection), With<ChaseCam>>,
-    sky: Query<Entity, With<SkyDome>>,
     mut screens: Query<(Entity, &mut Visibility), (With<Node>, Without<ChildOf>, Without<ReplayUi>)>,
     mut riders: Query<&mut Visibility, (With<Rider>, Without<Node>)>,
     captions: Query<Entity, With<ReplayUi>>,
@@ -494,9 +489,6 @@ fn play(
     }
     if let Projection::Perspective(p) = proj.as_mut() {
         p.fov = shot.fov;
-    }
-    if let Some(mut t) = sky.iter().next().and_then(|e| transforms.get_mut(e).ok()) {
-        t.translation = shot.eye - Vec3::Y * convert::SKY_RADIUS * 0.08;
     }
 }
 

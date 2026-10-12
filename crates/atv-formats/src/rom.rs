@@ -95,6 +95,21 @@ pub struct Material {
     pub raw: Vec<u8>,
 }
 
+impl Material {
+    /// Whether the texture repeats across U and V (see [`wraps`]).
+    pub fn wraps(&self) -> [bool; 2] {
+        wraps(&self.raw)
+    }
+}
+
+/// Whether a 0x8C-byte material record's texture repeats across U and V:
+/// bytes +0x82 and +0x83, 0 = clamp (the original's model and world
+/// loaders, 0x4eec00 and 0x4f3cc0). Backdrop cards such as Dunes' islands
+/// clamp V, so their texture's clear top isn't repeated over them.
+pub fn wraps(raw: &[u8]) -> [bool; 2] {
+    [raw.get(0x82).is_none_or(|b| *b != 0), raw.get(0x83).is_none_or(|b| *b != 0)]
+}
+
 #[derive(Debug, Clone)]
 pub struct Locator {
     pub name: String,

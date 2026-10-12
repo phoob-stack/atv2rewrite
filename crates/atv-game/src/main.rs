@@ -4,7 +4,7 @@
 //! Usage: atv2 --game <disc image or folder> [--track Dunes1] [--quad Bandit]
 //!             [--rider Male1] [--laps 3] [--frontend [--screen rider|tricks]]
 //!             [--mode race|timetrial|arcade|freestyle|career|training]
-//!             [--minutes N] [--round N] [--opponents N] [--challenge N]
+//!             [--minutes N] [--round N] [--opponents N] [--challenge N] [--lesson N]
 //!             [--players N] [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
 //!             [--resolution 1280x720] [--fullscreen] [--cheat ALLOFEM]
@@ -15,7 +15,8 @@
 //! the Stadium, which has no laps; `--minutes` is Open Freestyle's limit, 0 for
 //! none; arcade races its rounds' tracks, `--round` starts on one; career
 //! with `--round` races the saved championship's next round; training is
-//! ATV Academy, always on Stadium 2).
+//! ATV Academy, always on Stadium 2; `--lesson N` runs one of the retail
+//! disc's ATV Academy lessons).
 
 mod aitricks;
 mod arcade;
@@ -37,6 +38,7 @@ mod mud;
 mod hud;
 mod intro;
 mod knock;
+mod lessons;
 mod lit;
 mod loading;
 mod water;
@@ -51,6 +53,7 @@ mod respot;
 mod results;
 mod rider;
 mod screens;
+mod sky;
 mod settings;
 mod trickbook;
 mod tuning;
@@ -77,7 +80,7 @@ use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle};
 
 use controller::Action;
-use convert::{SkyDome, WheelVisual};
+use convert::WheelVisual;
 use crash::{Cause, CrashClips, Wreck};
 use freestyle::{Session, StuntClips};
 use frontend::{FrontEnd, Roster, Screen};
@@ -121,6 +124,8 @@ struct Args {
     opponents: usize,
     /// Freestyle challenge to run (1-based).
     challenge: usize,
+    /// Retail ATV Academy lesson to run (1-based, 0 for none).
+    lesson: usize,
     /// Humans in split screen (1 to 4).
     players: usize,
     /// Cheats to enter (see [`unlocks::CHEATS`]).
@@ -139,7 +144,7 @@ enum Mode {
     /// The rounds of `Setup/Arcade.xml` in a row, against a checkpoint
     /// clock.
     Arcade,
-    /// Open Freestyle: roam a track scoring tricks, trick boxes and spots.
+    /// Open Freestyle: roam a track scoring tricks and trick boxes.
     Freestyle,
     /// A round of a career championship (see [`career`]).
     Career,
@@ -205,13 +210,21 @@ struct Selection {
     /// each after the first.
     players: usize,
     others: Vec<(String, String)>,
+    /// Retail ATV Academy: the lesson (1 to 10, 0 for none; see
+    /// [`lessons`]), and the lessons of its course passed so far.
+    lesson: usize,
+    lessons_passed: usize,
 }
 
 impl Selection {
-    /// Player 1's slot on the grid: Arcade's from the last round, else
-    /// the front.
+    /// Player 1's slot on the grid: Arcade's from the last round, a
+    /// lesson's own start, else the front.
     fn player_slot(&self) -> usize {
-        if self.mode == Mode::Arcade { self.grid.max(1) } else { 1 }
+        match self.mode {
+            Mode::Arcade => self.grid.max(1),
+            Mode::Training if self.lesson > 0 => self.lesson,
+            _ => 1,
+        }
     }
 }
 
@@ -305,6 +318,7 @@ fn parse_args() -> anyhow::Result<Args> {
         // The original's default field (`mNumAIPlayers` in user.xml).
         opponents: 5,
         challenge: 1,
+        lesson: 0,
         players: 1,
         cheats: Vec::new(),
         no_intro: false,
@@ -336,6 +350,7 @@ fn parse_args() -> anyhow::Result<Args> {
                     "career" => Screen::CareerChamp,
                     "status" => Screen::CareerStatus,
                     "freestyle" => Screen::FreestyleType,
+                    "academy" | "training" => Screen::Training,
                     "challenges" => Screen::Challenges,
                     "multiplayer" => Screen::MpMode,
                     "players" => Screen::MpPlayers,
@@ -366,6 +381,12 @@ fn parse_args() -> anyhow::Result<Args> {
             "--challenge" => {
                 a.challenge = val().parse::<usize>()?.clamp(1, challenge::COUNT);
                 a.mode = Mode::Challenge;
+                a.mode_given = true;
+                a.direct = true;
+            }
+            "--lesson" => {
+                a.lesson = val().parse::<usize>()?.clamp(1, lessons::LESSONS);
+                a.mode = Mode::Training;
                 a.mode_given = true;
                 a.direct = true;
             }
@@ -435,6 +456,8 @@ fn main() -> anyhow::Result<()> {
         challenge: args.challenge,
         players: args.players,
         others: Vec::new(),
+        lesson: args.lesson,
+        lessons_passed: 0,
     };
     // Split screen is Single Race and Freestyle (Battle) only.
     if selection.players > 1 && !matches!(args.mode, Mode::SingleRace | Mode::Freestyle) {
@@ -449,7 +472,7 @@ fn main() -> anyhow::Result<()> {
         selection.laps = 1;
     }
     if args.mode == Mode::Training {
-        selection.track = TRAINING_TRACK.into();
+        selection.track = if args.lesson > 0 { lessons::track(args.lesson) } else { TRAINING_TRACK }.into();
     }
     // Arcade races its rounds' tracks (`--round N` starts on one), a lap
     // each.
@@ -541,6 +564,8 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(ghost::GhostPlugin)
         .add_plugins(screens::ScreensPlugin)
         .add_plugins(lit::LitPlugin)
+        .add_plugins(lessons::LessonsPlugin)
+        .add_plugins(sky::SkyPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
@@ -548,7 +573,7 @@ fn main() -> anyhow::Result<()> {
         .add_systems(FixedUpdate, (drive, records::watch, career::dnf_cutoff, challenge::follow_course).chain().run_if(in_state(AppState::Race)))
         .add_systems(
             Update,
-            (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, respot::show_fade, cycle_camera, chase_camera, fly_camera, follow_sky, rumble)
+            (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, respot::show_fade, cycle_camera, chase_camera, fly_camera, rumble)
                 .chain()
                 .run_if(in_state(AppState::Race)),
         )
@@ -707,6 +732,11 @@ fn setup(
     // Player 1's tricks are the profile's: its skill level from career and
     // challenge skill points.
     session.level = rules.skill_level(career.skill_points) as u8;
+    // The Big Air bonus measures jumps against the track's Biggest Air
+    // record, but in the challenges and training (0x75bf0).
+    if !matches!(sel.mode, Mode::Challenge | Mode::Training) {
+        session.air_record = records.as_deref().and_then(|r| r.get(&sel.track, records::Kind::HighestJump)).map(|r| r.value);
+    }
     opponents::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, &roster, &sel, (&scene.world, &collision), &session, field);
     if sel.mode == Mode::TimeTrial && demo.is_none() {
         ghost::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, (&sel.track, &sel.rider, &sel.quad));
@@ -729,14 +759,18 @@ fn setup(
         Color::srgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8)
     };
     clear.0 = fog_color;
+    let distance = sky::ViewDistance::for_track(&game.0, &sel.track);
+    commands.insert_resource(distance);
     let view = (
         Camera3d::default(),
         // Colours are baked; show them as authored.
         Tonemapping::None,
-        Projection::Perspective(PerspectiveProjection { far: convert::SKY_RADIUS * 2.0, ..default() }),
+        // The track ends at its draw distance, fogged out on the way; the
+        // sky has its own camera (see `sky`).
+        Projection::Perspective(PerspectiveProjection { far: distance.far, ..default() }),
         DistanceFog {
             color: fog_color,
-            falloff: FogFalloff::Linear { start: 120.0, end: 900.0 },
+            falloff: FogFalloff::Linear { start: distance.fog_start, end: distance.fog_end },
             ..default()
         },
     );
@@ -818,6 +852,12 @@ fn setup(
             commands.entity(arrow).insert((challenge::GuideArrow, hud::HudRoot, scoped.clone()));
         }
         commands.insert_resource(c);
+    }
+    if sel.mode == Mode::Training
+        && sel.lesson > 0
+        && let Some(arrow) = loader.spawn_loose(&mut commands, "arrow", "Generic")
+    {
+        commands.entity(arrow).insert((lessons::LessonArrow, hud::HudRoot, scoped.clone(), Visibility::Hidden));
     }
 }
 
@@ -968,10 +1008,10 @@ fn drive(
         dir = Some([freestyle::Dir::Up, freestyle::Dir::Right, freestyle::Dir::Down, freestyle::Dir::Left][k / 4 % 4]);
     }
     let live = progress.started() && !over;
-    session.step(v, buttons, dir, dt, live);
+    let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
+    session.step(v, &race.collision, (buttons, dir), dt, live, crashed);
 
     // The original's automatic respots, with the rider on the quad.
-    let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
     let gates = race.gates.len();
     let next = race.next_checkpoint % gates.max(1);
     let racing = progress.racing();
@@ -1323,14 +1363,6 @@ fn rumble(
             });
         }
     }
-}
-
-fn follow_sky(cams: Query<(&Transform, Option<&mp::Split>), (With<Camera3d>, Without<screens::ScreenCam>)>, mut sky: Query<&mut Transform, (With<SkyDome>, Without<Camera3d>)>) {
-    // Player 1's view in split screen.
-    let cam = cams.iter().find(|(_, s)| s.is_none_or(|s| s.0 == 0)).map(|c| c.0);
-    let (Some(cam), Ok(mut sky)) = (cam, sky.single_mut()) else { return };
-    // Sunk a little so the hazy rim sits under the horizon.
-    sky.translation = cam.translation - Vec3::Y * convert::SKY_RADIUS * 0.08;
 }
 
 fn fly_camera(

@@ -464,9 +464,13 @@ fn drive_opponents(
                     held = r.progress.finished.is_none() && (r.boost.on || r.boost.meter >= 1.0);
                     ai
                 }
-                // Computer riders boost flat out on a straight (0x67520).
+                // Computer riders boost flat out on a straight (0x67520);
+                // retail's only while a quarter of the meter is left
+                // (0x7b990).
                 None => {
-                    held = r.progress.finished.is_none() && r.driver.boost;
+                    held = r.progress.finished.is_none()
+                        && r.driver.boost
+                        && (!r.vehicle.params.retail || r.boost.meter > 0.25);
                     ai
                 }
             }
@@ -508,13 +512,13 @@ fn drive_opponents(
                     buttons = 1 << (k % 4);
                     dir = Some([Dir::Up, Dir::Right, Dir::Down, Dir::Left][k / 4 % 4]);
                 }
-                s.step(&r.vehicle, buttons, dir, dt, live);
+                s.step(&r.vehicle, &race.collision, (buttons, dir), dt, live, crashed);
             }
             (Some(s), None) => {
                 if live && r.wreck.fall.is_none() {
                     r.tricks.step(s, &r.vehicle, &race.collision);
                 }
-                s.step(&r.vehicle, 0, None, dt, live);
+                s.step(&r.vehicle, &race.collision, (0, None), dt, live, crashed);
             }
             _ => {}
         }

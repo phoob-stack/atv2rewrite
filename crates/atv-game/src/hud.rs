@@ -53,13 +53,14 @@ impl Plugin for HudPlugin {
         // challenge's intro page is up.
         let no_intro = not(resource_exists::<crate::intro::Intro>);
         let no_briefing = not(resource_exists::<crate::challenge::Briefing>);
+        let no_lesson_page = not(resource_exists::<crate::lessons::Page>);
         app.add_plugins(HierarchyPropagatePlugin::<HudOf>::new(PreUpdate))
             .add_systems(OnEnter(AppState::Race), spawn_hud.after(crate::setup).run_if(no_demo.clone()))
             .add_systems(OnEnter(AppState::Race), |mut commands: Commands| commands.insert_resource(LostPads::default()))
             .add_systems(OnExit(AppState::Race), unpause)
             .add_systems(
                 Update,
-                (update_gauge, update_readouts, update_panel, update_meter, update_banners, (race_menus, lost_pad_note).chain().run_if(no_demo).run_if(no_intro).run_if(no_briefing))
+                (update_gauge, update_readouts, update_panel, update_meter, update_banners, (race_menus, lost_pad_note).chain().run_if(no_demo).run_if(no_intro).run_if(no_briefing).run_if(no_lesson_page))
                     .run_if(in_state(AppState::Race)),
             )
             .add_systems(PostUpdate, fit_views.before(bevy::ui::UiSystems::Prepare).run_if(in_state(AppState::Race)))
@@ -1416,7 +1417,9 @@ fn race_menus(
                 next.set(AppState::FrontEnd);
             }
             "QUIT RACE" | "MAIN MENU" | "NO" => {
-                fe.return_to = Some(Screen::Main);
+                // A retail lesson goes back to the Academy's page.
+                let lesson = selection.mode == Mode::Training && selection.lesson > 0;
+                fe.return_to = Some(if lesson { Screen::Training } else { Screen::Main });
                 next.set(AppState::FrontEnd);
             }
             _ => {}

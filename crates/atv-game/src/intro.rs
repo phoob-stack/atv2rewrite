@@ -32,7 +32,6 @@ use bevy::transform::TransformSystems;
 
 use atv_sim::track as trk;
 
-use crate::convert::{self, SkyDome};
 use crate::opponents::Opponents;
 use crate::race::RaceProgress;
 use crate::rider::Rider;
@@ -300,7 +299,9 @@ impl Plugin for IntroPlugin {
 /// Loads the track's intro cameras, if it has any.
 fn start(mut commands: Commands, game: Res<Game>, sel: Res<Selection>, args: Res<Args>) {
     commands.remove_resource::<Intro>();
-    if args.no_intro || args.camera.is_some() || args.orbit.is_some() {
+    // A retail lesson's own page stands in for it.
+    let lesson = sel.mode == crate::Mode::Training && sel.lesson > 0;
+    if args.no_intro || args.camera.is_some() || args.orbit.is_some() || lesson {
         return;
     }
     let xml = game.0.read(&format!("/Levels/{0}/World/{0}.xml", sel.track)).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
@@ -327,7 +328,6 @@ pub(crate) fn fly(
     time: Res<Time>,
     mut intro: ResMut<Intro>,
     mut cams: Query<(&mut Transform, &mut Camera, &mut Projection, Option<&crate::mp::Split>), With<ChaseCam>>,
-    mut sky: Query<&mut Transform, (With<SkyDome>, Without<ChaseCam>)>,
     mut screens: Query<(Entity, &mut Visibility), (With<Node>, Without<ChildOf>, With<DespawnOnExit<AppState>>, Without<ShowInIntro>)>,
     mut riders: Query<&mut Visibility, (With<Rider>, Without<Node>)>,
 ) {
@@ -365,9 +365,6 @@ pub(crate) fn fly(
         if split.is_some() {
             cam.viewport = None;
         }
-    }
-    for mut t in &mut sky {
-        t.translation = view.translation - Vec3::Y * convert::SKY_RADIUS * 0.08;
     }
     for (e, mut v) in &mut screens {
         if !intro.hidden.iter().any(|h| h.0 == e) {

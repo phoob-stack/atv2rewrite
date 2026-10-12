@@ -59,7 +59,7 @@ Levels 856, shaders 75, other 116).
 | `.shm` | 141 | `ROM 1.26` | Shadow/simplified mesh twin of each `.rom`, same layout. | **Decoded.** |
 | `.row` | 17 | `ROW 2.25` | Track world: materials, locators (start grid, checkpoints, respots, water boxes), lights, prop instances, sprites, meshes and the road surface as Bezier patches. | **Mostly decoded.** Spatial tree between mesh blocks still unknown. |
 | `.kdt` | 17 | none | The original's track collision: `u32` triangle count, then 0x5C-byte triangles (face plane, three edge planes, padded bbox, `u32` surface id into `Setup/Materials.xml` order), then a spatial tree. Layout in `kdt.rs`. | **Triangles decoded, all 17**; their surfaces give the rewrite's collision grip and drag. Tree not read. |
-| `.hsc` | 35 | none | Knock-over prop hulls (cones, signs, barriers, planks): `u32` hull count; per hull a `u32` plane count and planes (normal, d; inside where n·p + d <= 0); then a `u32` sphere count and spheres (centre, radius), read at `0x24c10`. The signs are 6-plane boxes, one per part. | Layout known; not used: the rewrite knocks `FREE` props over using an upright cylinder from each model's bounding box. |
+| `.hsc` | 35 | none | Body collision shapes: the quad's (`Cars/Generic/Generic.hsc`) and the knock-over props' (`<model>_Collision.hsc` beside the model: cones, signs, deckchairs, umbrellas). `u32` hull count; per hull a `u32` plane count and planes (normal, d; inside where n·p + d <= 0); then a `u32` sphere count and spheres (centre, radius), read at `0x24c10`. Every file has one hull, kept as one convex body (all its planes at once): the prototype's signs list a post's and a panel's boxes in it, so only their overlap counts there (the rewrite splits them back into their boxes); retail rebuilt them as single hulls. | `atv-formats::hsc`. Knock-over props collide with quads by these shapes (`knock.rs`): a sphere inside the other body's hull (`0xb3da0`) or touching one of its spheres (`0xb29d0`). |
 | `.aid` | 17 | `AID 1.02` | AI racing line: a graph of waypoints with the drivable corridor, speed limits, respot and jump flags. | **Decoded, all 17.** See below. |
 | `.nin` | 17 | none (`0xCDAB0DF0` markers) | Per-track node/trigger data. | To do. |
 | `.viz` | 17 | none | Visibility / camera zones. | To do. |
@@ -96,7 +96,8 @@ Levels 856, shaders 75, other 116).
 0x00 "ROM 1.26\0" + 3 pad
 0x0C u32 materials, locators, points, sprites, 0, nodes
 0x24 i32 -1, -1, f32 -1, bbox_min[3], bbox_max[3]
-0x48 materials  0x8C each (name[32] = texture name, rest is editor junk)
+0x48 materials  0x8C each (name[32] = texture name; +0x82/+0x83 wrap U/V,
+                0 = clamp; the rest is editor junk)
      locators   0x7C each: name[64], pos, scale, 3x3 rotation
      points     0x2C each: name[32], pos  (wheel centres, pivots, lights...)
      sprites    0x68 each: kind[32] ("faceme"), material[32], 10 floats
@@ -192,7 +193,7 @@ points, so the riding clips fit them all); the riding clips
 0x00 "ROW 2.25\0" + pad, u32 fog colour
 0x10 u32 materials, 0, locators, points, lights, instances, sprites, 0,
      effects, unknown
-0x38 materials 0x8C; locators 0x7C; points 0x2C; lights 0x4C (name[32],
+0x38 materials 0x8C (as in ROM); locators 0x7C; points 0x2C; lights 0x4C (name[32],
      type, 0, pos, dir, rgb 0..255); instances 0x80 (flags[32] "FREE" =
      knockable, model[32] "name.clm" -> name.rom, pos, scale, 3x3, ARGB
      tint); sprites 0x68; then effect records (sea, river, mist) and a
@@ -209,7 +210,22 @@ water (and some shadow decals, with 0x400), 0x4000 foam/wake, 0x8000 baked shado
 invisible collision-only geometry. The original's mesh setup (0x106390)
 picks the blend from 0x4 (alpha blend), 0x8 (add ONE, ONE) and 0x10 (add
 SRC_ALPHA, ONE, Stadium 1's lamp beams), none writing depth; 0x2 turns
-off back-face culling. A material named `FrontBuffer` is the console's
+off back-face culling. The rewrite draws all three (0x4 = beach and river
+edges, Forest's wall tops, Glacier's thin ice, Stadium 1's hanging arrows).
+
+Material wrap: the model and world loaders (0x4eec00, 0x4f3cc0) set each
+texture's address mode from material bytes +0x82 (U) and +0x83 (V): 0 =
+clamp (3), else wrap (1). Backdrop cards (Dunes' `DU_islands_02` and
+`DU_DistantCliffs`, beach edges) clamp V; their UVs run past the texture's
+clear top, so wrapping V repeats the island as a strip floating over it.
+
+View distance (retail): the track's camera far plane is `mDrawDistance`
+(`Tracks.xml`, entry +0xc) and its vertex fog runs from `mFogStartDistance`
+to `mFogEndDistance` (+0x10, +0x14), fractions of that distance, clamped
+0..1 (0x46e020 fills the camera's fog block; 0x4d3fc0 turns it into
+vertex constant c90; fog is on when the start is below 1). The sky dome
+(0x481ed0) is scaled to the draw distance, centred on the camera
+`mSkyYOffset` lower (+8), and drawn first with a far plane of 5000. A material named `FrontBuffer` is the console's
 front buffer, so Stadium 1's video screens show the race. `material2` is an overlay layer (grass
 strips, tyre tracks, the checker on inflatable arches) drawn over the base
 with the second UV set, weighted by vertex alpha.
@@ -476,7 +492,11 @@ with something in its meter.
   Scarecrow = `crucifixtion`, Scissors = `leg_splt`, Spin Bike = `bike_spin`,
   Reverse Spin = `reverse_spin_grab`, Yogi = `Y`. `*_bike.bac` (1 bone) move
   the quad for the tricks that spin it. `Wheelie`, `Bicycle` and `Endo` give
-  ground-trick points; `SpeedBoost` is the race boost tricks earn: a
+  ground-trick points (the prototype's one number each; retail's
+  `Wheelie`, `Bicycle_Left`, `Bicycle_Right` and `Endo` have `Score`,
+  `Accel` and `Max`, and `Forward_Flip`, `Backward_Flip`, `Clockwise_Spin`
+  and `Counter_Clockwise_Spin` a `Score`; retail air tricks are worth
+  about 13 times the prototype's); `SpeedBoost` is the race boost tricks earn: a
   landed combo adds points x `TrickScoreMod` (0.0004) to a 0..1 meter
   (0x62040 -> 0x1b830); while the boost input (input slot 11) is held and
   the meter isn't empty the drive is multiplied by `BoostTorqueMod` (2.5,
@@ -504,10 +524,50 @@ with something in its meter.
   and right, `BUTTON4-7` Y, B, A and X, `BUTTON8/9` the triggers on the top
   view, and the `BUTTON` and `SHOULDER1` glows that light them.
   `FrontEnd/TrickPics` is a placeholder (one picture repeated).
-- `TrickBoxes.xml`: per track, `TBOXn Name Points LinkedBox`. Only the
-  stadiums have real ones; they are the `TBOXn` locator boxes in the
-  `.row` (scale = half size), several boxes per id for hoops. Linked boxes
-  are the two ends of a gap.
+- `TrickBoxes.xml`: per track, `TBOXn Name Points LinkedBox NeedsTrick`.
+  In the prototype only the stadiums have real ones; retail adds a
+  `Special_Trick` box (1000-3000 points) to every outdoor track, some with
+  `NeedsTrick="1"`. They are the `TBOXn` locator boxes in the `.row`
+  (scale = half size), several boxes per id for hoops. Retail's Stadium 2
+  boxes with a `GroundTrick Type Bronze Silver Gold` child are the
+  lessons' wheelie, endo and bicycle zones; the box lookup skips them
+  (0x72a20). See "Trick scoring (retail)" below for how boxes pay.
+- Trick scoring (retail, the stunt manager's update 0x75bf0; ATV.exe
+  addresses are these plus 0x3ef440). Every move adds its points, rounded
+  up to fives, to a combo (+0x128), counts a move (+0x130) and, the first
+  time that kind of move appears, a different move (+0x124, flags per air
+  trick, per ground trick type and per flip/spin direction). Once all four
+  wheels have been down 0.1 s (+0x1e4) the combo pays points x different
+  moves (0x74700, "COMPLETE"); the speed boost gets that x `TrickScoreMod`.
+  A crash loses it (0x745c0, "FAILED"). An air trick (0x74e90) pays
+  `mScorePoints` + trunc(`mHoldPoints` x seconds held at its peak), the
+  held seconds (+0xd0) running on across the combo's tricks and cleared
+  only when the combo pays or fails. Ground tricks (0x75640): the wheel
+  contacts (0x74030) give Wheelie (rear two down), Endo ("Stoppie", front two),
+  Bicycle Left/Right (that side's two), in the air with none, unchanged
+  with one, else on the ground, which only counts after the 0.1 s on all
+  four. A trick starts at 2 m/s or more (an endo at any speed) with
+  `Score` points a second; each tick the rate grows by `Accel` x dt of
+  itself, the points by rate x dt, held to `Max` past the first second.
+  Under 2 m/s (not an endo) it pauses. It pays into the combo when it
+  ends after more than a second: on the ground, in the air with a trick
+  under way, or straight into another ground trick, which then starts 0.5
+  s in with the old one's points carried on. In the air the trick only
+  pauses, so landing back in it carries on (its points so far included).
+  Flips and spins (0x74b90, trackers 0x73b90 reset at take-off): per tick
+  the angles the forward and up axes turned (a flip; + nose up) or the
+  right and forward axes (a spin; + to the right) are added while each is
+  under 180 degrees. A flip pays at 198 degrees (Backward_Flip +, else
+  Forward_Flip) and the next can't until both pass 342 degrees forward
+  of the start; a spin ("360") pays at 270 degrees and starts again.
+  Rolls are tracked but never pay. Trick boxes (0x75360): the first box
+  flown into in a jump pays its points (a different move every time,
+  0x75020), once the combo has something under way if `NeedsTrick`; a
+  linked box waits for its other end to come next and then pays its own
+  points, so a gap pays by the way it's jumped. Big Air: 100 points as a
+  box when the quad's height over the ground comes within 0.5 m of the
+  track's Biggest Air record (raised by any higher jump), then not for
+  7 s; not in game types 5, 10 and 11.
 - `VehicleCameras.xml`: the follow cameras the Options menu offers,
   `FollowNear` (CAM_FOLLOW_CLOSE), `FollowFar` and `FollowVeryClose`, plus
   the replay mounts (`MountOnFront`, `MountOnWheel`, ...) and the
@@ -1290,6 +1350,31 @@ the ROW spatial tree and effect records, and the material record fields.
   twice. Riders bank (56): a thrown rider's body thud is 48–55 louder with
   speed (`0xaeaf0`, speed over 2.2347, every 0.5 s), then 61% of the time
   a cry, at most twice a crash: male 12–22, female 37–47 (`0xae930`).
+- Retail race music (XBE addresses). `Setup/Music.xml` lists the licensed
+  songs as `<Track1>`, `<Track2>`... (`ArtistName`, `SongName`,
+  `LevelSpecific`, `FileName` `Licensed\TrackN` -> `/Licensed/TrackN.wav`,
+  48 kHz stereo Xbox ADPCM); `0xae300` reads them in order until a number
+  is missing and nothing reads `LevelSpecific`. The race start `0x9f5c0`
+  picks the music: Training (game type 12) gets one song, any not yet
+  played this session (`0xadfe0`); challenges (5) and game types 10 and
+  11 (10 is the attract demo) get none; everything else goes by the profile's
+  Playlist choice, `PlaylistOption0-3` (profile `+0x34..+0x40`, page
+  labels `ENVIRONMENT`, `PLAYLIST`, `RANDOM`, `MUTE_ALL`): the area's
+  first `TrackSection` only (count 1, so `<Area>2/3` are never asked
+  for), the songs in playlist order starting one song further on each
+  race (`mTrackInc`, `0x13fa0`), the songs in a random order, or nothing.
+  A new profile has `RANDOM` (`0x13e40`). The song lists come from
+  `0xaf360`: the playlist order (`Track0-7`, profile `+0x14`) without the
+  songs `mMusicTracksLockedOut` (`+0x1c`) leaves out. Songs then play in
+  the list's order and round again (stream flag `0x10000`); an area's
+  sections would be picked at random, never the same twice running, when
+  there are more than two (`0x896c0`). On a North American console
+  (`XGetGameRegion` 1, `0x157be`) Track5 is always left out and sits last
+  in the order (`0x13290`, `0x13770`; the Playlist page `0x58c50` resets
+  both whenever it finds it in the order). Two front-end pages (`0x3b7f0`,
+  `0x5e010`) play one song, Track8 in North America and Track5 elsewhere,
+  and leaving them plays `Music\FrontEnd` from Sound.xml (`0xb0290`); the
+  rewrite has no front-end music yet.
 - Banks load into slots: 0 Vehicles, 1 Riders, 2 SpotFX, 3 the track's
   ambient or crowd bank. One-shots go through `0x92e30` (bank, index,
   volume, pitch).
