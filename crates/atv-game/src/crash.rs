@@ -441,12 +441,6 @@ impl Wreck {
         done || f.age > 8.0 || f.wet.is_some_and(|w| w >= WET_TIME)
     }
 
-    /// Where the thrown rider is treading water, if they are, drawn
-    /// `between` of the way from the last step to the next.
-    pub fn floating(&self, between: f32) -> Option<Vec3> {
-        self.fall.as_ref().filter(|f| f.floating).map(|f| f.drawn(between))
-    }
-
     /// The crash clip and how far through it, for the rider.
     pub fn pose(&self, clips: &CrashClips) -> Option<(Arc<Clip>, f32)> {
         let f = self.fall.as_ref()?;

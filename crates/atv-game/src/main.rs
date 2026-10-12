@@ -271,18 +271,25 @@ struct QuadBody;
 #[derive(Component, Default)]
 struct ChaseCam {
     /// Where the camera trails to, before its distance limits: it heads for
-    /// the camera's offset point at the position stiffness (0x71dd0), so it
-    /// lags the quad's climbs and drops as well as its turns.
+    /// the camera's offset point at the position stiffness (0x85d60), so
+    /// it lags the rider's climbs and drops as well as their turns.
     trail: Option<Vec3>,
-    /// The position stiffness in use: it drops at once on takeoff and creeps
-    /// back up after landing (0x71ed0).
+    /// The position stiffness the camera works up to after a respot, and
+    /// the one in use (0x85f20, 0x85d60).
+    tracker: f32,
     stiffness: f32,
-    /// The camera's distance from the quad on its spring, and its rate
-    /// (0x72150).
+    /// The camera's distance from the rider on its spring, and its rate
+    /// (0x861a0).
     dist: (f32, f32),
+    /// Where the camera holds over a crash (0x85a10).
+    frozen: Option<Vec3>,
     /// The quad's position last frame, to spot a respot.
     last: Vec3,
-    /// Zoom (0x6fc90): the view's tangents are divided by it.
+    /// Where the camera is, kept clear of the scenery, and how fast it
+    /// eases there (0x7f390).
+    eye: Option<Vec3>,
+    rate: f32,
+    /// Zoom (0x832e0): the view's tangents are divided by it.
     zoom: f32,
     /// Facing.
     facing: Quat,
@@ -1141,19 +1148,38 @@ fn stunts(
     }
 }
 
-/// The cameras look this far above the quad's centre of mass, about the
-/// rider's chest, so the quad sits low in the picture.
-const LOOK_RAISE: f32 = 1.0;
+/// The follow cameras follow the rider's seated pelvis, not the quad
+/// (retail 0x84800): 0.62 m up the quad's up axis and 0.29 m behind its
+/// centre of mass (the seat, 0xa50ab and 0xa4f4e, placed by 0x2f3a0).
+pub(crate) const PELVIS: Vec3 = Vec3::new(0.0, 0.62, 0.29);
 
-/// Stiffness of the follow camera's distance spring (0x72090).
+/// Stiffness and damping of the follow camera's distance spring (0x83660,
+/// set up by 0x860e0), and how far towards anything in the way it is
+/// pulled in.
 const CAM_SPRING: f32 = 50.0;
+const PULL_IN: f32 = 0.8;
 
-/// The player's follow camera, as picked in Options, as the original's
-/// (0x6e760): it trails the offset point behind the quad's heading at the
-/// camera's position stiffness (softer in the air), so it lags turns,
-/// speed, climbs and drops, within 1 to 1.3 times the offset's length of
-/// the quad, and looks straight at a point ahead of the quad. The
-/// rotation stiffnesses go unused, as in the original.
+/// The camera's clearance: a ball this big just ahead of the lens is kept
+/// out of the track (0x7f390, `sqrt(2) * near plane + 0.2`).
+const CLEARANCE: f32 = 0.5 * std::f32::consts::SQRT_2 + 0.2;
+
+/// The original's frame: its camera steps close `rate / 60` of a gap each
+/// 1/60 s frame.
+const ORIGINAL_FRAME: f32 = 1.0 / 60.0;
+
+/// The share of a gap an ease at `rate` per second closes over `dt`, as
+/// the original's `min(dt * rate, 1)` does at 60 frames a second, at any
+/// frame rate.
+fn ease(rate: f32, dt: f32) -> f32 {
+    1.0 - (1.0 - (rate * ORIGINAL_FRAME).min(1.0)).powf(dt / ORIGINAL_FRAME)
+}
+
+/// The player's follow camera, as picked in Options (FollowNear on every
+/// view in split screen, 0x7da60), as retail's camera chain (built by
+/// 0x819d0): it trails a point behind the rider at the camera's position
+/// stiffness, keeps within 1 to 1.3 times the offset's length, is pulled
+/// in by anything in the way, holds still and rises over a crash, looks
+/// at a point ahead of the rider, and is eased out of the scenery last.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn chase_camera(
     (time, fixed): (Res<Time>, Res<Time<Fixed>>),
@@ -1162,119 +1188,182 @@ fn chase_camera(
     player: Option<Res<Player>>,
     race: Option<Res<Race>>,
     opponents: Option<Res<opponents::Opponents>>,
-    (wreck, water, demo): (Option<Res<Wreck>>, Option<Res<water::Water>>, Option<Res<demo::Demo>>),
+    (wreck, demo): (Option<Res<Wreck>>, Option<Res<demo::Demo>>),
     mut cams: Query<(&mut Transform, &mut Projection, &mut ChaseCam, Option<&mp::Split>)>,
-    mut riders: Query<(&Rider, &mut Visibility), Without<OpponentRider>>,
     mut rig: Local<Option<(CameraView, FollowCam)>>,
 ) {
     let (Some(player), Some(race)) = (player, race) else { return };
-    if rig.map(|r| r.0) != Some(settings.camera) {
-        *rig = Some((settings.camera, FollowCam::load(&game.0, settings.camera)));
+    let view = if cams.iter().count() > 1 { CameraView::Close } else { settings.camera };
+    if rig.as_ref().map(|r| r.0) != Some(view) {
+        *rig = Some((view, FollowCam::load(&game.0, view)));
     }
-    let Some((_, follow)) = *rig else { return };
+    let Some((view, follow)) = rig.as_ref() else { return };
+    let ahead = since_step(&fixed);
+    let between = fixed.overstep_fraction();
     for (mut t, mut proj, mut cam, split) in &mut cams {
         // Split screen: each view follows its own player's quad.
-        let v = match split.map_or(0, |s| s.0) {
-            0 if let Some(body) = wreck.as_deref().and_then(|w| w.floating(fixed.overstep_fraction())) => {
-                // The quad sinks; the camera stays over the water and
-                // watches the rider tread water.
-                let floor = water.as_deref().and_then(|w| w.level(t.translation)).map_or(f32::MIN, |s| s + 0.5);
-                t.translation.y = t.translation.y.max(floor);
-                let want = Transform::from_translation(t.translation).looking_at(body + Vec3::Y * 0.5, Vec3::Y).rotation;
-                cam.facing = cam.facing.slerp(want, 1.0 - (-follow.rot_stiffness[1] * time.delta_secs()).exp()).normalize();
-                t.rotation = cam.facing;
-                continue;
-            }
-            0 => &player.0,
+        let (v, fall) = match split.map_or(0, |s| s.0) {
+            0 => (&player.0, wreck.as_deref().and_then(|w| w.fall.as_ref())),
             // The attract demo's other views are on the computer riders
             // after player 1's seat on the grid.
             slot if demo.is_some() => match opponents.as_deref().and_then(|o| o.racers.get(slot - 1)) {
-                Some(r) => &r.vehicle,
+                Some(r) => (&r.vehicle, r.wreck.fall.as_ref()),
                 None => continue,
             },
             slot => match opponents.as_deref().and_then(|o| o.human(slot + 1)) {
-                Some(r) => &r.vehicle,
+                Some(r) => (&r.vehicle, r.wreck.fall.as_ref()),
                 None => continue,
             },
         };
-        follow_quad(&time, &race, &follow, (v, since_step(&fixed)), &mut t, &mut proj, &mut cam);
-    }
-    // Very close puts the camera at the rider's head: ride without them.
-    for (r, mut vis) in &mut riders {
-        let hide = settings.camera == CameraView::VeryClose && !r.crashed() && race.players == 1;
-        vis.set_if_neq(if hide { Visibility::Hidden } else { Visibility::Inherited });
+        let (at, turn) = v.drawn(ahead);
+        let rider = Rig { quad: v, at, turn, thrown: fall.map(|f| (f.drawn(between), f.heading)) };
+        follow_quad(time.delta_secs(), &race.collision, (follow, *view), &rider, &mut t, &mut proj, &mut cam);
     }
 }
 
-/// Follows quad `v` as drawn `ahead` seconds after its last step, so the
-/// camera moves on every frame as the quad does.
-fn follow_quad(time: &Time, race: &Race, follow: &FollowCam, (v, ahead): (&Vehicle, f32), t: &mut Transform, proj: &mut Projection, cam: &mut ChaseCam) {
-    let dt = time.delta_secs();
-    let (position, rotation) = v.drawn(ahead);
-    let (forward, up) = (rotation * Vec3::NEG_Z, rotation * Vec3::Y);
-    let fwd = forward.with_y(0.0).normalize_or(Vec3::NEG_Z);
+/// A quad and its rider as drawn this frame.
+struct Rig<'a> {
+    quad: &'a Vehicle,
+    at: Vec3,
+    turn: Quat,
+    /// The rider thrown off: their pelvis and heading.
+    thrown: Option<(Vec3, Quat)>,
+}
+
+impl Rig<'_> {
+    /// The rider's pelvis and how it's turned: on the seat, or thrown.
+    fn subject(&self) -> (Vec3, Quat) {
+        self.thrown.unwrap_or((self.at + self.turn * PELVIS, self.turn))
+    }
+}
+
+/// The heading a follow camera trails behind (0x85ae0): the rider's
+/// forward axis on the level, or their up axis when that is nearer level
+/// (backwards with the nose up), so wheelies, endos and flips never swing
+/// it round.
+pub(crate) fn follow_heading(turn: Quat) -> Vec3 {
+    let (fwd, up) = (turn * Vec3::NEG_Z, turn * Vec3::Y);
+    let along = if up.y.abs() < fwd.y.abs() { if fwd.y > 0.0 { -up } else { up } } else { fwd };
+    along.with_y(0.0).normalize_or(Vec3::NEG_Z)
+}
+
+/// Where a follow camera looks: the look offset ahead of the rider at
+/// `pivot`, along their heading but at their own height (0x836a0), so
+/// pitching shortens the reach and never tips the view.
+pub(crate) fn follow_look(pivot: Vec3, turn: Quat, look: Vec3) -> Vec3 {
+    let reach = turn * Vec3::new(look.x, 0.0, -look.z);
+    pivot + Vec3::new(reach.x, look.y, reach.z)
+}
+
+fn follow_quad(dt: f32, world: &TrackCollision, (follow, view): (&FollowCam, CameraView), rig: &Rig, t: &mut Transform, proj: &mut Projection, cam: &mut ChaseCam) {
+    let v = rig.quad;
+    let (pivot, turn) = rig.subject();
+    let fwd = follow_heading(turn);
     let right = fwd.cross(Vec3::Y);
-    let at = |o: Vec3| position + right * o.x + Vec3::Y * o.y + fwd * o.z;
-    let ideal = at(follow.offset);
+    let ideal = pivot + right * follow.offset.x + Vec3::Y * follow.offset.y + fwd * follow.offset.z;
     let near = follow.offset.length();
 
     // A new race or a respot starts the camera at the offset point.
     let trail = match cam.trail {
-        Some(p) if (position - cam.last - v.velocity * dt).length() < 3.0 => p,
+        Some(p) if (rig.at - cam.last - v.velocity * dt).length() < 3.0 => p,
         _ => {
             cam.dist = (near, 0.0);
+            cam.frozen = None;
+            cam.eye = None;
             ideal
         }
     };
-    cam.last = position;
-    let want = follow.pos_stiffness[usize::from(!v.grounded())];
-    cam.stiffness = if cam.stiffness < want { cam.stiffness + (want - cam.stiffness) * dt } else { want };
-    let trail = trail.lerp(ideal, (dt * cam.stiffness).min(1.0));
+    cam.last = rig.at;
+
+    // The position eases at the off-ground stiffness, whether or not the
+    // quad is on the ground: retail asks the rider's body, which never has
+    // wheels down (0x85f20). The stiffness in use creeps up to it, and
+    // gains 10/s (up to 50 more) while the quad backs up on its wheels
+    // (0x85d60).
+    let want = follow.pos_stiffness[1];
+    cam.tracker = if cam.tracker < want { cam.tracker + (want - cam.tracker) * ease(1.0, dt) } else { want };
+    let backing = v.velocity.length() > 0.0 && v.up().y > 0.0 && v.forward().dot(v.velocity.normalize()) < 0.0;
+    if !backing {
+        cam.stiffness = cam.tracker;
+    } else if cam.stiffness < cam.tracker + 50.0 && v.grounded() {
+        cam.stiffness += 10.0 * dt;
+    }
+    let trail = trail.lerp(ideal, ease(cam.stiffness, dt));
     cam.trail = Some(trail);
 
-    // The distance follows on a stiff spring (k 50, critically damped),
-    // pulled in to 0.8 of the way to anything between the quad and the
-    // camera (0x71f50).
-    let to = trail - position;
-    let d = to.length();
-    let dir = if d > 1e-3 { to / d } else { (ideal - position) / near.max(1e-3) };
-    let pivot = position + Vec3::Y;
-    let goal = race.collision.raycast(pivot, (trail - pivot).normalize_or_zero(), (trail - pivot).length()).map_or(d, |hit| hit.t * 0.8);
-    cam.dist = critical_spring(cam.dist, goal, CAM_SPRING.sqrt(), dt);
-    let x = cam.dist.0;
-    let mut eye = position + dir * x;
-    // No nearer than the offset's length, pushed out level (0x71b20), and
-    // no further than 1.3 times it (0x71c40).
-    let off = eye - position;
+    // No further than 1.3 times the offset's length (0x85820), and no
+    // nearer than it (1.5 times for the very close cameras), pushed out
+    // level (0x85680).
+    let mut eye = trail;
+    let off = eye - pivot;
     let level = off.x * off.x + off.z * off.z;
-    if off.length() < near - 1e-6 && level >= 1e-6 {
-        let s = (1.0 - (off.length_squared() - near * near) / level).sqrt();
-        eye = position + Vec3::new(off.x * s, off.y, off.z * s);
-    }
-    let off = eye - position;
     if off.length() > near * 1.3 - 1e-6 && level >= 1e-6 {
-        eye = position + off * (near * 1.3 / off.length());
+        eye = pivot + off * (near * 1.3 / off.length());
     }
-    lift_off_ground(&race.collision, pivot, &mut eye);
-    t.translation = eye;
+    let least = near * view.min_distance();
+    let off = eye - pivot;
+    let level = off.x * off.x + off.z * off.z;
+    if off.length() < least - 1e-6 && level >= 1e-6 {
+        let s = (1.0 - (off.length_squared() - least * least) / level).sqrt();
+        eye = pivot + Vec3::new(off.x * s, off.y, off.z * s);
+    }
 
-    // It looks at a point ahead along the quad's own heading, pitch and
-    // all (0x6f520), with no lag.
-    let look = position + forward.cross(up) * follow.look.x + forward * follow.look.z + Vec3::Y * (follow.look.y + LOOK_RAISE);
+    // The distance follows on a stiff spring, pulled in to 0.8 of the way
+    // to anything between the rider and the camera (0x861a0, 0x85fa0);
+    // over a crash the camera holds where it was and rises at 1 m/s
+    // (0x85a10).
+    let off = eye - pivot;
+    let d = off.length();
+    if rig.thrown.is_some() {
+        cam.dist = (d, 0.0);
+        let frozen = cam.frozen.get_or_insert(eye);
+        frozen.y += dt;
+        eye = *frozen;
+    } else {
+        let from = pivot + Vec3::Y;
+        let goal = world.raycast(from, (eye - from).normalize_or_zero(), (eye - from).length()).map_or(d, |hit| hit.t * PULL_IN);
+        cam.dist = critical_spring(cam.dist, goal, CAM_SPRING.sqrt(), dt);
+        if d > 1e-6 {
+            eye = pivot + off * (cam.dist.0 / d);
+        }
+        cam.frozen = Some(eye);
+    }
+
+    // It looks ahead of the rider (0x836a0).
+    let look = follow_look(pivot, turn, follow.look);
     if (look - eye).length_squared() > 1e-4 {
         cam.facing = Transform::from_translation(eye).looking_at(look, Vec3::Y).rotation;
     }
     t.rotation = cam.facing;
 
-    // The view widens towards 70 mph (zoom 0.9 standing, 0.5 at 70 mph,
-    // back to 0.9 by 150 mph) and eases there at 1/s (0x6fc90).
+    // Last, the lens is kept out of the scenery and the camera eased there
+    // (0x7f390, 0x7f1c0): after touching anything at 10/s, climbing 5/s a
+    // second to 40/s in the clear (30/s throughout for Bouncy Near).
+    let lens = cam.facing * Vec3::NEG_Z * CLEARANCE;
+    let (clear, touched) = clear_of(world, eye + lens, CLEARANCE);
+    let (base, climbs) = view.base_rate();
+    cam.rate = if touched || cam.rate <= 0.0 {
+        base
+    } else if climbs && cam.rate < 40.0 {
+        (cam.rate + 5.0 * dt).min(40.0)
+    } else {
+        cam.rate
+    };
+    let target = clear - lens;
+    let eye = cam.eye.map_or(target, |was| was.lerp(target, ease(cam.rate, dt)));
+    cam.eye = Some(eye);
+    t.translation = eye;
+
+    // The view widens towards 30 mph (zoom 1 standing, 0.7 at 30 mph,
+    // back to 1 by 90 mph) and eases there at 1/s (0x832e0, set up by
+    // 0x832a0).
     let mph = v.speed_mph().abs();
-    let k = if mph < 70.0 { (70.0 - mph) / 70.0 } else { ((mph - 70.0) / 80.0).min(1.0) };
-    let target = 0.5 + 0.4 * k;
+    let k = if mph < 30.0 { (30.0 - mph) / 30.0 } else { ((mph - 30.0) / 60.0).min(1.0) };
+    let target = 0.7 + 0.3 * k;
     if cam.zoom <= 0.0 {
         cam.zoom = target;
     }
-    cam.zoom += (target - cam.zoom) * dt.min(1.0);
+    cam.zoom += (target - cam.zoom) * ease(1.0, dt);
     if let Projection::Perspective(p) = proj {
         p.fov = 2.0 * ((replay::director::FOV * 0.5).tan() / cam.zoom.max(0.5)).atan();
     }
@@ -1289,16 +1378,17 @@ fn critical_spring((x, v): (f32, f32), goal: f32, w: f32, dt: f32) -> (f32, f32)
     (goal + (e + c * dt) * decay, (v - c * w * dt) * decay)
 }
 
-/// Keeps the camera half a metre over the ground under it, unless that
-/// would take it out of the rider's sight: over the top of a roof the
-/// rider is under (Stadium 1's low start tunnels).
-fn lift_off_ground(collision: &TrackCollision, pivot: Vec3, eye: &mut Vec3) {
-    let Some(ground) = collision.raycast(*eye + Vec3::Y, Vec3::NEG_Y, 1.5) else { return };
-    let lifted = eye.with_y(eye.y.max(ground.point.y + 0.5));
-    let to = lifted - pivot;
-    if lifted != *eye && collision.raycast(pivot, to.normalize_or_zero(), to.length()).is_none() {
-        *eye = lifted;
+/// A ball at `centre` pushed out of the track, and whether it touched any
+/// of it.
+fn clear_of(world: &TrackCollision, mut centre: Vec3, radius: f32) -> (Vec3, bool) {
+    let mut touched = false;
+    // A few passes settle it in a corner.
+    for _ in 0..4 {
+        let Some(hit) = world.sphere(centre, radius) else { break };
+        centre += hit.normal * hit.t;
+        touched = true;
     }
+    (centre, touched)
 }
 
 /// C or the pad's Back button (unless remapped) steps through the follow
@@ -1423,18 +1513,41 @@ mod tests {
 
     #[test]
     fn camera_stays_under_a_low_roof() {
-        // A floor and a roof 3 m up, 0.4 m thick: the camera, pulled in
-        // just under the roof, mustn't hop onto its top.
+        // A floor and a roof 3 m up, 0.4 m thick: the camera's lens, just
+        // under the roof, is pushed down off it, not onto its top.
         let tris = [slab(0.0), slab(3.0), slab(3.4)].concat();
         let c = TrackCollision::new(tris, 4.0);
-        let pivot = Vec3::new(0.0, 1.2, 0.0);
-        let mut eye = Vec3::new(0.0, 2.9, 3.0);
-        lift_off_ground(&c, pivot, &mut eye);
-        assert_eq!(eye, Vec3::new(0.0, 2.9, 3.0));
-        // In the open it still keeps clear of the ground.
+        let (lens, touched) = clear_of(&c, Vec3::new(0.0, 2.5, 3.0), CLEARANCE);
+        assert!(touched);
+        assert!((lens.y - (3.0 - CLEARANCE)).abs() < 1e-4, "{lens}");
+        // In the open, off the ground.
         let c = TrackCollision::new(slab(0.0).to_vec(), 4.0);
-        let mut eye = Vec3::new(0.0, 0.1, 3.0);
-        lift_off_ground(&c, pivot, &mut eye);
-        assert_eq!(eye, Vec3::new(0.0, 0.5, 3.0));
+        let (lens, _) = clear_of(&c, Vec3::new(0.0, 0.1, 3.0), CLEARANCE);
+        assert!((lens.y - CLEARANCE).abs() < 1e-4, "{lens}");
+        assert_eq!(clear_of(&c, Vec3::new(0.0, 2.0, 3.0), CLEARANCE), (Vec3::new(0.0, 2.0, 3.0), false));
+    }
+
+    #[test]
+    fn heading_holds_through_wheelies_and_flips() {
+        // Pitching up or down through the vertical, the heading stays
+        // ahead, where the quad's flat forward axis flips round; it turns
+        // only at 135 degrees, nearer upside down than not.
+        for deg in [0.0f32, 30.0, 60.0, 89.0, 91.0, 120.0, -60.0, -89.0, -91.0, -120.0] {
+            let turn = Quat::from_rotation_x(deg.to_radians());
+            let h = follow_heading(turn);
+            assert!(h.dot(Vec3::NEG_Z) > 0.99, "{deg}: {h}");
+        }
+        // Turned, it follows the turn.
+        let h = follow_heading(Quat::from_rotation_y(1.0) * Quat::from_rotation_x(1.4));
+        assert!(h.distance(Quat::from_rotation_y(1.0) * Vec3::NEG_Z) < 1e-4);
+    }
+
+    #[test]
+    fn eases_match_the_original_at_any_frame_rate() {
+        // Sixty 60 Hz frames or 144 frames over a second: the same.
+        let run = |hz: f32| (0..hz as usize).fold(0.0f32, |x, _| x + (1.0 - x) * ease(4.0, 1.0 / hz));
+        let original = 1.0 - (1.0 - 4.0f32 / 60.0).powi(60);
+        assert!((run(60.0) - original).abs() < 1e-4);
+        assert!((run(144.0) - original).abs() < 1e-4);
     }
 }
