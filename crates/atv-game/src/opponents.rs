@@ -441,8 +441,16 @@ fn drive_opponents(
         let time_up = battle && session.as_ref().is_some_and(|s| s.over(progress.clock));
         let crashed = r.wreck.fall.is_some();
         let mut held = false;
-        r.input = if !r.progress.started() || crashed {
-            // On the grid, or thrown off: the quad rolls on by itself.
+        r.input = if !r.progress.started() && !crashed {
+            // Held on the grid, where players can rev for a turbo start.
+            match r.human {
+                Some(n) if !args.autodrive => {
+                    Input { throttle: crate::read_input(&controls, false, Some(n - 1)).throttle, ..default() }
+                }
+                _ => Input::default(),
+            }
+        } else if crashed {
+            // Thrown off: the quad rolls on by itself.
             Input::default()
         } else if time_up {
             Input { brake: if r.vehicle.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
@@ -477,6 +485,7 @@ fn drive_opponents(
         r.vehicle.drive_scale = boost_rules.as_deref().map_or(1.0, |rules| r.boost.step(rules, held, banked, dt))
             * r.driver.torque_scale();
         let before = (r.vehicle.velocity, r.vehicle.angular_velocity);
+        r.vehicle.set_grid(!r.progress.started());
         r.vehicle.step(&r.input, dt, &race.collision);
         let mut back_on = false;
         if crashed {
