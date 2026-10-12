@@ -1247,6 +1247,23 @@ the ROW spatial tree and effect records, and the material record fields.
   `clamp(1 - on, 0.3, 1)` and pitch `0.85 + 1.8 * r`. Another branch
   (a vehicle value at `+0x2b0` below 0.6) changes the mix and isn't
   ported.
+- Retail (Sound.xml with `<Platforms>`; XBE addresses): the Vehicles
+  bank has 30 clips with the engine loops first, 0 "off" and 1 "on"
+  (engine part `0xb2150`), and wheel names `Gravel1` 2, `Rumble1`–`4`
+  3–6, `Water1`–`2` 7–8, `Twigs1`–`2` 9–10, `Screech1` 11 (`0x1ce638`).
+  Mix levels come from `<Platforms><XBox>`: "on" × `mEngineVol` 0.8,
+  "off" × `mEngineIdleVol` 0.35, wheels × `mSurfaceVol` 0.5; ambience is
+  each area's `m_ambientVol`. Engine update `0xb1690`, t = throttle pedal,
+  c = clutch: on `clamp((t + r) * 0.85, 0.08, 1)`, off
+  `clamp(1 - on, 0.1, 1)`; with c < 0.3 on is 0.3 and off is
+  `(off - k) * c + k` (k = 0.3t + 0.7) in first gear, else 0.1. Pitch
+  uses r' = `r + (1 - r) * wheelspin` in first gear, else
+  `(r - 0.5) * c + 0.5`: on `0.6 + 1.2r'`, off `0.85 + 1.8r'`. Knocks
+  (`0xb1e90`): table `0x1ce6a0` [14, 20, 12, 13, 18], the first 2 at 0.8
+  up to 6, the first 4 up to 12, else all; pitch 0.8–0.9; never the same
+  twice. Riders bank (56): a thrown rider's body thud is 48–55 louder with
+  speed (`0xaeaf0`, speed over 2.2347, every 0.5 s), then 61% of the time
+  a cry, at most twice a crash: male 12–22, female 37–47 (`0xae930`).
 - Banks load into slots: 0 Vehicles, 1 Riders, 2 SpotFX, 3 the track's
   ambient or crowd bank. One-shots go through `0x92e30` (bank, index,
   volume, pitch).
