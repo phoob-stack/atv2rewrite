@@ -9,6 +9,7 @@
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
 //!             [--resolution 1280x720] [--fullscreen] [--cheat ALLOFEM] [--puppet-test]
 //!             [--host [--port 7777]] [--join ADDRESS[:PORT]]
+//!             [--server ADDRESS[:PORT] [--host --name NAME | --room N] [--password PW]]
 //!
 //! Without `--track` the game opens on its front end; with it, it goes
 //! straight into a race (`--frontend` shows the menus anyway, preselected).
@@ -22,7 +23,9 @@
 //! moves a second apart, as quads another game drives would be shown.
 //! `--host` hosts an online Single Race on `--track` (UDP port 7777 unless
 //! `--port` says otherwise) and `--join` joins one by the host's address;
-//! see [`net`].
+//! with `--server` the race goes through an online server list instead
+//! (`atv2-server`): `--host` lists it there as `--name`, `--room` joins the
+//! race with that number, and `--password` locks or opens it. See [`net`].
 
 mod aitricks;
 mod arcade;
@@ -149,6 +152,12 @@ struct Args {
     host: Option<u16>,
     /// Join the online race hosted at this address.
     join: Option<String>,
+    /// The online server list to host on or join through, the race's name
+    /// on it, its password, and the race on it to join.
+    server: Option<String>,
+    name: String,
+    password: String,
+    room: Option<u32>,
 }
 
 /// The game modes on the main menu.
@@ -354,6 +363,10 @@ fn parse_args() -> anyhow::Result<Args> {
         puppet_test: false,
         host: None,
         join: None,
+        server: None,
+        name: "ATV 2 race".into(),
+        password: String::new(),
+        room: None,
     };
     let mut port = net::link::PORT;
     let mut frontend = false;
@@ -442,6 +455,10 @@ fn parse_args() -> anyhow::Result<Args> {
             "--host" => a.host = Some(net::link::PORT),
             "--port" => port = val().parse()?,
             "--join" => a.join = Some(val()),
+            "--server" => a.server = Some(val()),
+            "--name" => a.name = val(),
+            "--password" => a.password = val(),
+            "--room" => a.room = Some(val().parse()?),
             "--fullscreen" => a.fullscreen = true,
             "--resolution" => {
                 let v = val();
@@ -466,8 +483,9 @@ fn parse_args() -> anyhow::Result<Args> {
         a.host = Some(port);
     }
     // Online is Single Race, one player a game, straight from the lobby.
-    if a.host.is_some() || a.join.is_some() {
-        anyhow::ensure!(a.host.is_none() || a.join.is_none(), "--host and --join don't go together");
+    anyhow::ensure!(a.room.is_none() || a.server.is_some(), "--room needs --server, the server list it's on");
+    if a.host.is_some() || a.join.is_some() || a.room.is_some() {
+        anyhow::ensure!(a.host.is_none() || (a.join.is_none() && a.room.is_none()), "--host and --join don't go together");
         a.direct = true;
         a.mode = Mode::SingleRace;
         a.mode_given = true;
@@ -568,10 +586,13 @@ fn main() -> anyhow::Result<()> {
         }
     }
     // Online: the lobby waits on the loading screen.
-    let online = if let Some(port) = args.host {
-        Some(net::Online::host(port, tuning::quad_params(&game.0, &tuning::load(), &selection.quad, true).retail))
-    } else {
-        args.join.as_deref().map(|a| net::Online::join(a, tuning::quad_params(&game.0, &tuning::load(), &selection.quad, true).retail))
+    let retail = tuning::quad_params(&game.0, &tuning::load(), &selection.quad, true).retail;
+    let online = match (args.host, &args.server, args.room, &args.join) {
+        (Some(_), Some(server), ..) => Some(net::Online::host_listed(server, &args.name, &args.password, retail, &selection)),
+        (Some(port), None, ..) => Some(net::Online::host(port, retail)),
+        (None, Some(server), Some(room), _) => Some(net::Online::join_listed(server, room, &args.password, retail)),
+        (None, _, _, Some(address)) => Some(net::Online::join(address, retail)),
+        _ => None,
     };
     let online = match online.transpose() {
         Ok(o) => o,

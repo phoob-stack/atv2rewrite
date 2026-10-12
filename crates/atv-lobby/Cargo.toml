@@ -1,0 +1,11 @@
+[package]
+name = "atv-lobby"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[[bin]]
+name = "atv2-server"
+path = "src/bin/atv2-server.rs"

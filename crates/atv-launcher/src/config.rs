@@ -47,8 +47,8 @@ impl Start {
             Start::Arcade => "Arcade from the first round: beat the clock at each checkpoint.",
             Start::Challenge => "One of the Freestyle Challenges in the stadium.",
             Start::Academy => "Practice tricks in the stadium with no time limit.",
-            Start::Host => "A race friends join over the internet. Open UDP port 7777 on your router to this PC, give them your public IP address, and press Enter in the lobby once they're in.",
-            Start::Join => "Joins a friend's race: type the address of the PC hosting it (their public IP, or name:port).",
+            Start::Host => "A race friends join over the internet, listed on the server list with its name and password (or, unticked, straight to this PC with UDP port 7777 open on your router). Press Enter in the lobby once everyone's in.",
+            Start::Join => "Pick a race from the server list, or type the address of a PC hosting one directly.",
         }
     }
 
@@ -107,9 +107,23 @@ pub struct Config {
     pub upscaler: PathBuf,
     /// Where the HD pack is built and read (empty = the default folder).
     pub hd_dir: PathBuf,
-    /// The host's address, for joining an online race.
+    /// The host's address, for joining an online race directly.
     pub address: String,
+    /// The online server list (`atv2-server`), "host" or "host:port".
+    pub server: String,
+    /// Host on the server list rather than straight from this PC.
+    pub listed: bool,
+    /// A hosted race's name and password on the server list.
+    pub room_name: String,
+    pub password: String,
+    /// The race picked on the server list to join, and its password (not
+    /// kept between runs).
+    pub room: Option<u32>,
+    pub join_password: String,
 }
+
+/// The server list games use unless the player picks another.
+pub const DEFAULT_SERVER: &str = "";
 
 impl Default for Config {
     fn default() -> Self {
@@ -130,6 +144,12 @@ impl Default for Config {
             upscaler: PathBuf::new(),
             hd_dir: PathBuf::new(),
             address: String::new(),
+            server: DEFAULT_SERVER.into(),
+            listed: true,
+            room_name: "ATV 2 race".into(),
+            password: String::new(),
+            room: None,
+            join_password: String::new(),
         }
     }
 }
@@ -164,6 +184,10 @@ impl Config {
                 "upscaler" => c.upscaler = PathBuf::from(v),
                 "hd_dir" => c.hd_dir = PathBuf::from(v),
                 "address" => c.address = v.into(),
+                "server" if !v.is_empty() => c.server = v.into(),
+                "listed" => c.listed = v != "false",
+                "room_name" if !v.is_empty() => c.room_name = v.into(),
+                "password" => c.password = v.into(),
                 _ => {}
             }
         }
@@ -180,7 +204,7 @@ impl Config {
 
     fn to_text(&self) -> String {
         format!(
-            "game = {}\nstart = {}\ntrack = {}\nquad = {}\nrider = {}\nlaps = {}\nminutes = {}\nchallenge = {}\nwidth = {}\nheight = {}\nfullscreen = {}\nhd = {}\nhd_world = {}\nupscaler = {}\nhd_dir = {}\naddress = {}\n",
+            "game = {}\nstart = {}\ntrack = {}\nquad = {}\nrider = {}\nlaps = {}\nminutes = {}\nchallenge = {}\nwidth = {}\nheight = {}\nfullscreen = {}\nhd = {}\nhd_world = {}\nupscaler = {}\nhd_dir = {}\naddress = {}\nserver = {}\nlisted = {}\nroom_name = {}\npassword = {}\n",
             self.game.display(),
             self.start.key(),
             self.track,
@@ -196,7 +220,11 @@ impl Config {
             self.hd_world,
             self.upscaler.display(),
             self.hd_dir.display(),
-            self.address
+            self.address,
+            self.server,
+            self.listed,
+            self.room_name,
+            self.password
         )
     }
 }

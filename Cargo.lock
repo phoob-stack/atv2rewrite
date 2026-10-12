@@ -445,6 +445,7 @@ dependencies = [
  "anyhow",
  "atv-formats",
  "atv-hd",
+ "atv-lobby",
  "atv-sim",
  "bevy",
  "directories",
@@ -468,11 +469,16 @@ dependencies = [
  "anyhow",
  "atv-formats",
  "atv-hd",
+ "atv-lobby",
  "atv-sim",
  "directories",
  "eframe",
  "rfd",
 ]
+
+[[package]]
+name = "atv-lobby"
+version = "0.1.0"
 
 [[package]]
 name = "atv-sim"

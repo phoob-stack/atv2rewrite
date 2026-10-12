@@ -30,6 +30,14 @@ enum Tab {
 
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(232, 140, 32);
 
+/// The races on the online server list.
+enum Rooms {
+    Idle,
+    Busy(mpsc::Receiver<std::io::Result<Vec<atv_lobby::Room>>>),
+    Done(Vec<atv_lobby::Room>),
+    Failed(String),
+}
+
 enum Scan {
     Idle,
     Busy(mpsc::Receiver<anyhow::Result<Catalog>>),
@@ -52,6 +60,7 @@ struct Launcher {
     hd_dir_text: String,
     tab: Tab,
     tune: tuning::Config,
+    rooms: Rooms,
 }
 
 impl Launcher {
@@ -70,6 +79,7 @@ impl Launcher {
             message: None,
             build: None,
             pack,
+            rooms: Rooms::Idle,
         };
         l.rescan();
         l
@@ -104,6 +114,18 @@ impl Launcher {
             }
             Err(e) => self.message = Some((false, format!("{e:#}"))),
         }
+    }
+
+    /// Asks the server list for its races.
+    fn refresh_rooms(&mut self) {
+        let server = self.cfg.server.trim().to_string();
+        if server.is_empty() {
+            self.rooms = Rooms::Failed("Type the server list's address first.".into());
+            return;
+        }
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || _ = tx.send(atv_lobby::list(&server, std::time::Duration::from_secs(3))));
+        self.rooms = Rooms::Busy(rx);
     }
 
     fn refresh_pack(&mut self) {
@@ -155,6 +177,20 @@ impl Launcher {
                 Err(e) => (false, format!("Building the HD pack failed: {e:#}")),
             });
         }
+        if let Rooms::Busy(rx) = &self.rooms
+            && let Ok(result) = rx.try_recv()
+        {
+            self.rooms = match result {
+                Ok(rooms) => {
+                    // A race that's gone can't stay picked.
+                    if self.cfg.room.is_some_and(|id| !rooms.iter().any(|r| r.id == id)) {
+                        self.cfg.room = None;
+                    }
+                    Rooms::Done(rooms)
+                }
+                Err(e) => Rooms::Failed(format!("Couldn't reach the server list: {e}")),
+            };
+        }
         if let Some(r) = &mut self.running {
             match r.poll() {
                 None => {}
@@ -171,7 +207,7 @@ impl Launcher {
 impl eframe::App for Launcher {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
-        if matches!(self.scan, Scan::Busy(_)) || self.running.is_some() || self.build.is_some() {
+        if matches!(self.scan, Scan::Busy(_)) || matches!(self.rooms, Rooms::Busy(_)) || self.running.is_some() || self.build.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
     }
@@ -182,7 +218,10 @@ impl eframe::App for Launcher {
             _ => None,
         };
         // Joining needs somewhere to join.
-        let ready = catalog.is_some() && self.running.is_none() && self.build.is_none() && (self.cfg.start != Start::Join || !self.cfg.address.trim().is_empty());
+        let ready = catalog.is_some()
+            && self.running.is_none()
+            && self.build.is_none()
+            && (self.cfg.start != Start::Join || self.cfg.room.is_some() || !self.cfg.address.trim().is_empty());
 
         egui::Panel::top("header").frame(egui::Frame::new().inner_margin(egui::Margin { left: 20, right: 20, top: 16, bottom: 10 }).fill(ui.visuals().extreme_bg_color)).show(ui, |ui| {
             ui.label(egui::RichText::new("ATV Quad Power Racing 2").size(28.0).strong().color(ACCENT));
@@ -374,11 +413,6 @@ impl Launcher {
                 ui.end_row();
             }
             match start {
-                Start::Join => {
-                    ui.label("Host's address");
-                    ui.add(egui::TextEdit::singleline(&mut self.cfg.address).hint_text("e.g. 81.2.69.160").desired_width(220.0));
-                    ui.end_row();
-                }
                 Start::SingleRace | Start::TimeTrial | Start::Host => {
                     ui.label("Laps");
                     ui.add(egui::Slider::new(&mut self.cfg.laps, 1..=9));
@@ -422,6 +456,110 @@ impl Launcher {
                 }
             });
             ui.end_row();
+            if start == Start::Host {
+                ui.label("Server list");
+                ui.checkbox(&mut self.cfg.listed, "List the race (no router setup)");
+                ui.end_row();
+                if self.cfg.listed {
+                    ui.label("Server address");
+                    ui.add(egui::TextEdit::singleline(&mut self.cfg.server).hint_text("e.g. atv.example.com:7777").desired_width(220.0));
+                    ui.end_row();
+                    ui.label("Race name");
+                    ui.add(egui::TextEdit::singleline(&mut self.cfg.room_name).char_limit(atv_lobby::NAME_LEN).desired_width(220.0));
+                    ui.end_row();
+                    ui.label("Password");
+                    ui.add(egui::TextEdit::singleline(&mut self.cfg.password).char_limit(atv_lobby::NAME_LEN).hint_text("none: anyone can join").desired_width(220.0));
+                    ui.end_row();
+                }
+            }
+        });
+        if start == Start::Join {
+            ui.add_space(8.0);
+            let retail = cat.params.values().next().map(|p| p.retail);
+            self.join_list(ui, retail);
+        }
+    }
+
+    /// The server list's races to pick from, or a host's address to join
+    /// directly.
+    fn join_list(&mut self, ui: &mut egui::Ui, retail: Option<bool>) {
+        if matches!(self.rooms, Rooms::Idle) && !self.cfg.server.trim().is_empty() {
+            self.refresh_rooms();
+        }
+        ui.horizontal(|ui| {
+            ui.label("Server address");
+            let edit = ui.add(egui::TextEdit::singleline(&mut self.cfg.server).hint_text("e.g. atv.example.com:7777").desired_width(220.0));
+            let busy = matches!(self.rooms, Rooms::Busy(_));
+            if ui.add_enabled(!busy, egui::Button::new("Refresh")).clicked() || edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                self.refresh_rooms();
+            }
+            if busy {
+                ui.spinner();
+            }
+        });
+        ui.add_space(4.0);
+        match &self.rooms {
+            Rooms::Failed(e) => {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            Rooms::Done(rooms) if rooms.is_empty() => {
+                ui.label("No races on the server list right now.");
+            }
+            Rooms::Done(rooms) => {
+                let mut picked = self.cfg.room;
+                egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                    egui::Grid::new("rooms").num_columns(5).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+                        for h in ["Race", "Track", "Laps", "Players", ""] {
+                            ui.label(egui::RichText::new(h).strong());
+                        }
+                        ui.end_row();
+                        for r in rooms {
+                            // The other disc's races, older games' and ones
+                            // already racing can't be joined.
+                            let why = if retail.is_some_and(|retail| retail != r.info.retail) {
+                                Some(if r.info.retail { "retail disc" } else { "preview disc" })
+                            } else if r.info.game != atv_lobby::GAME_PROTOCOL {
+                                Some("other version")
+                            } else if r.info.started {
+                                Some("racing")
+                            } else if r.info.players >= r.info.max {
+                                Some("full")
+                            } else {
+                                None
+                            };
+                            let name = if r.locked { format!("🔒 {}", r.name) } else { r.name.clone() };
+                            ui.add_enabled_ui(why.is_none(), |ui| {
+                                if ui.selectable_label(picked == Some(r.id), name).clicked() {
+                                    picked = Some(r.id);
+                                }
+                            });
+                            ui.label(game::track_label(&r.info.track));
+                            ui.label(r.info.laps.to_string());
+                            ui.label(format!("{} / {}", r.info.players, r.info.max));
+                            ui.label(egui::RichText::new(why.unwrap_or("open")).weak());
+                            ui.end_row();
+                        }
+                    });
+                });
+                if picked != self.cfg.room {
+                    self.cfg.room = picked;
+                    self.cfg.join_password.clear();
+                }
+                if let Some(r) = rooms.iter().find(|r| Some(r.id) == self.cfg.room).filter(|r| r.locked) {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Password for {}", r.name));
+                        ui.add(egui::TextEdit::singleline(&mut self.cfg.join_password).password(true).desired_width(160.0));
+                    });
+                }
+            }
+            _ => {}
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.label("Or join by address");
+            if ui.add(egui::TextEdit::singleline(&mut self.cfg.address).hint_text("e.g. 81.2.69.160").desired_width(180.0)).changed() && !self.cfg.address.trim().is_empty() {
+                self.cfg.room = None;
+            }
         });
     }
 

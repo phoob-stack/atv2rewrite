@@ -14,7 +14,7 @@ use crate::racers::{RacerId, RacerState};
 /// Every packet starts with this and the protocol version: games of
 /// different builds don't talk.
 const MAGIC: &[u8; 4] = b"ATV2";
-pub const PROTOCOL: u16 = 1;
+pub const PROTOCOL: u16 = atv_lobby::GAME_PROTOCOL;
 
 /// One quad in an online race's line-up.
 #[derive(Clone, Debug, PartialEq)]
