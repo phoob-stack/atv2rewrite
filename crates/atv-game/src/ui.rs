@@ -288,6 +288,8 @@ fn layout_bitmap_text(
 /// Everything 2D the HUD and the front end draw, loaded once at start-up.
 #[derive(Resource, Clone)]
 pub struct UiAssets {
+    /// The retail disc's front end (it has no `FrontEnd/NewDesign`).
+    pub retail: bool,
     pub hud: Sheet,
     /// Preload arc revealed in steps, for the gauge's preload meter.
     pub preload_steps: Vec<Handle<Image>>,
@@ -441,6 +443,7 @@ impl UiAssets {
             }
         }
         Ok(Self {
+            retail,
             preload_steps,
             boost_steps,
             positions: l.sheet("Sprites/positions")?,
