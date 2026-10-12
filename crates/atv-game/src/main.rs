@@ -1060,29 +1060,38 @@ fn put_back(race: &mut Race, v: &mut Vehicle, opponents: Option<&opponents::Oppo
     race.upside_down = 0.0;
 }
 
+/// Seconds since the last physics step: what the quads and cameras are
+/// drawn ahead by, so they move on every frame however its rate falls
+/// against the 120 Hz steps.
+pub(crate) fn since_step(fixed: &Time<Fixed>) -> f32 {
+    fixed.overstep().as_secs_f32()
+}
+
 fn sync_quad(
+    fixed: Res<Time<Fixed>>,
     player: Option<Res<Player>>,
     mut body: Query<(Entity, &mut Transform), (With<QuadBody>, Without<WheelVisual>)>,
     mut wheels: Query<(&WheelVisual, &mut Transform), Without<QuadBody>>,
 ) {
     let Some(player) = player else { return };
     let v = &player.0;
+    let ahead = since_step(&fixed);
     let Ok((quad, mut t)) = body.single_mut() else { return };
-    t.translation = v.position;
-    t.rotation = v.rotation;
+    (t.translation, t.rotation) = v.drawn(ahead);
     for (w, mut t) in &mut wheels {
         if w.owner == quad {
-            place_wheel(w, &mut t, v);
+            place_wheel(w, &mut t, v, ahead);
         }
     }
 }
 
-/// Moves a wheel model to where the simulation has its wheel(s).
-fn place_wheel(w: &WheelVisual, t: &mut Transform, v: &Vehicle) {
+/// Moves a wheel model to where the simulation has its wheel(s), drawn
+/// `ahead` seconds after the last step.
+fn place_wheel(w: &WheelVisual, t: &mut Transform, v: &Vehicle, ahead: f32) {
     let n = w.wheels.len() as f32;
     let (mut height, mut spin, mut steer) = (0.0, 0.0, 0.0);
     for &i in &w.wheels {
-        let (Some(ws), Some(wp)) = (v.wheels.get(i), v.params.wheels.get(i)) else { continue };
+        let (Some(ws), Some(wp)) = (v.drawn_wheel(i, ahead), v.params.wheels.get(i)) else { continue };
         // Wheel centre = attachment + travel along the strut.
         height += wp.offset[1] + wp.min_pos + ws.compression;
         spin += ws.spin;
@@ -1147,7 +1156,7 @@ const CAM_SPRING: f32 = 50.0;
 /// rotation stiffnesses go unused, as in the original.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn chase_camera(
-    time: Res<Time>,
+    (time, fixed): (Res<Time>, Res<Time<Fixed>>),
     game: Res<Game>,
     settings: Res<Settings>,
     player: Option<Res<Player>>,
@@ -1166,7 +1175,7 @@ fn chase_camera(
     for (mut t, mut proj, mut cam, split) in &mut cams {
         // Split screen: each view follows its own player's quad.
         let v = match split.map_or(0, |s| s.0) {
-            0 if let Some(body) = wreck.as_deref().and_then(Wreck::floating) => {
+            0 if let Some(body) = wreck.as_deref().and_then(|w| w.floating(fixed.overstep_fraction())) => {
                 // The quad sinks; the camera stays over the water and
                 // watches the rider tread water.
                 let floor = water.as_deref().and_then(|w| w.level(t.translation)).map_or(f32::MIN, |s| s + 0.5);
@@ -1188,7 +1197,7 @@ fn chase_camera(
                 None => continue,
             },
         };
-        follow_quad(&time, &race, &follow, v, &mut t, &mut proj, &mut cam);
+        follow_quad(&time, &race, &follow, (v, since_step(&fixed)), &mut t, &mut proj, &mut cam);
     }
     // Very close puts the camera at the rider's head: ride without them.
     for (r, mut vis) in &mut riders {
@@ -1197,23 +1206,27 @@ fn chase_camera(
     }
 }
 
-fn follow_quad(time: &Time, race: &Race, follow: &FollowCam, v: &Vehicle, t: &mut Transform, proj: &mut Projection, cam: &mut ChaseCam) {
+/// Follows quad `v` as drawn `ahead` seconds after its last step, so the
+/// camera moves on every frame as the quad does.
+fn follow_quad(time: &Time, race: &Race, follow: &FollowCam, (v, ahead): (&Vehicle, f32), t: &mut Transform, proj: &mut Projection, cam: &mut ChaseCam) {
     let dt = time.delta_secs();
-    let fwd = v.forward().with_y(0.0).normalize_or(Vec3::NEG_Z);
+    let (position, rotation) = v.drawn(ahead);
+    let (forward, up) = (rotation * Vec3::NEG_Z, rotation * Vec3::Y);
+    let fwd = forward.with_y(0.0).normalize_or(Vec3::NEG_Z);
     let right = fwd.cross(Vec3::Y);
-    let at = |o: Vec3| v.position + right * o.x + Vec3::Y * o.y + fwd * o.z;
+    let at = |o: Vec3| position + right * o.x + Vec3::Y * o.y + fwd * o.z;
     let ideal = at(follow.offset);
     let near = follow.offset.length();
 
     // A new race or a respot starts the camera at the offset point.
     let trail = match cam.trail {
-        Some(p) if (v.position - cam.last - v.velocity * dt).length() < 3.0 => p,
+        Some(p) if (position - cam.last - v.velocity * dt).length() < 3.0 => p,
         _ => {
             cam.dist = (near, 0.0);
             ideal
         }
     };
-    cam.last = v.position;
+    cam.last = position;
     let want = follow.pos_stiffness[usize::from(!v.grounded())];
     cam.stiffness = if cam.stiffness < want { cam.stiffness + (want - cam.stiffness) * dt } else { want };
     let trail = trail.lerp(ideal, (dt * cam.stiffness).min(1.0));
@@ -1222,32 +1235,32 @@ fn follow_quad(time: &Time, race: &Race, follow: &FollowCam, v: &Vehicle, t: &mu
     // The distance follows on a stiff spring (k 50, critically damped),
     // pulled in to 0.8 of the way to anything between the quad and the
     // camera (0x71f50).
-    let to = trail - v.position;
+    let to = trail - position;
     let d = to.length();
-    let dir = if d > 1e-3 { to / d } else { (ideal - v.position) / near.max(1e-3) };
-    let pivot = v.position + Vec3::Y;
+    let dir = if d > 1e-3 { to / d } else { (ideal - position) / near.max(1e-3) };
+    let pivot = position + Vec3::Y;
     let goal = race.collision.raycast(pivot, (trail - pivot).normalize_or_zero(), (trail - pivot).length()).map_or(d, |hit| hit.t * 0.8);
     cam.dist = critical_spring(cam.dist, goal, CAM_SPRING.sqrt(), dt);
     let x = cam.dist.0;
-    let mut eye = v.position + dir * x;
+    let mut eye = position + dir * x;
     // No nearer than the offset's length, pushed out level (0x71b20), and
     // no further than 1.3 times it (0x71c40).
-    let off = eye - v.position;
+    let off = eye - position;
     let level = off.x * off.x + off.z * off.z;
     if off.length() < near - 1e-6 && level >= 1e-6 {
         let s = (1.0 - (off.length_squared() - near * near) / level).sqrt();
-        eye = v.position + Vec3::new(off.x * s, off.y, off.z * s);
+        eye = position + Vec3::new(off.x * s, off.y, off.z * s);
     }
-    let off = eye - v.position;
+    let off = eye - position;
     if off.length() > near * 1.3 - 1e-6 && level >= 1e-6 {
-        eye = v.position + off * (near * 1.3 / off.length());
+        eye = position + off * (near * 1.3 / off.length());
     }
     lift_off_ground(&race.collision, pivot, &mut eye);
     t.translation = eye;
 
     // It looks at a point ahead along the quad's own heading, pitch and
     // all (0x6f520), with no lag.
-    let look = v.position + v.forward().cross(v.up()) * follow.look.x + v.forward() * follow.look.z + Vec3::Y * (follow.look.y + LOOK_RAISE);
+    let look = position + forward.cross(up) * follow.look.x + forward * follow.look.z + Vec3::Y * (follow.look.y + LOOK_RAISE);
     if (look - eye).length_squared() > 1e-4 {
         cam.facing = Transform::from_translation(eye).looking_at(look, Vec3::Y).rotation;
     }

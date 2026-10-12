@@ -13,6 +13,8 @@
 //! pose fields are mirrored into the sim's right-handed frame (Z negated)
 //! after every step.
 
+use std::f32::consts::{PI, TAU};
+
 use glam::{Mat3, Quat, Vec3};
 
 use crate::collision::TrackCollision;
@@ -60,6 +62,15 @@ pub struct WheelState {
     pub steer: f32,
     /// Surface id under the tyre (see [`crate::surface`]).
     pub surface: u8,
+}
+
+/// A wheel as drawn: its travel from full extension, roll and steering
+/// angle (see [`WheelState`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct WheelPose {
+    pub compression: f32,
+    pub spin: f32,
+    pub steer: f32,
 }
 
 /// Per-wheel strut state, in the game frame.
@@ -168,6 +179,7 @@ pub struct Vehicle {
     pending: f32,
     shown_pos: Vec3,
     shown_rot: Mat3,
+    shown_wheels: Vec<WheelPose>,
     /// Where each body sphere was last step, for catching tunnelling.
     body_prev: [Vec3; 5],
 
@@ -274,6 +286,7 @@ impl Vehicle {
             pending: 0.0,
             shown_pos: Vec3::ZERO,
             shown_rot: Mat3::IDENTITY,
+            shown_wheels: vec![WheelPose::default(); n],
             body_prev: [Vec3::NAN; 5],
             struts: vec![Strut::default(); n],
             ground: Ground {
@@ -396,6 +409,7 @@ impl Vehicle {
         }
         self.shown_pos = self.pos;
         self.shown_rot = self.rot;
+        self.shown_wheels = self.wheel_poses();
         self.sync_out();
     }
 
@@ -469,6 +483,7 @@ impl Vehicle {
             self.pending = (self.pending - TICK).max(0.0);
             self.shown_pos = self.pos;
             self.shown_rot = self.rot;
+            self.shown_wheels = self.wheel_poses();
             self.substep(input, TICK, world);
             self.spin_wheels();
         }
@@ -1453,13 +1468,52 @@ impl Vehicle {
     }
 
     /// Copies the game-frame state out to the public sim-frame fields.
+    /// How far between the last two ticks the pose `ahead` seconds after
+    /// the last call to [`Vehicle::step`] is.
+    fn blend(&self, ahead: f32) -> f32 {
+        ((self.pending + ahead.max(0.0)) / TICK).clamp(0.0, 1.0)
+    }
+
+    /// The pose to draw `ahead` seconds after the last call to
+    /// [`Vehicle::step`] (the time the caller has let pass since): between
+    /// the last two ticks, as `position` and `rotation` are, but placed by
+    /// the time of the frame drawn, so the quad moves smoothly at any frame
+    /// rate rather than in the caller's steps.
+    pub fn drawn(&self, ahead: f32) -> (Vec3, Quat) {
+        let t = self.blend(ahead);
+        let (from, to) = (Quat::from_mat3(&self.shown_rot), Quat::from_mat3(&self.rot));
+        let rotation = Quat::from_mat3(&mirror(Mat3::from_quat(from.slerp(to, t).normalize()))).normalize();
+        (self.shown_pos.lerp(self.pos, t) * FLIP, rotation)
+    }
+
+    /// Wheel `i` as drawn `ahead` seconds after the last step, as
+    /// [`Vehicle::drawn`] places the body.
+    pub fn drawn_wheel(&self, i: usize, ahead: f32) -> Option<WheelPose> {
+        let (from, to) = (self.shown_wheels.get(i)?, self.wheel_pose(i)?);
+        let t = self.blend(ahead);
+        // The roll wraps at a full turn.
+        let roll = (to.spin - from.spin + PI).rem_euclid(TAU) - PI;
+        Some(WheelPose {
+            compression: from.compression + (to.compression - from.compression) * t,
+            spin: (from.spin + roll * t).rem_euclid(TAU),
+            steer: from.steer + (to.steer - from.steer) * t,
+        })
+    }
+
+    fn wheel_pose(&self, i: usize) -> Option<WheelPose> {
+        let (wp, s, ws) = (self.params.wheels.get(i)?, self.struts.get(i)?, self.wheels.get(i)?);
+        let steer = if wp.front { -self.steer * self.params.max_steer_deg.to_radians() } else { 0.0 };
+        Some(WheelPose { compression: s.pos - wp.min_pos, spin: ws.spin, steer })
+    }
+
+    fn wheel_poses(&self) -> Vec<WheelPose> {
+        (0..self.params.wheels.len()).filter_map(|i| self.wheel_pose(i)).collect()
+    }
+
     fn sync_out(&mut self) {
         // The pose between the last two ticks, so motion stays smooth when
         // the caller steps faster than the tick.
-        let t = (self.pending / TICK).clamp(0.0, 1.0);
-        self.position = self.shown_pos.lerp(self.pos, t) * FLIP;
-        let (from, to) = (Quat::from_mat3(&self.shown_rot), Quat::from_mat3(&self.rot));
-        self.rotation = Quat::from_mat3(&mirror(Mat3::from_quat(from.slerp(to, t).normalize()))).normalize();
+        (self.position, self.rotation) = self.drawn(0.0);
         self.velocity = self.vel * FLIP;
         // Angular velocity is an axial vector: mirroring flips its sign.
         self.angular_velocity = -(self.ang_vel * FLIP);

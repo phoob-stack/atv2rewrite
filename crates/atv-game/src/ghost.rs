@@ -354,6 +354,7 @@ impl Plugin for GhostPlugin {
 /// the ghost where it was at this point of its lap.
 #[allow(clippy::type_complexity)]
 fn ride(
+    fixed: Res<Time<Fixed>>,
     progress: Option<Res<RaceProgress>>,
     mut ghost: ResMut<Ghost>,
     quads: Query<Entity, With<QuadBody>>,
@@ -377,7 +378,9 @@ fn ride(
             g.save();
         }
     }
-    let t = p.lap_time();
+    // On the clock as the frame is drawn, as the player's quad is, so the
+    // ghost moves on every frame too.
+    let t = p.lap_time() + if p.started() && !p.over() { crate::since_step(&fixed) } else { 0.0 };
     let due = g.tape.last().is_none_or(|f| t - f.t >= 1.0 / RATE - 1e-4);
     if !p.over() && due && t <= LONGEST {
         let quad = quads.single().ok();
