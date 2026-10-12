@@ -62,33 +62,70 @@ const TROUBLE_REACH: f32 = 50.0;
 const JUMP_RUN_UP: f32 = 1.0;
 /// ...and never less than this many metres.
 const JUMP_RUN_UP_MIN: f32 = 10.0;
-/// The original's engine boost for computer riders (factor set at
-/// 0x66200, applied at 0x68250): this long into the race their engine
-/// torque goes up this many times, for the rest of the race...
-const ENGINE_BOOST: f32 = 2.5;
+/// How a computer rider races: the prototype's settings (0x66200, 0x68430,
+/// 0x67520) and retail's (0x79fc0, 0x7b990, 0x79af0).
+struct Tactics {
+    /// The engine boost (factor set at 0x66200 / 0x79fc0, applied at
+    /// 0x68250 / 0x7b990): this long into the race a computer rider's
+    /// engine torque goes up this many times, for the rest of the race...
+    engine_boost: f32,
+    /// ...and below this share of the quad's top speed the throttle is
+    /// held to `1 / engine_boost`, which leaves them about as quick as
+    /// stock until they are going fast.
+    boost_speed: f32,
+    /// A computer rider presses the boost button when the line runs
+    /// straight (each link turning less than this cosine from the one
+    /// before) for `BOOST_STRAIGHT` metres within `BOOST_LINKS` links.
+    /// The prototype also wants the throttle flat out; retail wants at
+    /// least half the top speed, a target speed above 75% of it and a
+    /// quarter of the boost meter (the race checks that).
+    boost_cos: f32,
+    /// A computer rider rides with the nearest player when they are going
+    /// faster than this (m/s)...
+    pack_speed: f32,
+    /// ...within this many metres.
+    pack_range: f32,
+    /// Closer behind than this (metres along the line), a boosted engine
+    /// is held back.
+    pack_close: f32,
+    /// Throttle PID gains racing the line and riding with a player.
+    race_gains: [f32; 3],
+    pack_gains: [f32; 3],
+    /// Steering PID gains.
+    steer_gains: [f32; 3],
+}
+
+const PROTOTYPE: Tactics = Tactics {
+    engine_boost: 2.5,
+    boost_speed: 0.75,
+    boost_cos: 0.94,
+    pack_speed: 13.408,
+    pack_range: 30.0,
+    pack_close: 5.0,
+    race_gains: [0.04, 0.1, 0.0],
+    pack_gains: [0.015, 0.4, 0.1],
+    steer_gains: [1.0, 0.2, 0.01],
+};
+
+const RETAIL: Tactics = Tactics {
+    engine_boost: 2.0,
+    boost_speed: 0.5,
+    boost_cos: 0.9659,
+    pack_speed: 17.878,
+    pack_range: 20.0,
+    pack_close: 8.0,
+    race_gains: [0.04, 0.0, 0.0],
+    pack_gains: [0.02, 0.25, 0.1],
+    steer_gains: [1.2, 0.2, 0.04],
+};
+
 const ENGINE_BOOST_DELAY: f32 = 6.0;
-/// ...and below this share of the quad's top speed the throttle is held
-/// to `1 / ENGINE_BOOST` (0x68430), which leaves them about as quick as
-/// stock until they are going fast.
-const ENGINE_BOOST_SPEED: f32 = 0.75;
-/// A computer rider presses the boost button (0x67520) on full throttle
-/// when the line runs straight (each link within 20 degrees of the one
-/// before, cos 0.94) for this far, looking at most this many links ahead.
 const BOOST_THROTTLE: f32 = 0.99;
 const BOOST_STRAIGHT: f32 = 100.0;
 const BOOST_LINKS: usize = 5;
-const BOOST_COS: f32 = 0.94;
-/// 0x68430: a computer rider rides with the nearest player when they are
-/// going faster than this (30 mph, m/s) ...
-const PACK_SPEED: f32 = 13.408;
-/// ... within this many metres.
-const PACK_RANGE: f32 = 30.0;
-/// Closer behind than this (metres along the line), a boosted engine is
-/// held back.
-const PACK_CLOSE: f32 = 5.0;
-/// Throttle PID gains racing the line and riding with a player.
-const RACE_GAINS: [f32; 3] = [0.04, 0.1, 0.0];
-const PACK_GAINS: [f32; 3] = [0.015, 0.4, 0.1];
+/// Retail boosts only while the target speed is above this share of the
+/// quad's top speed.
+const RETAIL_BOOST_TARGET: f32 = 0.75;
 
 #[derive(Debug, Clone)]
 pub struct LineNode {
@@ -412,6 +449,8 @@ pub struct AiDriver {
     /// Seconds of racing left before the engine boost kicks in; `None` for
     /// a quad that doesn't get it (a player's, on autopilot).
     engine_delay: Option<f32>,
+    /// Racing a retail quad (its .params say so): retail's tactics.
+    retail: bool,
     steer_pid: Pid,
     speed_pid: Pid,
     /// Sideways shift of the target from the corridor middle, metres.
@@ -452,8 +491,9 @@ impl AiDriver {
             target_speed: 0.0,
             boost: false,
             engine_delay: None,
-            steer_pid: Pid::new(1.0, 0.2, 0.01),
-            speed_pid: Pid::new(RACE_GAINS[0], RACE_GAINS[1], RACE_GAINS[2]),
+            retail: false,
+            steer_pid: Pid::new(PROTOTYPE.steer_gains[0], PROTOTYPE.steer_gains[1], PROTOTYPE.steer_gains[2]),
+            speed_pid: Pid::new(PROTOTYPE.race_gains[0], PROTOTYPE.race_gains[1], PROTOTYPE.race_gains[2]),
             offset: 0.0,
             mode: Mode::Race,
             mode_timer: 0.0,
@@ -482,9 +522,13 @@ impl AiDriver {
     /// riders' engine boost once it has kicked in, else 1.
     pub fn torque_scale(&self) -> f32 {
         match self.engine_delay {
-            Some(d) if d <= 0.0 => ENGINE_BOOST,
+            Some(d) if d <= 0.0 => self.tactics().engine_boost,
             _ => 1.0,
         }
+    }
+
+    fn tactics(&self) -> &'static Tactics {
+        if self.retail { &RETAIL } else { &PROTOTYPE }
     }
 
     /// Keeps track of a quad someone else drives (a player), for the
@@ -682,6 +726,8 @@ impl AiDriver {
             return Input::default();
         }
         let pos = v.position;
+        self.retail = v.params.retail;
+        let tactics = self.tactics();
         self.follow(line, pos);
         let fwd = v.forward().with_y(0.0).normalize_or(Vec3::NEG_Z);
         let speed = v.velocity.dot(v.forward());
@@ -798,10 +844,11 @@ impl AiDriver {
         self.boost = false;
         match self.mode {
             Mode::Race => {
-                self.steer_pid.gains[0] = 1.0;
+                self.steer_pid.gains = tactics.steer_gains;
                 input.steer = self.steer_pid.update(sine, dt);
                 // 0x68430: when the nearest racer is a player going faster
-                // than 30 mph within 30 m, a computer rider rides with
+                // than 30 mph within 30 m (retail 0x7b990: 40 mph within
+                // 20 m), a computer rider rides with
                 // them, closing the gap along the line (the original pairs
                 // riders that are each other's nearest first, 0x25bf0;
                 // this takes the nearest). It never brakes for them, and
@@ -816,46 +863,52 @@ impl AiDriver {
                     .filter(|t| t.player);
                 let pack = nearest.filter(|t| {
                     self.engine_delay.is_some()
-                        && t.velocity.length() > PACK_SPEED
-                        && t.position.distance(pos) < PACK_RANGE
+                        && t.velocity.length() > tactics.pack_speed
+                        && t.position.distance(pos) < tactics.pack_range
                 });
                 let they_boost = nearest.is_some_and(|t| t.boosting);
                 let (out, max_throttle, max_brake, racing) = if let Some(t) = pack {
                     let gap = (t.position - pos).dot(edge.dir);
-                    self.speed_pid.gains = PACK_GAINS;
+                    self.speed_pid.gains = tactics.pack_gains;
                     let out = self
                         .speed_pid
                         .update_terms(t.velocity.length(), gap, gap, dt);
                     // Held back while the boost is on and it is close
                     // behind or the other rider is boosting.
-                    let cap = if (gap >= PACK_CLOSE && !they_boost) || !boosted {
+                    let cap = if (gap >= tactics.pack_close && !they_boost) || !boosted {
                         1.0
                     } else {
-                        1.0 / ENGINE_BOOST
+                        1.0 / tactics.engine_boost
                     };
                     (out, cap, 0.0, false)
                 } else {
-                    self.speed_pid.gains = RACE_GAINS;
+                    self.speed_pid.gains = tactics.race_gains;
                     let out = self.speed_pid.update(target_speed - speed, dt);
                     // With the engine boost on, the throttle is held back
-                    // below 75% of top speed or while the nearest racer
-                    // boosts.
-                    let cap = if boosted && (speed < ENGINE_BOOST_SPEED * top || they_boost) {
-                        1.0 / ENGINE_BOOST
+                    // below 75% of top speed (retail 50%) or while the
+                    // nearest racer boosts.
+                    let cap = if boosted && (speed < tactics.boost_speed * top || they_boost) {
+                        1.0 / tactics.engine_boost
                     } else {
                         1.0
                     };
                     (out, cap, 1.0, true)
                 };
-                // 0x67520: flat out with nothing holding it back on a
-                // straight, the rider boosts.
+                // On a straight the rider boosts: in the prototype
+                // (0x67520) flat out with nothing holding it back, in
+                // retail (0x7b990) at half its top speed or more while it
+                // wants three quarters of it.
+                let wants_boost = if self.retail {
+                    speed >= tactics.boost_speed * top && target_speed > RETAIL_BOOST_TARGET * top
+                } else {
+                    out >= BOOST_THROTTLE && max_throttle >= BOOST_THROTTLE
+                };
+                self.boost = racing
+                    && self.engine_delay.is_some()
+                    && wants_boost
+                    && self.straight_ahead(line) >= BOOST_STRAIGHT;
                 if out >= 0.0 {
                     input.throttle = out.min(max_throttle);
-                    self.boost = racing
-                        && self.engine_delay.is_some()
-                        && out >= BOOST_THROTTLE
-                        && max_throttle >= BOOST_THROTTLE
-                        && self.straight_ahead(line) >= BOOST_STRAIGHT;
                 } else if speed > 0.894 {
                     input.brake = (-out).min(max_brake);
                 }
@@ -882,7 +935,7 @@ impl AiDriver {
             let Some(&next) = line.nodes[line.edges[e].to].out.first() else {
                 break;
             };
-            if line.edges[e].side.dot(line.edges[next].side) <= BOOST_COS {
+            if line.edges[e].side.dot(line.edges[next].side) <= self.tactics().boost_cos {
                 break;
             }
             run += line.edges[e].len;
@@ -1056,7 +1109,28 @@ impl AiDriver {
 ///
 /// The original also makes the handbrake ("slide") pedal instant; the
 /// port's quads have no handbrake input.
+///
+/// Retail rewrote it (0x7b880): the brake and handbrake pedals still move
+/// instantly and the side forces still push at the centre of mass, but
+/// the ability-scaled grip is gone. Instead the wheels spin far less
+/// (DRIVEFORCESPINSCALE 0.2), steering moves at 12/s both ways, wheelies
+/// are gentler and better damped (WHEELIETORQUE0MPH 0.6, 100MPH 8,
+/// WHEELIEDAMPING 8) and the rider leans harder in the air
+/// (INAIRLEANSCALE 18).
 pub fn tune_for_ai(params: &mut VehicleParams, ability: f32) {
+    if params.retail {
+        params.brake_rate = 1e6;
+        params.brake_return_rate = 1e6;
+        params.drive_force_spin_scale = [0.2; 2];
+        params.force_point = 0.0;
+        params.in_air_lean = 18.0;
+        params.wheelie_torque_0mph = 0.6;
+        params.wheelie_torque_100mph = 8.0;
+        params.wheelie_damping = 8.0;
+        params.steer_rate = [12.0; 2];
+        params.steer_return_rate = [12.0; 2];
+        return;
+    }
     let skill = 1.0 + 0.5 * ability.clamp(0.0, 1.0);
     params.brake_rate = 1e6;
     params.brake_return_rate = 1e6;
@@ -1371,7 +1445,7 @@ mod tests {
         d = d.with_engine_boost();
         assert_eq!(d.torque_scale(), 1.0);
         d.engine_delay = Some(0.0);
-        assert_eq!(d.torque_scale(), ENGINE_BOOST);
+        assert_eq!(d.torque_scale(), PROTOTYPE.engine_boost);
         // Every side of the square turns 90 degrees into the next.
         assert_eq!(d.straight_ahead(&l), 0.0);
     }
