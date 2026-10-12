@@ -491,7 +491,7 @@ impl<'a> Loader<'a> {
                 (img, true)
             } else {
                 let (format, alpha) = match tex.format {
-                    TexFormat::Dxt1 => (TextureFormat::Bc1RgbaUnormSrgb, false),
+                    TexFormat::Dxt1 => (TextureFormat::Bc1RgbaUnormSrgb, tex.dxt1_cutout()),
                     TexFormat::Dxt5 => (TextureFormat::Bc3RgbaUnormSrgb, true),
                     TexFormat::Bgra8 => (TextureFormat::Bgra8UnormSrgb, true),
                 };
