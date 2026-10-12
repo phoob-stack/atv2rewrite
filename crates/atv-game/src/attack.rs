@@ -18,13 +18,12 @@ use atv_formats::setup;
 use atv_formats::GameSource;
 use atv_sim::Vehicle;
 
-use crate::controller::{self, Action};
+use crate::inputs::TickInputs;
 use crate::boost::Boost;
 use crate::crash::{Cause, Way, Wreck};
 use crate::opponents::Opponents;
 use crate::race::RaceProgress;
 use crate::rider::{Clip, ONE_SHOT_FPS};
-use crate::settings::Settings;
 use crate::{Args, Player, Race};
 
 /// Where a kick lands: this far out to the side and ahead of the quad,
@@ -147,13 +146,6 @@ pub fn strike_point(v: &Vehicle, right: bool) -> Vec3 {
     v.position + v.right() * if right { SIDE } else { -SIDE } + v.forward() * AHEAD
 }
 
-/// The attack button: LB on the pad or E, or for player 2 in split
-/// screen the number pad's 6, unless remapped. On the ground only: LB is
-/// a trick button in the air.
-pub fn read_attack(controls: &controller::Reader, slot: Option<usize>) -> bool {
-    controls.pressed(slot, Action::Kick, false)
-}
-
 /// What one rider is doing this step, for the kicking.
 struct Seat {
     position: Vec3,
@@ -161,33 +153,31 @@ struct Seat {
     /// Riding (not thrown off) with the clock running.
     live: bool,
     grounded: bool,
-    /// The split-screen slot of a player, or None for a computer rider.
-    human: Option<Option<usize>>,
+    /// A player's number (0-based), or None for a computer rider.
+    human: Option<usize>,
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn kicks(
     time: Res<Time>,
     args: Res<Args>,
-    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, controller::Pads, Res<Settings>),
+    inputs: Res<TickInputs>,
     (rules, clips): (Option<Res<FightRules>>, Option<Res<FightClips>>),
     (race, progress): (Option<Res<Race>>, Option<Res<RaceProgress>>),
     (player, fighter, boost, wreck): (Option<Res<Player>>, Option<ResMut<Fighter>>, Option<ResMut<Boost>>, Option<ResMut<Wreck>>),
     opponents: Option<ResMut<Opponents>>,
 ) {
-    let (Some(rules), Some(clips), Some(race), Some(progress), Some(player), Some(mut fighter), Some(mut boost), Some(mut wreck)) =
+    let (Some(rules), Some(clips), Some(_), Some(progress), Some(player), Some(mut fighter), Some(mut boost), Some(mut wreck)) =
         (rules, clips, race, progress, player, fighter, boost, wreck)
     else {
         return;
     };
     let dt = time.delta_secs();
-    let controls = controller::Reader::new(&keys, &pads, &settings.pads);
     let mut opp = opponents;
-    let split = race.players > 1;
     let racers = opp.as_mut().map_or(&mut [][..], |o| &mut o.racers[..]);
 
     // Everyone's state, player 1 first.
-    let seat = |v: &Vehicle, live: bool, human: Option<Option<usize>>| Seat {
+    let seat = |v: &Vehicle, live: bool, human: Option<usize>| Seat {
         position: v.position,
         right: v.right(),
         live,
@@ -195,10 +185,10 @@ pub fn kicks(
         human,
     };
     let p1_live = progress.started() && progress.finished.is_none() && wreck.fall.is_none();
-    let mut seats = vec![seat(&player.0, p1_live, if args.autodrive { None } else { Some(split.then_some(0)) })];
+    let mut seats = vec![seat(&player.0, p1_live, (!args.autodrive).then_some(0))];
     for r in racers.iter() {
         let live = r.progress.started() && r.progress.finished.is_none() && r.wreck.fall.is_none();
-        seats.push(seat(&r.vehicle, live, r.human.filter(|_| !args.autodrive).map(|n| Some(n - 1))));
+        seats.push(seat(&r.vehicle, live, r.human.filter(|_| !args.autodrive).map(|n| n - 1)));
     }
     let mut fighters: Vec<Fighter> = std::iter::once(*fighter).chain(racers.iter().map(|r| r.fighter)).collect();
     let mut boosts: Vec<Boost> = std::iter::once(*boost).chain(racers.iter().map(|r| r.boost)).collect();
@@ -220,8 +210,8 @@ pub fn kicks(
             .min_by(|a, b| a.1.length_squared().total_cmp(&b.1.length_squared()));
         let side = nearest.map(|(_, d)| d.dot(s.right));
         let want = match s.human {
-            Some(slot) => {
-                let held = read_attack(&controls, slot);
+            Some(n) => {
+                let held = inputs.player(n).kick;
                 let pressed = held && !f.held;
                 f.held = held;
                 pressed.then(|| side.is_none_or(|d| d > 0.0))

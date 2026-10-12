@@ -21,7 +21,7 @@ use crate::crash::{CrashClips, Wreck};
 use crate::aitricks::AiTricks;
 use crate::attack::Fighter;
 use crate::boost::{Boost, BoostRules};
-use crate::freestyle::{self, Dir, Session, StuntClips};
+use crate::freestyle::{Dir, Session, StuntClips};
 use crate::frontend::Roster;
 use crate::race::RaceProgress;
 use crate::rider::Rider;
@@ -373,7 +373,7 @@ fn drive_opponents(
     progress: Option<Res<RaceProgress>>,
     opponents: Option<ResMut<Opponents>>,
     standings: Option<ResMut<Standings>>,
-    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, crate::controller::Pads, Res<crate::settings::Settings>),
+    inputs: Res<crate::inputs::TickInputs>,
     args: Res<crate::Args>,
     (session, crash_clips, boost_rules): (Option<Res<Session>>, Option<Res<CrashClips>>, Option<Res<BoostRules>>),
     (player_boost, player_wreck): (Option<Res<Boost>>, Option<Res<Wreck>>),
@@ -384,7 +384,6 @@ fn drive_opponents(
         return;
     };
     let dt = time.delta_secs();
-    let controls = crate::controller::Reader::new(&keys, &pads, &settings.pads);
     let opp = &mut *opp;
     let cps = &race.checkpoints;
     let n = cps.len();
@@ -438,7 +437,7 @@ fn drive_opponents(
             // Held on the grid, where players can rev for a turbo start.
             match r.human {
                 Some(n) if !args.autodrive => {
-                    Input { throttle: crate::read_input(&controls, false, Some(n - 1)).throttle, ..default() }
+                    Input { throttle: inputs.player(n - 1).throttle, ..default() }
                 }
                 _ => Input::default(),
             }
@@ -456,8 +455,8 @@ fn drive_opponents(
                 // A player drives until the flag; the AI brings them home
                 // (and drives for them with --autodrive).
                 Some(n) if r.progress.finished.is_none() && !args.autodrive => {
-                    held = crate::read_boost(&controls, !r.vehicle.grounded(), Some(n - 1));
-                    crate::read_input(&controls, !r.vehicle.grounded(), Some(n - 1))
+                    held = inputs.player(n - 1).boost(!r.vehicle.grounded());
+                    inputs.player(n - 1).drive(!r.vehicle.grounded())
                 }
                 // The autopilot spends a full meter.
                 Some(_) => {
@@ -505,7 +504,7 @@ fn drive_opponents(
         let live = r.progress.started() && !time_up && r.progress.finished.is_none();
         match (r.session.as_mut(), r.human) {
             (Some(s), Some(n)) => {
-                let (mut buttons, mut dir) = freestyle::read_tricks(&controls, Some(n - 1));
+                let (mut buttons, mut dir) = inputs.player(n - 1).tricks();
                 if args.autodrive && s.active.is_none() && !r.vehicle.grounded() {
                     // The autopilot shows off, as for player 1.
                     let k = (s.time * 0.7) as usize + n;
