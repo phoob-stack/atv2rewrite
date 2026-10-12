@@ -145,9 +145,6 @@ pub struct Vehicle {
     /// Scales the drive force; the game's speed boost raises it (the
     /// original's torque modifier, 1.0 unless boosting).
     pub drive_scale: f32,
-    /// Scales gravity in the air (the player's Air Gravity option); 1.0
-    /// is the original's.
-    pub air_gravity: f32,
     /// Set by the game while the quad is in deep water, which drags it to
     /// a crawl (0x5ba70).
     pub in_water: bool,
@@ -261,7 +258,6 @@ impl Vehicle {
             preload: 0.0,
             air_time: 0.0,
             drive_scale: 1.0,
-            air_gravity: 1.0,
             in_water: false,
             pos: Vec3::ZERO,
             rot: Mat3::IDENTITY,
@@ -1098,13 +1094,8 @@ impl Vehicle {
         } else {
             p.in_air_grav_down
         };
-        self.force += Vec3::NEG_Y
-            * p.gravity
-            * p.in_air_grav_scale
-            * scale
-            * self.gravity_scale
-            * self.air_gravity
-            * p.mass;
+        self.force +=
+            Vec3::NEG_Y * p.gravity * p.in_air_grav_scale * scale * self.gravity_scale * p.mass;
         let (right, up, fwd) = (self.rot.x_axis, self.rot.y_axis, self.rot.z_axis);
         self.torque += up * (p.in_air_steer_vel * self.steer - self.ang_vel.dot(up));
         if up.y > -0.3 {

@@ -1,5 +1,5 @@
 //! The Options menu's settings: music and sound effects volume, the race
-//! camera, the players' air gravity, each controller's layout and vibration (see
+//! camera, each controller's layout and vibration (see
 //! [`crate::controller`]), and the player profile last loaded (see
 //! [`crate::career::Profile`]). They are remembered between runs in the player's
 //! config folder as a plain `key = value` file, beside the launcher's.
@@ -65,23 +65,12 @@ impl CameraView {
     }
 }
 
-/// The Air Gravity option's choices, in percent of the original's in-air
-/// gravity (not in the original game, which always uses 100).
-pub const AIR_GRAVITY: [u8; 7] = [100, 90, 80, 70, 60, 50, 40];
-
-pub fn air_gravity_label(percent: u8) -> String {
-    if percent == 100 { "100% (ORIGINAL)".into() } else { format!("{percent}%") }
-}
-
 #[derive(Resource, Clone, Debug, PartialEq)]
 pub struct Settings {
     /// Volume bar levels, 0 to [`VOLUME_STEPS`].
     pub music: u8,
     pub effects: u8,
     pub camera: CameraView,
-    /// Percent of the original's in-air gravity for the players' quads,
-    /// one of [`AIR_GRAVITY`].
-    pub air_gravity: u8,
     /// Each controller port's layout and vibration.
     pub pads: [PadSetup; PORTS],
     /// The profile slot to load at start.
@@ -97,7 +86,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { music: VOLUME_STEPS, effects: VOLUME_STEPS, camera: CameraView::default(), air_gravity: 100, pads: controller::default_setups(), profile: None, pad_pictures: None, pad_reader: PadReader::Auto }
+        Self { music: VOLUME_STEPS, effects: VOLUME_STEPS, camera: CameraView::default(), pads: controller::default_setups(), profile: None, pad_pictures: None, pad_reader: PadReader::Auto }
     }
 }
 
@@ -126,7 +115,6 @@ impl Settings {
                 "music" => s.music = v.parse::<u8>().map_or(s.music, |n| n.min(VOLUME_STEPS)),
                 "effects" => s.effects = v.parse::<u8>().map_or(s.effects, |n| n.min(VOLUME_STEPS)),
                 "camera" => s.camera = CameraView::ALL.into_iter().find(|c| c.key() == v).unwrap_or(s.camera),
-                "air_gravity" => s.air_gravity = v.parse::<u8>().ok().filter(|p| AIR_GRAVITY.contains(p)).unwrap_or(s.air_gravity),
                 // Before each controller had its own.
                 "vibration" => s.pads.iter_mut().for_each(|p| p.vibration = v == "true"),
                 "pad_pictures" => s.pad_pictures = PadStyle::parse(v),
@@ -144,7 +132,7 @@ impl Settings {
     }
 
     pub fn to_text(&self) -> String {
-        let mut s = format!("music = {}\neffects = {}\ncamera = {}\nair_gravity = {}\n", self.music, self.effects, self.camera.key(), self.air_gravity);
+        let mut s = format!("music = {}\neffects = {}\ncamera = {}\n", self.music, self.effects, self.camera.key());
         for (n, p) in self.pads.iter().enumerate() {
             s += &p.to_text(n);
         }
@@ -158,11 +146,6 @@ impl Settings {
             s += &format!("profile = {}\n", n + 1);
         }
         s
-    }
-
-    /// The players' in-air gravity scale.
-    pub fn air_gravity_scale(&self) -> f32 {
-        f32::from(self.air_gravity) / 100.0
     }
 
     pub fn save(&self) {
@@ -232,14 +215,14 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let mut s = Settings { music: 3, effects: 16, camera: CameraView::VeryClose, air_gravity: 60, profile: None, ..default() };
+        let mut s = Settings { music: 3, effects: 16, camera: CameraView::VeryClose, profile: None, ..default() };
         s.pads[1].vibration = false;
         s.pads[2].layout = 2;
         s.pads[3].rebind(3, crate::controller::Action::Hop, 2, Some(crate::controller::Input::Key(KeyCode::KeyJ)));
         assert_eq!(Settings::parse(&s.to_text()), s);
         let s = Settings { profile: Some(9), pad_pictures: Some(PadStyle::Nintendo), pad_reader: PadReader::Native, ..s };
         assert_eq!(Settings::parse(&s.to_text()), s);
-        assert_eq!(Settings::parse("music = 99\njunk\ncamera = sideways\nair_gravity = 7\npad9_layout = 2"), Settings { music: VOLUME_STEPS, ..default() });
+        assert_eq!(Settings::parse("music = 99\njunk\ncamera = sideways\npad9_layout = 2"), Settings { music: VOLUME_STEPS, ..default() });
     }
 
     #[test]
