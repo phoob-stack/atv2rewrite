@@ -172,12 +172,16 @@ Computer riders keep the game's tuning unless `computer_riders = true`.
   hand-placed spheres instead, answered the way the original answers a
   contact: a position fix plus an impulse at the contact point (`0xad9b0`).
 * Only the automatic gearbox (mode 0).
-* Knock-over props (cones, signs, barriers, crates) collide as upright
-  cylinders, not through their `.hsc` hulls. They are bodies of mass 0.05
+* Knock-over props (cones, signs, deckchairs, umbrellas) collide with the
+  quads by their `.hsc` shapes as the original's do (a sphere inside the
+  other body's hull, `0xb3da0`, or touching one of its spheres, `0xb29d0`),
+  in the fixed physics tick, but the quads themselves don't collide by
+  `Generic.hsc` with the track or each other yet. They are bodies of mass 0.05
   and hardness 0.3 (`0x2e100` over the defaults at `0xada50`) against the
   quad's 1 and 0.2, so a hit costs the quad `1.06 × 0.05 / 1.05` (about
   5%) of its closing speed, as the original's body contact (`0xb29d0`,
-  `0xb1ca0`) gives; how they tumble is the rewrite's own. Static props
+  `0xb1ca0`) gives; how they tumble (a rigid body landing on its hull
+  corners and spheres) is the rewrite's own. Static props
   collide through their `.ink` meshes.
 * Crash parts of the original that aren't ported yet:
   * water crashes for computer riders and players 2-4 (their quads do
