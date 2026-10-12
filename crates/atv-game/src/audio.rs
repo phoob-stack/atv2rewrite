@@ -29,19 +29,26 @@
 //! retail Sound.xml (mix levels per platform) the indices, the engine mix
 //! and the one-shot rules come from the retail executable instead (XBE
 //! addresses: engine 0xb1690, knocks 0xb1e90, rider 0xaed30).
+//!
+//! Race music on the retail disc: besides each area's track it has eight
+//! licensed songs (`Setup/Music.xml`, `/Licensed/Track1-8.wav`), and its
+//! race start (0x9f5c0) plays what the profile's Playlist choice says:
+//! the area's track, the songs in playlist order, the songs shuffled (the
+//! default), or nothing. See [`Playlist`] and [`Jukebox`].
 
 use std::sync::Arc;
 
 use bevy::audio::{AddAudioSource, ChannelCount, Decodable, SampleRate, Source, Volume};
 use bevy::prelude::*;
 
+use atv_formats::music::{self, Song};
 use atv_formats::sound::SoundSetup;
-use atv_formats::wav::{self, Pcm};
+use atv_formats::wav::{self, Pcm, Stream};
 use atv_formats::xwb::WaveBank;
 use atv_formats::GameSource;
 
 use crate::settings::{gain, Settings};
-use crate::{AppState, Game, Player, Selection};
+use crate::{AppState, Game, Mode, Player, Selection};
 
 pub struct AudioPlugin;
 
@@ -49,6 +56,8 @@ impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<Sound>()
             .add_audio_source::<Sound>()
+            .init_asset::<Songs>()
+            .add_audio_source::<Songs>()
             .add_systems(PreUpdate, load_banks.run_if(resource_exists::<Game>).run_if(not(resource_exists::<Banks>)))
             // After the race is set up, so the other quads are there to hear.
             .add_systems(OnEnter(AppState::Race), start_race_audio.after(crate::setup))
@@ -178,6 +187,244 @@ struct Banks {
 
 fn load_banks(mut commands: Commands, game: Res<Game>) {
     commands.insert_resource(Banks::load(&game.0));
+    if let Some(j) = Jukebox::load(&game.0) {
+        commands.insert_resource(j);
+    }
+}
+
+/// The retail Playlist page's choice of race music (the profile's
+/// `PlaylistOption0-3`, read by the race start 0x9f5c0).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Playlist {
+    /// The area's own track (`ENVIRONMENT`).
+    Environment,
+    /// The licensed songs in playlist order, each race starting one song
+    /// further on (`PLAYLIST`).
+    InOrder,
+    /// The licensed songs shuffled (`RANDOM`): a new profile's choice
+    /// (0x13e40).
+    #[default]
+    Random,
+    /// No race music (`MUTE_ALL`).
+    Mute,
+}
+
+impl Playlist {
+    pub const ALL: [Playlist; 4] = [Playlist::Environment, Playlist::InOrder, Playlist::Random, Playlist::Mute];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Playlist::Environment => "environment",
+            Playlist::InOrder => "playlist",
+            Playlist::Random => "random",
+            Playlist::Mute => "mute",
+        }
+    }
+
+    pub fn parse(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.key() == key)
+    }
+}
+
+/// The retail disc's licensed songs and the playlist state the retail game
+/// keeps in the player's profile: the playlist order and the songs left
+/// out of it (`Track0-7`, `mMusicTracksLockedOut`), and where the next
+/// race starts in it (`mTrackInc`). Here they last for the session.
+#[derive(Resource)]
+pub struct Jukebox {
+    songs: Vec<Song>,
+    order: Vec<usize>,
+    locked_out: u32,
+    next: Option<usize>,
+    /// Songs Training has played: each Training run gets one it hasn't,
+    /// until all have (0xadfe0).
+    played: u32,
+    /// The disc only runs on North American consoles, where the retail
+    /// game leaves Track5 out of every playlist and puts it last in the
+    /// order (0x13290, 0x13770, 0xadfe0; the Playlist page 0x58c50 puts
+    /// it back out whenever it's opened).
+    na: bool,
+    seed: u32,
+}
+
+/// The song North American consoles never play (Track5).
+const NA_LEFT_OUT: usize = 4;
+
+impl Jukebox {
+    /// The songs, if the disc has them all (only the retail disc does).
+    fn load(game: &GameSource) -> Option<Self> {
+        let xml = game.read("/Setup/Music.xml").ok()?;
+        let songs = music::parse(&String::from_utf8_lossy(&xml));
+        if songs.is_empty() || songs.len() > 32 {
+            return None;
+        }
+        if let Some(s) = songs.iter().find(|s| !game.exists(&s.path())) {
+            warn!("licensed music: {} is missing, so races play the area music", s.path());
+            return None;
+        }
+        let regions = game.read("/default.xbe").ok().and_then(|x| music::xbe_regions(&x));
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.subsec_nanos() ^ d.as_secs() as u32);
+        Some(Self::new(songs, regions.is_some_and(|r| r & 7 == 1), seed))
+    }
+
+    fn new(songs: Vec<Song>, na: bool, seed: u32) -> Self {
+        let na = na && songs.len() == 8;
+        let order = if na { vec![0, 1, 2, 3, 5, 6, 7, NA_LEFT_OUT] } else { (0..songs.len()).collect() };
+        let locked_out = if na { 1 << NA_LEFT_OUT } else { 0 };
+        Jukebox { songs, order, locked_out, next: None, played: 0, na, seed }
+    }
+
+    fn rand(&mut self, n: usize) -> usize {
+        self.seed = self.seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        (self.seed >> 16) as usize % n.max(1)
+    }
+
+    /// The songs in the playlist, in its order.
+    fn enabled(&self) -> Vec<usize> {
+        self.order.iter().copied().filter(|&i| self.locked_out & 1 << i == 0).collect()
+    }
+
+    /// What a race plays: `None` for the area's own track, else these
+    /// songs one after another and round again (none: silence). As the
+    /// retail race start 0x9f5c0: a challenge (game type 5) and the
+    /// attract demo have no music, Training gets one song, and every other
+    /// race goes by the Playlist choice (lists built by 0xaf360).
+    fn race(&mut self, mode: Mode, demo: bool, choice: Playlist) -> Option<Vec<usize>> {
+        if mode == Mode::Challenge || demo {
+            return Some(Vec::new());
+        }
+        if mode == Mode::Training {
+            return Some(self.training());
+        }
+        let songs = self.enabled();
+        match choice {
+            Playlist::Environment => None,
+            Playlist::Mute => Some(Vec::new()),
+            _ if songs.is_empty() => Some(Vec::new()),
+            Playlist::InOrder => {
+                // Each race starts one song further on (0x13fa0).
+                let start = self.next.map_or(0, |n| (n + 1) % songs.len());
+                self.next = Some(start);
+                Some((0..songs.len()).map(|k| songs[(start + k) % songs.len()]).collect())
+            }
+            Playlist::Random => {
+                let mut left = songs;
+                let mut out = Vec::with_capacity(left.len());
+                while !left.is_empty() {
+                    let i = self.rand(left.len());
+                    out.push(left.remove(i));
+                }
+                Some(out)
+            }
+        }
+    }
+
+    /// Training's one song (retail game type 12; ATV Academy here): any
+    /// it hasn't played yet, looped.
+    fn training(&mut self) -> Vec<usize> {
+        let n = self.songs.len();
+        if self.played.count_ones() as usize >= n {
+            self.played = 0;
+        }
+        if self.na {
+            self.played |= 1 << NA_LEFT_OUT;
+        }
+        let left: Vec<usize> = (0..n).filter(|&i| self.played & 1 << i == 0).collect();
+        if left.is_empty() {
+            return Vec::new();
+        }
+        let pick = left[self.rand(left.len())];
+        self.played |= 1 << pick;
+        vec![pick]
+    }
+}
+
+/// Songs off the disc played one after another and round again, each
+/// decoded as it plays (as the retail game streams its music, 0x896c0
+/// picking what's next). The next song is read from the disc while one
+/// plays.
+#[derive(Asset, TypePath, Clone)]
+pub struct Songs {
+    game: Arc<GameSource>,
+    paths: Arc<[String]>,
+}
+
+pub struct SongsDecoder {
+    songs: Songs,
+    index: usize,
+    current: Option<Stream>,
+    next: Option<std::sync::mpsc::Receiver<Option<Stream>>>,
+}
+
+fn open_song(game: &GameSource, path: &str) -> Option<Stream> {
+    match game.read(path).map_err(|e| e.to_string()).and_then(|b| Stream::open(b).map_err(|e| e.to_string())) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            warn!("music {path}: {e}");
+            None
+        }
+    }
+}
+
+impl SongsDecoder {
+    /// Starts reading the song after the current one.
+    fn fetch_next(&mut self) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let game = self.songs.game.clone();
+        let path = self.songs.paths[(self.index + 1) % self.songs.paths.len()].clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(open_song(&game, &path));
+        });
+        self.next = Some(rx);
+    }
+}
+
+impl Iterator for SongsDecoder {
+    type Item = bevy::audio::Sample;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Bounded so a list whose songs all fail to open ends.
+        for _ in 0..=self.songs.paths.len() {
+            if let Some(s) = self.current.as_mut().and_then(Iterator::next) {
+                return Some(s as f32 / 32768.0);
+            }
+            self.index = (self.index + 1) % self.songs.paths.len();
+            self.current = self.next.take().and_then(|rx| rx.recv().ok().flatten());
+            self.fetch_next();
+        }
+        None
+    }
+}
+
+impl Source for SongsDecoder {
+    fn current_span_len(&self) -> Option<usize> {
+        // Songs may differ in format, so each is its own span.
+        Some(self.current.as_ref().map_or(1, |s| s.remaining().max(1)))
+    }
+
+    fn channels(&self) -> ChannelCount {
+        ChannelCount::new(self.current.as_ref().map_or(2, |s| s.channels).max(1)).unwrap()
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        SampleRate::new(self.current.as_ref().map_or(48000, |s| s.rate).max(1)).unwrap()
+    }
+
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        None
+    }
+}
+
+impl Decodable for Songs {
+    type Decoder = SongsDecoder;
+
+    fn decoder(&self) -> Self::Decoder {
+        let mut d = SongsDecoder { current: self.paths.first().and_then(|p| open_song(&self.game, p)), songs: self.clone(), index: 0, next: None };
+        if !self.paths.is_empty() {
+            d.fetch_next();
+        }
+        d
+    }
 }
 
 impl Banks {
@@ -371,11 +618,30 @@ fn start_race_audio(
     data: Option<Res<Banks>>,
     opponents: Option<Res<crate::opponents::Opponents>>,
     mut sounds: ResMut<Assets<Sound>>,
+    (jukebox, demo, mut songs): (Option<ResMut<Jukebox>>, Option<Res<crate::demo::Demo>>, ResMut<Assets<Songs>>),
 ) {
     let Some(data) = data else { return };
     let env = sel.track.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
     let setup = &data.setup;
     let scoped = DespawnOnExit(AppState::Race);
+    // The retail disc's licensed songs, or the area's own track.
+    let mut area_music = true;
+    if let Some(mut j) = jukebox
+        && let Some(list) = j.race(sel.mode, demo.is_some(), settings.playlist)
+    {
+        area_music = false;
+        if !list.is_empty() {
+            info!("race music: {}", list.iter().map(|&i| format!("{} - {}", j.songs[i].artist, j.songs[i].title)).collect::<Vec<_>>().join(", "));
+            let base = setup.platform_level("mMusicVol", 1.0);
+            commands.spawn((
+                AudioPlayer(songs.add(Songs { game: game.0.clone(), paths: list.iter().map(|&i| j.songs[i].path()).collect() })),
+                PlaybackSettings::ONCE.with_volume(Volume::Linear(base * gain(settings.music))),
+                scoped.clone(),
+                Bed { base, music: true },
+            ));
+        }
+    }
+
     let mut play = |sound: Sound, volume: f32, role: Option<Role>| {
         let mut e = commands.spawn((
             AudioPlayer(sounds.add(sound)),
@@ -391,7 +657,7 @@ fn start_race_audio(
         };
     };
 
-    if let Some(m) = setup.music(&env) {
+    if area_music && let Some(m) = setup.music(&env) {
         let mut parts: Vec<Arc<Pcm>> = Vec::new();
         let intro = m.intro.as_deref().and_then(|n| music(&game.0, n));
         let has_intro = intro.is_some();
@@ -884,5 +1150,51 @@ mod tests {
         // Wheelspin in first revs it toward the limiter.
         let [on, _] = retail_engine_mix(0.5, 1.0, 1.0, 1.0, true);
         assert!((on.1 - 1.8).abs() < 1e-6);
+    }
+
+    fn jukebox(na: bool) -> Jukebox {
+        let song = |n| Song { artist: String::new(), title: String::new(), file: format!("Licensed\\Track{n}"), level_specific: false };
+        Jukebox::new((1..=8).map(song).collect(), na, 7)
+    }
+
+    #[test]
+    fn playlist_in_order_moves_on_each_race() {
+        let mut j = jukebox(false);
+        assert_eq!(j.race(Mode::SingleRace, false, Playlist::InOrder), Some(vec![0, 1, 2, 3, 4, 5, 6, 7]));
+        assert_eq!(j.race(Mode::Career, false, Playlist::InOrder), Some(vec![1, 2, 3, 4, 5, 6, 7, 0]));
+        // North America: Track5 is left out and the order skips it.
+        let mut j = jukebox(true);
+        assert_eq!(j.race(Mode::SingleRace, false, Playlist::InOrder), Some(vec![0, 1, 2, 3, 5, 6, 7]));
+        assert_eq!(j.race(Mode::SingleRace, false, Playlist::InOrder).unwrap()[0], 1);
+    }
+
+    #[test]
+    fn shuffled_plays_each_song_once() {
+        let mut j = jukebox(true);
+        let mut list = j.race(Mode::Arcade, false, Playlist::Random).unwrap();
+        list.sort();
+        assert_eq!(list, [0, 1, 2, 3, 5, 6, 7]);
+    }
+
+    #[test]
+    fn which_races_get_songs() {
+        let mut j = jukebox(false);
+        assert_eq!(j.race(Mode::SingleRace, false, Playlist::Environment), None);
+        assert_eq!(j.race(Mode::SingleRace, false, Playlist::Mute), Some(vec![]));
+        assert_eq!(j.race(Mode::Challenge, false, Playlist::Random), Some(vec![]));
+        assert_eq!(j.race(Mode::SingleRace, true, Playlist::Random), Some(vec![]));
+        // Training: one song at a time, a different one until all have played.
+        let mut j = jukebox(true);
+        let mut heard: Vec<usize> = (0..7).flat_map(|_| j.race(Mode::Training, false, Playlist::Mute).unwrap()).collect();
+        heard.sort();
+        assert_eq!(heard, [0, 1, 2, 3, 5, 6, 7]);
+        assert_eq!(j.race(Mode::Training, false, Playlist::Mute).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn playlist_choice_keys() {
+        for p in Playlist::ALL {
+            assert_eq!(Playlist::parse(p.key()), Some(p));
+        }
     }
 }
