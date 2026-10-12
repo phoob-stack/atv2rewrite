@@ -223,7 +223,7 @@ mod tests {
         let lake = Locator { name: "waterbox".into(), pos: [0.0, -8.0, 0.0], scale: [10.0, 20.0, 40.0], rotation: quarter };
         let pool = Locator { name: "WaterBox".into(), pos: [15.0, 0.0, 0.0], scale: [2.0, 6.0, 2.0], rotation: quarter };
         let other = Locator { name: "Respot".into(), ..lake.clone() };
-        let world = World { fog_color: 0, materials: vec![], locators: vec![lake, pool, other], lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] };
+        let world = World { fog_color: 0, materials: vec![], material_wraps: vec![], locators: vec![lake, pool, other], lights: vec![], instances: vec![], sprites: vec![], meshes: vec![] };
         let water = Water(TrackCollision::new(Vec::new(), 8.0), boxes(&world));
         assert_eq!(water.1.len(), 2);
         // Lengthways along X now; however deep, the top's the surface.
