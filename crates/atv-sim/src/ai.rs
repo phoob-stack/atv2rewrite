@@ -811,7 +811,11 @@ impl AiDriver {
                 break;
             }
             dist = reach;
-            match self.peek_edge(line, e) {
+            // The steering target past a split: pick the branch now, so the
+            // quad isn't aimed down one branch and switched to the other at
+            // the split (Glacier 1's routes round the snow mound).
+            let next = if target.is_none() { self.next_edge(line, e) } else { self.peek_edge(line, e) };
+            match next {
                 Some(n) => e = n,
                 None => break,
             }
@@ -1325,26 +1329,9 @@ pub fn pace_rating(
     ((ability + technique) * 0.2 * 0.5 + (top_speed + acceleration + handling) * 0.2 / 3.0) * 0.5
 }
 
-/// Pushes two quads apart when they touch, trading the closing part of
-/// their velocities (equal masses, a soft bump).
+/// Two quads touching: see [`crate::vehicle::bump`].
 pub fn bump(a: &mut Vehicle, b: &mut Vehicle) {
-    const RADIUS: f32 = 1.0;
-    let d = (b.position - a.position).with_y(0.0);
-    let dist = d.length();
-    let dy = (b.position.y - a.position.y).abs();
-    if dist >= 2.0 * RADIUS || dist < 1e-4 || dy > 1.5 {
-        return;
-    }
-    let n = d / dist;
-    let push = (2.0 * RADIUS - dist) * 0.5;
-    let closing = (a.velocity - b.velocity).dot(n);
-    let dv = if closing > 0.0 {
-        n * closing * 0.65
-    } else {
-        Vec3::ZERO
-    };
-    a.nudge(-n * push, -dv);
-    b.nudge(n * push, dv);
+    crate::vehicle::bump(a, b);
 }
 
 #[cfg(test)]

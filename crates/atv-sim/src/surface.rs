@@ -8,7 +8,9 @@
 //! grip on faces over 45 degrees from the strut, `0xbc800`), and the quad
 //! averages both over the wheels on the ground (`0xb53e0`). Grip blends
 //! the handling pairs between their grippy and slippery values; drag pulls
-//! against the ground speed squared.
+//! against the ground speed squared. A body touching a triangle takes its
+//! `Friction` and `Hardness` (times the body's own) as the contact's
+//! friction and bounce (0x6fef0).
 
 use atv_formats::setup;
 
@@ -54,6 +56,8 @@ pub struct Surface {
     pub friction: f32,
     /// Drag on the quad.
     pub damping: f32,
+    /// How much a body bounces off it (times the body's own `HARDNESS`).
+    pub hardness: f32,
 }
 
 impl Default for Surface {
@@ -61,6 +65,7 @@ impl Default for Surface {
         Self {
             friction: 1.0,
             damping: 0.0,
+            hardness: 1.0,
         }
     }
 }
@@ -82,6 +87,7 @@ impl Surfaces {
                         Surface {
                             friction: e.num("Friction").unwrap_or(1.0),
                             damping: e.num("Damping").unwrap_or(0.0),
+                            hardness: e.num("Hardness").unwrap_or(1.0),
                         }
                     })
                 })
@@ -102,12 +108,12 @@ mod tests {
     fn reads_materials() {
         let xml = r#"<Root FileVersion="1.0">
   <None Friction="0.0" Hardness="1.00" Damping="10.0"><WheelDustColour A="1" R="0" G="0" B="0"/></None>
-  <Mud_Bank Friction="0.75" Hardness="1.0" Damping="15.0"/>
+  <Mud_Bank Friction="0.75" Hardness="0.5" Damping="15.0"/>
 </Root>"#;
         let s = Surfaces::parse(xml);
         assert_eq!(s.0.len(), NAMES.len());
-        assert_eq!(s.get(0), Surface { friction: 0.0, damping: 10.0 });
-        assert_eq!(s.get(15), Surface { friction: 0.75, damping: 15.0 });
+        assert_eq!(s.get(0), Surface { friction: 0.0, damping: 10.0, hardness: 1.0 });
+        assert_eq!(s.get(15), Surface { friction: 0.75, damping: 15.0, hardness: 0.5 });
         assert_eq!(s.get(2), Surface::default());
         assert_eq!(s.get(UNKNOWN), Surface::default());
     }

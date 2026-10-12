@@ -11,14 +11,19 @@ pub fn load() -> Tuning {
 }
 
 /// A quad's handling from the game's `.params`, with the player's tuning
-/// for players (and for computer riders when the tuning says so).
+/// for players (and for computer riders when the tuning says so), and its
+/// collision shape.
 pub fn quad_params(game: &GameSource, tuning: &Tuning, quad: &str, human: bool) -> VehicleParams {
     let read = |p: &str| game.read(p).ok().map(|b| String::from_utf8_lossy(&b).into_owned());
     let generic = read("/Cars/Generic/Generic.params").unwrap_or_default();
     let own = read(&format!("/Cars/{quad}/{quad}.params"));
-    if human || tuning.computer_riders {
+    let mut params = if human || tuning.computer_riders {
         tuning.params(quad, &generic, own.as_deref())
     } else {
         VehicleParams::from_files(&generic, own.as_deref())
+    };
+    if let Some(body) = atv_sim::body::Body::from_game(game) {
+        params.body = body;
     }
+    params
 }

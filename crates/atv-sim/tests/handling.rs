@@ -2,6 +2,10 @@
 //! so they only run when `ATV2_PARAMS` points at an extracted `Cars` folder
 //! (e.g. from `atv-tool extract`); otherwise they pass without checking.
 
+use std::sync::Arc;
+
+use atv_formats::hsc::BodyShape;
+use atv_sim::body::Body;
 use atv_sim::{Input, TrackCollision, Vehicle, VehicleParams};
 use glam::{Quat, Vec3};
 
@@ -9,7 +13,12 @@ fn params() -> Option<VehicleParams> {
     let dir = std::path::PathBuf::from(std::env::var_os("ATV2_PARAMS")?);
     let generic = std::fs::read_to_string(dir.join("Generic/Generic.params")).ok()?;
     let quad = std::fs::read_to_string(dir.join("Bandit/Bandit.params")).ok();
-    Some(VehicleParams::from_files(&generic, quad.as_deref()))
+    let mut p = VehicleParams::from_files(&generic, quad.as_deref());
+    // The quads' collision shape, when the folder has it.
+    if let Some(hsc) = std::fs::read(dir.join("Generic/Generic.hsc")).ok().and_then(|b| BodyShape::parse(&b).ok()) {
+        p.body = Arc::new(Body::from_hsc(&hsc));
+    }
+    Some(p)
 }
 
 fn flat() -> TrackCollision {
@@ -457,4 +466,83 @@ fn drawn_pose_moves_every_frame() {
         assert!(d[0] > 0.0 && d[1] > 0.0, "a frame stood still: {drops:?}");
         assert!((d[1] - d[0]).abs() < 0.0045, "uneven frames {d:?}: {drops:?}");
     }
+}
+
+#[test]
+fn sides_stay_out_of_a_wall() {
+    let Some(p) = params() else { return };
+    // A wall along the quad's right (+X in the sim frame), 1 m away.
+    let x = 1.0;
+    let wall = quad(Vec3::new(x, 0.0, -50.0), Vec3::new(x, 0.0, 50.0), Vec3::new(x, 3.0, 50.0), Vec3::new(x, 3.0, -50.0));
+    let world = flat_with(wall.to_vec());
+    let mut v = Vehicle::new(p, Vec3::new(0.0, 0.6, 0.0), Quat::IDENTITY);
+    run(&mut v, &world, Input::default(), 1.0);
+    // Slammed sideways into it.
+    v.nudge(Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0));
+    let mut closest = f32::MAX;
+    for _ in 0..120 {
+        v.step(&Input::default(), 1.0 / 60.0, &world);
+        closest = closest.min(x - v.position.x);
+    }
+    println!("closest {closest:.2} m from the wall, settled {:.2} m, up {:.2}", x - v.position.x, v.up().y);
+    // The body is about 1.1 m wide; its side stops at the wall.
+    assert!(closest > 0.45 && closest < 0.7, "centre {closest:.2} m from the wall");
+}
+
+/// Two quads level on the ground, `b` at `at` from `a`.
+fn pair(at: Vec3) -> Option<(Vehicle, Vehicle, TrackCollision)> {
+    let world = flat();
+    let mut a = Vehicle::new(params()?, Vec3::new(0.0, 0.6, 0.0), Quat::IDENTITY);
+    let mut b = Vehicle::new(params()?, Vec3::new(0.0, 0.6, 0.0) + at, Quat::IDENTITY);
+    run(&mut a, &world, Input::default(), 1.0);
+    run(&mut b, &world, Input::default(), 1.0);
+    Some((a, b, world))
+}
+
+fn run_pair(a: &mut Vehicle, b: &mut Vehicle, world: &TrackCollision, input: Input, secs: f32, mut each: impl FnMut(&Vehicle, &Vehicle)) {
+    for _ in 0..(secs * 60.0) as usize {
+        a.step(&input, 1.0 / 60.0, world);
+        b.step(&Input::default(), 1.0 / 60.0, world);
+        atv_sim::ai::bump(a, b);
+        each(a, b);
+    }
+}
+
+#[test]
+fn quads_side_by_side_touch_at_their_sides() {
+    let Some((mut a, mut b, world)) = pair(Vec3::X * 1.8) else { return };
+    // `a` slides into `b`.
+    a.nudge(Vec3::ZERO, Vec3::new(10.0, 0.0, 0.0));
+    let mut closest = f32::MAX;
+    run_pair(&mut a, &mut b, &world, Input::default(), 2.0, |a, b| closest = closest.min(b.position.x - a.position.x));
+    println!("closest {closest:.2} m apart, b moved {:.2} m", b.position.x - 1.8);
+    // They meet at their sides (wheels 0.75 m out from each middle), not
+    // 2 m apart nor through each other, and `b` is shoved along.
+    assert!(closest > 1.0 && closest < 1.6, "closest {closest:.2}");
+    assert!(b.position.x > 1.85);
+}
+
+#[test]
+fn quads_bump_with_little_bounce() {
+    // `b` parked 6 m ahead of `a` (forward is -Z), `a` drives into it.
+    let Some((mut a, mut b, world)) = pair(Vec3::NEG_Z * 6.0) else { return };
+    let go = Input { throttle: 1.0, ..Default::default() };
+    let (mut hit, mut before) = (None, 0.0);
+    let mut closest = f32::MAX;
+    run_pair(&mut a, &mut b, &world, go, 2.0, |a, b| {
+        closest = closest.min(a.position.z - b.position.z);
+        if hit.is_none() {
+            if b.velocity.z < -1.0 {
+                hit = Some((a.velocity.z, b.velocity.z));
+            } else {
+                before = a.velocity.z;
+            }
+        }
+    });
+    let (va, vb) = hit.expect("never touched");
+    println!("closest {closest:.2} m; a hit at {before:.2} m/s, then a {va:.2} m/s, b {vb:.2} m/s");
+    // Nose to tail about 1.5 m apart, and hardness 0.2: `b` is pushed on
+    // without flying off ahead.
+    assert!(closest > 1.2 && closest < 2.0, "closest {closest:.2}");
+    assert!(vb - va > -1.0 * va.abs() * 0.35, "bounced apart: a {va:.2} b {vb:.2}");
 }

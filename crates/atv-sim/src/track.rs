@@ -75,8 +75,10 @@ pub fn collision_from_world(world: &World) -> TrackCollision {
 /// yachts).
 pub fn collision(world: &World, game: &GameSource, track: &str) -> TrackCollision {
     let render = world_triangles(world);
+    let mut kdt_count = 0;
     let (mut tris, mut ids) = match kdt_triangles(game, track) {
         Some((mut tris, mut ids)) => {
+            kdt_count = tris.len();
             // Under deep water the `.kdt` has no floor at all (the original
             // takes the quad out of the water first); the render meshes'
             // river beds stand in there, nowhere the `.kdt` covers.
@@ -114,14 +116,21 @@ pub fn collision(world: &World, game: &GameSource, track: &str) -> TrackCollisio
         .unwrap_or_default();
     let mut c = TrackCollision::new(tris, 8.0);
     c.set_surfaces(ids, surfaces);
+    c.set_facing(&vec![KDT_FACING; kdt_count]);
     c
 }
+
+/// The `.kdt`'s faces are solid on their outward side, which the sim frame's
+/// mirror leaves behind the triangles' winding.
+const KDT_FACING: i8 = -1;
 
 /// The original's own collision triangles (`.kdt`) with their surface ids,
 /// in the sim frame.
 pub fn kdt_collision(game: &GameSource, track: &str) -> Option<TrackCollision> {
     let (tris, ids) = kdt_triangles(game, track)?;
-    Some(TrackCollision::with_surfaces(tris, ids, 8.0))
+    let mut c = TrackCollision::with_surfaces(tris, ids, 8.0);
+    c.set_facing(&vec![KDT_FACING; c.triangle_count()]);
+    Some(c)
 }
 
 fn kdt_triangles(game: &GameSource, track: &str) -> Option<(Vec<[Vec3; 3]>, Vec<u8>)> {

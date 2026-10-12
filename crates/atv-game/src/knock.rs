@@ -201,7 +201,7 @@ fn load_quad_shape(mut commands: Commands, game: Res<Game>) {
     match game.0.read("/Cars/Generic/Generic.hsc").map_err(|e| e.to_string()).and_then(|b| BodyShape::parse(&b).map_err(|e| e.to_string())) {
         Ok(hsc) => {
             let shape = Shape::from_hsc(&hsc);
-            let reach = shape.points().map(|(c, r)| (c - Vec3::Y * crate::convert::COM_HEIGHT).length() + r).fold(0.0, f32::max);
+            let reach = shape.points().map(|(c, r)| (c - Vec3::Y * atv_sim::body::MODEL_DROP).length() + r).fold(0.0, f32::max);
             commands.insert_resource(QuadShape { shape, reach });
         }
         Err(e) => {
@@ -314,8 +314,8 @@ fn hit_props(
         .filter(|(.., v)| v.length() > MIN_SPEED)
         .collect();
     *last = now.iter().map(|q| q.0).collect();
-    // The quad's shape hangs from its centre of mass like its model.
-    let pose = |at: Vec3, rot: Quat| Transform::from_translation(at - rot * Vec3::Y * crate::convert::COM_HEIGHT).with_rotation(rot);
+    // The quad's shape hangs below its centre of mass as the original's does.
+    let pose = |at: Vec3, rot: Quat| Transform::from_translation(at - rot * Vec3::Y * atv_sim::body::MODEL_DROP).with_rotation(rot);
     for (e, t, k, tumble) in &mut props {
         let centre = t.transform_point(k.centre);
         let reach = k.radius * t.scale.abs().max_element() + quad_shape.reach;
