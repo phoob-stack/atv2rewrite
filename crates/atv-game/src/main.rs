@@ -7,7 +7,7 @@
 //!             [--minutes N] [--round N] [--opponents N] [--challenge N] [--lesson N]
 //!             [--players N] [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
-//!             [--resolution 1280x720] [--fullscreen] [--cheat ALLOFEM]
+//!             [--resolution 1280x720] [--fullscreen] [--cheat ALLOFEM] [--puppet-test]
 //!
 //! Without `--track` the game opens on its front end; with it, it goes
 //! straight into a race (`--frontend` shows the menus anyway, preselected).
@@ -17,6 +17,8 @@
 //! with `--round` races the saved championship's next round; training is
 //! ATV Academy, always on Stadium 2; `--lesson N` runs one of the retail
 //! disc's ATV Academy lessons).
+//! `--puppet-test` makes the computer riders puppets that repeat player 1's
+//! moves a second apart, as quads another game drives would be shown.
 
 mod aitricks;
 mod arcade;
@@ -47,6 +49,7 @@ mod mp;
 mod name_entry;
 mod opponents;
 mod race;
+mod racers;
 mod record_page;
 mod records;
 mod replay;
@@ -134,6 +137,9 @@ struct Args {
     /// Skip the race intro's camera flights (see [`intro`]) and a
     /// challenge's intro page.
     no_intro: bool,
+    /// The computer riders repeat player 1's moves (see
+    /// [`racers::Echo`]).
+    puppet_test: bool,
 }
 
 /// The game modes on the main menu.
@@ -330,6 +336,7 @@ fn parse_args() -> anyhow::Result<Args> {
         players: 1,
         cheats: Vec::new(),
         no_intro: false,
+        puppet_test: false,
     };
     let mut frontend = false;
     let mut it = std::env::args().skip(1);
@@ -413,6 +420,7 @@ fn parse_args() -> anyhow::Result<Args> {
             "--hd" => a.hd = Some(PathBuf::from(val())),
             "--no-hd" => a.use_hd = false,
             "--no-intro" => a.no_intro = true,
+            "--puppet-test" => a.puppet_test = true,
             "--fullscreen" => a.fullscreen = true,
             "--resolution" => {
                 let v = val();
@@ -573,7 +581,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(screens::ScreensPlugin)
         .add_plugins(lit::LitPlugin)
         .add_plugins(lessons::LessonsPlugin)
-        .add_plugins(inputs::InputsPlugin)
+        .add_plugins((inputs::InputsPlugin, racers::RacersPlugin))
         .add_plugins(sky::SkyPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
@@ -700,7 +708,7 @@ fn setup(
     let at = Transform::from_translation(start.0).with_rotation(start.1);
     match loader.spawn_quad(&mut commands, &sel.quad, at, &wheel_x) {
         Ok(e) => {
-            commands.entity(e).insert((QuadBody, scoped.clone()));
+            commands.entity(e).insert((QuadBody, racers::RacerId::PLAYER_1, scoped.clone()));
             // The riding animations are in the quad model's space, which
             // hangs below the physics body like the quad's own model.
             let seat = commands.spawn((Transform::from_xyz(0.0, -convert::COM_HEIGHT, 0.0), Visibility::default())).id();
@@ -746,7 +754,11 @@ fn setup(
     if !matches!(sel.mode, Mode::Challenge | Mode::Training) {
         session.air_record = records.as_deref().and_then(|r| r.get(&sel.track, records::Kind::HighestJump)).map(|r| r.value);
     }
-    opponents::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, &roster, &sel, (&scene.world, &collision), &session, field);
+    let puppets = args.puppet_test && demo.is_none();
+    opponents::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, &roster, &sel, (&scene.world, &collision), &session, field, puppets);
+    if puppets {
+        commands.init_resource::<racers::Echo>();
+    }
     if sel.mode == Mode::TimeTrial && demo.is_none() {
         ghost::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, (&sel.track, &sel.rider, &sel.quad));
     }
@@ -1424,7 +1436,7 @@ fn rumble(
     now[0] = (wreck.fall.is_some(), player.0.air_time);
     for r in opponents.iter().flat_map(|o| &o.racers) {
         // Player numbers count from 1.
-        if let Some(slot) = r.human.map(|n| n - 1).filter(|s| *s < mp::MAX_PLAYERS) {
+        if let Some(slot) = r.human().map(|n| n - 1).filter(|s| *s < mp::MAX_PLAYERS) {
             now[slot] = (false, r.vehicle.air_time);
         }
     }

@@ -161,7 +161,7 @@ impl Riders<'_> {
             });
         }
         let opp = self.opponents.as_deref()?;
-        let i = opp.racers.iter().position(|r| r.human == Some(slot + 1))?;
+        let i = opp.racers.iter().position(|r| r.human() == Some(slot + 1))?;
         let r = &opp.racers[i];
         Some(Figures { vehicle: &r.vehicle, progress: &r.progress, boost: Some(&r.boost), session: r.session.as_ref(), racer: Some(i) })
     }
@@ -994,7 +994,7 @@ fn record_entries(
     };
     let mut out = vec![entry(1, name, &sel.rider, &sel.quad, p, session)];
     for r in opponents.iter().flat_map(|o| &o.racers) {
-        if let Some(n) = r.human.filter(|&n| n >= 2) {
+        if let Some(n) = r.human().filter(|&n| n >= 2) {
             let quad = sel.others.get(n - 2).map_or("", |o| o.1.as_str());
             out.push(entry(n, r.name.clone(), &r.model, quad, &r.progress, r.session.as_ref()));
         }
@@ -1027,7 +1027,7 @@ fn update_banners(
     let Some(ui) = ui else { return };
     let quiet = !menus.is_empty();
     // Split screen: a player home waits for the others (`WAITING_FOR_REST`).
-    let split_screen = riders.opponents.as_deref().is_some_and(|o| o.racers.iter().any(|r| r.human.is_some()));
+    let split_screen = riders.opponents.as_deref().is_some_and(|o| o.racers.iter().any(|r| r.human().is_some()));
     let all_home = riders.progress.as_deref().is_some_and(|p1| mp::all_home(p1, riders.opponents.as_deref()));
     // 3, 2, 1 for a second each, then GO for one more.
     for (mut img, mut node, mut t, mut vis, hud) in &mut countdown {
@@ -1459,7 +1459,7 @@ fn spawn_race_menu(
                 .iter()
                 .enumerate()
                 .filter_map(|(i, r)| {
-                    let n = r.human?;
+                    let n = r.human()?;
                     let place = standings.and_then(|s| s.opponents.get(i)).map_or(String::new(), |o| ordinal(o.0));
                     let time = r.progress.finished.map_or("DNF".to_string(), fmt_time);
                     Some((n, format!("{place}  {time}")))

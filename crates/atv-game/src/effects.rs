@@ -474,7 +474,7 @@ fn emit(
     let ahead = crate::since_step(&fixed);
     let mut quads = vec![Quad { v: &player.0, drawn: player.0.drawn(ahead), body: body.single().ok(), boosting: boost.is_some_and(|b| b.on), human: true }];
     for r in opponents.iter().flat_map(|o| &o.racers) {
-        quads.push(Quad { v: &r.vehicle, drawn: r.vehicle.drawn(ahead), body: Some(r.body), boosting: r.boost.on, human: r.human.is_some() });
+        quads.push(Quad { v: &r.vehicle, drawn: r.vehicle.drawn(ahead), body: Some(r.body), boosting: r.boost.on, human: r.human().is_some() });
     }
     fx.puff.resize(quads.len(), 1.0);
     fx.wet.resize(quads.len(), false);

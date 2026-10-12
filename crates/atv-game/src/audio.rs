@@ -508,7 +508,7 @@ fn falloff(d: f32) -> f32 {
 /// from each view's camera; the rewrite's mix has always been relative to
 /// the player's quad).
 fn listeners(player: &Player, opponents: Option<&crate::opponents::Opponents>, views: usize) -> Vec<Vec3> {
-    let others = opponents.into_iter().flat_map(|o| o.racers.iter().enumerate().filter(|(i, r)| r.human.is_some() || i + 1 < views).map(|(_, r)| r.vehicle.position));
+    let others = opponents.into_iter().flat_map(|o| o.racers.iter().enumerate().filter(|(i, r)| r.human().is_some() || i + 1 < views).map(|(_, r)| r.vehicle.position));
     std::iter::once(player.0.position).chain(others).collect()
 }
 
@@ -788,7 +788,7 @@ fn engine_and_wheels(
                 let (q, human) = match w.racer {
                     None => (v, true),
                     Some(i) => match opponents.as_ref().and_then(|opp| opp.racers.get(i)) {
-                        Some(r) => (&r.vehicle, r.human.is_some()),
+                        Some(r) => (&r.vehicle, r.human().is_some()),
                         None => continue,
                     },
                 };

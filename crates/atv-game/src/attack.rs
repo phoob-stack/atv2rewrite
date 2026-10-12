@@ -19,6 +19,7 @@ use atv_formats::GameSource;
 use atv_sim::Vehicle;
 
 use crate::inputs::TickInputs;
+use crate::racers::Control;
 use crate::boost::Boost;
 use crate::crash::{Cause, Way, Wreck};
 use crate::opponents::Opponents;
@@ -155,6 +156,9 @@ struct Seat {
     grounded: bool,
     /// A player's number (0-based), or None for a computer rider.
     human: Option<usize>,
+    /// Shown as another game says (see [`crate::racers::Control::Puppet`]):
+    /// it kicks and is kicked there.
+    puppet: bool,
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -177,18 +181,19 @@ pub fn kicks(
     let racers = opp.as_mut().map_or(&mut [][..], |o| &mut o.racers[..]);
 
     // Everyone's state, player 1 first.
-    let seat = |v: &Vehicle, live: bool, human: Option<usize>| Seat {
+    let seat = |v: &Vehicle, live: bool, human: Option<usize>, puppet: bool| Seat {
         position: v.position,
         right: v.right(),
-        live,
+        live: live && !puppet,
         grounded: v.grounded(),
         human,
+        puppet,
     };
     let p1_live = progress.started() && progress.finished.is_none() && wreck.fall.is_none();
-    let mut seats = vec![seat(&player.0, p1_live, (!args.autodrive).then_some(0))];
+    let mut seats = vec![seat(&player.0, p1_live, (!args.autodrive).then_some(0), false)];
     for r in racers.iter() {
         let live = r.progress.started() && r.progress.finished.is_none() && r.wreck.fall.is_none();
-        seats.push(seat(&r.vehicle, live, r.human.filter(|_| !args.autodrive).map(|n| n - 1)));
+        seats.push(seat(&r.vehicle, live, r.human().filter(|_| !args.autodrive).map(|n| n - 1), r.control == Control::Puppet));
     }
     let mut fighters: Vec<Fighter> = std::iter::once(*fighter).chain(racers.iter().map(|r| r.fighter)).collect();
     let mut boosts: Vec<Boost> = std::iter::once(*boost).chain(racers.iter().map(|r| r.boost)).collect();
@@ -199,6 +204,9 @@ pub fn kicks(
     let hit_len = FightClips::seconds(&clips.hit[0]);
     let mut strikes = Vec::new();
     for (i, s) in seats.iter().enumerate() {
+        if s.puppet {
+            continue;
+        }
         let f = &mut fighters[i];
         f.health = (f.health + dt / rules.restore).min(1.0);
         f.wait = (f.wait - dt).max(0.0);

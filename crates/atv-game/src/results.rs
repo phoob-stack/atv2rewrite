@@ -214,8 +214,8 @@ pub fn finishers(p: &RaceProgress, session: Option<&Session>, feats: &Feats, sel
     let mut out = vec![line(name, &sel.rider, p, session, true, jumps(1))];
     for r in opponents.iter().flat_map(|o| &o.racers) {
         // Only the players' jumps are measured.
-        let j = r.human.map_or((0.0, 0.0), jumps);
-        out.push(line(r.name.clone(), &r.model, &r.progress, r.session.as_ref(), r.human.is_some(), j));
+        let j = r.human().map_or((0.0, 0.0), jumps);
+        out.push(line(r.name.clone(), &r.model, &r.progress, r.session.as_ref(), r.human().is_some(), j));
     }
     in_order(out)
 }
