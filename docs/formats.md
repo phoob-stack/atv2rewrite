@@ -112,8 +112,9 @@ patch (672 B): u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16]
      elsewhere).
 ```
 Quad paint atlases (`Tpage*`) and `GEN_Tyre` keep a gloss mask in alpha
-(shiny plastic opaque, seat and rubber clear; the tyre tread pattern);
-it is not coverage. `GEN_components` alpha is real cut-out coverage.
+(shiny plastic opaque, seat and rubber clear; the tyre tread pattern;
+retail's atlases are opaque all over); it is not coverage.
+`GEN_components` alpha is real cut-out coverage.
 Node header[1] is the base material, header[2] the overlay material (mud,
 tyre dirt), header[0] probably a render group. Vertex colours are baked
 light with 0x80 = 1.0 (Xbox MODULATE2X); vertex alpha drives effects, not
@@ -133,6 +134,20 @@ The overlay layers are dirt that builds up during a race:
   alpha × vertex alpha × the lighting alpha. The vertex shader takes that
   last value from the ambient colour constant (`c5.a`), which is how the
   game feeds in the dirt level. Dirt also cuts the specular.
+- Lighting (both discs ship the shader sources in `VertexShader/` and
+  `PixelShader/`; port in `atv-game/src/lit.rs`): per vertex,
+  diffuse = saturate(vertex colour × (ambient + N·L × sun)) and specular =
+  (N·H)^16 × the sun's specular colour (`SunLight.asm`, c95 = (1, 2, 16,
+  0.5) set at 0x4e8cfe). A mesh without an overlay draws with
+  `TextureColVertCol` (texture × diffuse × 2, no specular); one with an
+  overlay with `ShinyThingWithDirt`, which adds the specular × base
+  texture alpha (pixel shader picked by the generic mesh draw 0x4ef690;
+  shader table 0x5121b0; `Tyres.txt` and `Wheels.txt` are loaded but never
+  used). The colours are `Tracks.xml`'s `mAmbientColour`, `mSunColour`
+  and `mSunSpecColour` (× 0.5 × (0.65, 0.75, 1) for R, G, B), times the
+  XBox `mGlobalTint`, read at race start by 0x41f840; the sun's direction
+  is the track's `sun` light, else (0, -1, 0.5) (0x4f2600). Quad bodies
+  have vertex colour 0x7f, tyres 0xff, riders 0x80.
 - Rider vertex alpha is all zero and `CH_quadsnow_01` has no alpha. The
   port gives rider dirt the mud texture's coverage.
 - The port's dirt level grows with distance driven on the ground: full

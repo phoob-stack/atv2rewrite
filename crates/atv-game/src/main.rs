@@ -37,6 +37,7 @@ mod mud;
 mod hud;
 mod intro;
 mod knock;
+mod lit;
 mod loading;
 mod water;
 mod mp;
@@ -61,10 +62,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bevy::input::gamepad::{GamepadRumbleIntensity, GamepadRumbleRequest};
-use bevy::camera::Exposure;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::input::mouse::AccumulatedMouseMotion;
-use bevy::light::GlobalAmbientLight;
 use bevy::mesh::skinning::SkinnedMeshInverseBindposes;
 use bevy::pbr::{DistanceFog, FogFalloff};
 use bevy::prelude::*;
@@ -529,6 +528,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(records::RecordsPlugin)
         .add_plugins(ghost::GhostPlugin)
         .add_plugins(screens::ScreensPlugin)
+        .add_plugins(lit::LitPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
@@ -607,13 +607,13 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
     mut clear: ResMut<ClearColor>,
-    mut ambient: ResMut<GlobalAmbientLight>,
+    mut lit_materials: ResMut<Assets<lit::LitMaterial>>,
     (career, rules, demo): (Res<career::Career>, Res<career::Rules>, Option<Res<demo::Demo>>),
     records: Option<Res<records::TrackRecords>>,
 ) {
     set_ui_camera(&mut commands, &mut ui_cams, false);
     let scoped = DespawnOnExit(AppState::Race);
-    let mut loader = convert::Loader::new(&game.0, &mut meshes, &mut materials, &mut images);
+    let mut loader = convert::Loader::new(&game.0, &mut meshes, &mut materials, &mut lit_materials, &mut images);
     loader.dirt = Some(roster.info(&sel.track).ground);
     let in_challenge = sel.mode == Mode::Challenge;
     loader.challenge = in_challenge.then_some(sel.challenge);
@@ -708,40 +708,10 @@ fn setup(
         checkpoints.len()
     );
 
-    // The world's lighting is baked into vertex colours; only the quad and
-    // rider are lit, by the track's sun and ambient lights. Light colours use
-    // the same 0x80 = 1.0 scale as vertex colours (the Xbox lit vehicles
-    // with fixed-function lights and MODULATE2X), so a surface facing a
-    // 0x80 sun shows its texture as authored. Bevy lights are physical:
-    // divide out the camera exposure (and pi for the diffuse BRDF) to land
-    // on that scale.
-    let exposure = Exposure::default().exposure();
-    let rgb = |c: [f32; 3]| Color::linear_rgb(c[0] / 128.0, c[1] / 128.0, c[2] / 128.0);
-    // Tracks without a sun (Stadium, Swamp, Industrial, Forest) get one
-    // scaled to the baked light around the start, so the quad doesn't
-    // glow against a dark world.
-    let level = baked_level(&scene.world, start.0);
-    let mut sun = (Vec3::new(0.3, -0.8, -0.5), Color::linear_rgb(0.6 * level, 0.6 * level, 0.6 * level));
-    let mut have_ambient = false;
-    ambient.brightness = 1.0 / exposure;
-    for l in &scene.world.lights {
-        match l.name.to_ascii_lowercase().as_str() {
-            "sun" => sun = (trk::to_sim(l.dir), rgb(l.color)),
-            "ambient" => {
-                ambient.color = rgb(l.color);
-                have_ambient = true;
-            }
-            _ => {}
-        }
-    }
-    if !have_ambient {
-        ambient.color = Color::linear_rgb(0.45 * level, 0.45 * level, 0.45 * level);
-    }
-    commands.spawn((
-        DirectionalLight { color: sun.1, illuminance: std::f32::consts::PI / exposure, ..default() },
-        Transform::default().looking_to(sun.0.normalize_or(Vec3::NEG_Y), Vec3::Y),
-        scoped.clone(),
-    ));
+    // The world's lighting is baked into vertex colours; only the quads and
+    // riders are lit, as the original lights them (see `lit`).
+    let sun_dir = scene.world.lights.iter().find(|l| l.name.eq_ignore_ascii_case("sun")).map(|l| trk::to_sim(l.dir));
+    commands.insert_resource(lit::Lighting::for_track(&game.0, &sel.track, sun_dir));
     let fog_color = {
         let c = scene.world.fog_color;
         Color::srgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8)
@@ -837,26 +807,6 @@ fn setup(
         }
         commands.insert_resource(c);
     }
-}
-
-/// Average baked light (1.0 = texture as authored) of the track surface
-/// within 40 m of `at`, clamped to a sensible range.
-fn baked_level(world: &atv_formats::row::World, at: Vec3) -> f32 {
-    let lum = |c: u32| (((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255)) as f32 / 3.0 / 128.0;
-    let (mut sum, mut n) = (0.0, 0.0);
-    // Visible, opaque surfaces only (no water, foam or shadow decals).
-    for m in world.meshes.iter().filter(|m| m.material >= 0 && m.flags & 0xE000 == 0) {
-        let near = |p: [f32; 3]| trk::to_sim(p).distance_squared(at) < 40.0 * 40.0;
-        for v in m.vertices.iter().filter(|v| near(v.pos)) {
-            sum += lum(v.color);
-            n += 1.0;
-        }
-        for p in m.patches.iter().filter(|p| near(p.control[0])) {
-            sum += p.corner_color.iter().map(|&c| lum(c)).sum::<f32>() / 4.0;
-            n += 1.0;
-        }
-    }
-    if n == 0.0 { 1.0 } else { (sum / n).clamp(0.35, 1.2) }
 }
 
 /// The driving controls (see [`controller::Reader`]). `airborne`: the

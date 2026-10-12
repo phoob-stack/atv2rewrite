@@ -13,6 +13,7 @@ use bevy::prelude::*;
 use atv_sim::Vehicle;
 
 use crate::convert::{Mud, MudLayer};
+use crate::lit::LitMaterial;
 use crate::opponents::Opponents;
 use crate::water::{depth, Water};
 use crate::{AppState, Player, QuadBody};
@@ -58,7 +59,7 @@ fn get_dirty(
     }
 }
 
-fn show_dirt(muds: Query<&Mud>, mut layers: Query<&mut MudLayer>, mut materials: ResMut<Assets<StandardMaterial>>) {
+fn show_dirt(muds: Query<&Mud>, mut layers: Query<&mut MudLayer>, mut materials: ResMut<Assets<LitMaterial>>) {
     for mut layer in &mut layers {
         let Ok(mud) = muds.get(layer.owner) else { continue };
         // Touch the material only when the change shows.
@@ -67,7 +68,7 @@ fn show_dirt(muds: Query<&Mud>, mut layers: Query<&mut MudLayer>, mut materials:
         }
         layer.shown = mud.0;
         if let Some(mut m) = materials.get_mut(&layer.material) {
-            m.base_color.set_alpha(mud.0);
+            m.uniform.opacity = mud.0;
         }
     }
 }

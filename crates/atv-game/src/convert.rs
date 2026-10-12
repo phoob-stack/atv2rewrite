@@ -20,6 +20,8 @@ use atv_formats::rom::{Model, Node, Patch, Vertex};
 use atv_formats::row::World;
 use atv_formats::GameSource;
 
+use crate::lit::{self, LitMaterial};
+
 const PATCH_STEPS: usize = 6;
 
 /// Radius the unit sky-dome models are scaled to. Inside the camera's far
@@ -61,7 +63,7 @@ enum Look {
     Shadow,
     /// Second texture layer blended over a track surface by vertex alpha.
     Overlay,
-    /// Lit by the sun (vehicles).
+    /// Lit by the sun (vehicles), with the original's shader ([`lit`]).
     Lit,
     /// Lit and always opaque: rider textures keep a gloss mask in alpha.
     Rider,
@@ -97,14 +99,19 @@ impl Look {
         matches!(self, Look::Water | Look::Foam | Look::Glow | Look::Mist | Look::Shadow | Look::Overlay | Look::Dirt)
     }
 
-    /// Vertex colour for this look. Lit surfaces get their light from the
-    /// scene, so the baked (doubled) value is capped at white.
+    /// Vertex colour for this look. Lit surfaces keep the stored value:
+    /// their shader multiplies it by the light and doubles the result.
     fn color(self, c: u32) -> [f32; 4] {
         let mut rgba = argb(c, self.uses_vertex_alpha());
-        if matches!(self, Look::Lit | Look::Rider | Look::Dirt) {
-            rgba[..3].iter_mut().for_each(|v| *v = v.min(1.0));
+        if self.is_lit() {
+            rgba[..3].iter_mut().for_each(|v| *v *= 0.5);
         }
         rgba
+    }
+
+    /// Drawn with [`LitMaterial`].
+    fn is_lit(self) -> bool {
+        matches!(self, Look::Lit | Look::Rider | Look::Dirt)
     }
 }
 
@@ -145,12 +152,14 @@ pub struct Loader<'a> {
     game: &'a GameSource,
     meshes: &'a mut Assets<Mesh>,
     materials: &'a mut Assets<StandardMaterial>,
+    lit: &'a mut Assets<LitMaterial>,
     images: &'a mut Assets<Image>,
     /// Lower-case texture stem -> archive path, for name-based lookup.
     texture_paths: HashMap<String, String>,
     textures: HashMap<String, Option<(Handle<Image>, bool)>>,
-    gloss_maps: HashMap<String, Option<Handle<Image>>>,
     material_cache: HashMap<(String, Look), Handle<StandardMaterial>>,
+    /// Lit materials by texture, look and whether they shine.
+    lit_cache: HashMap<(String, Look, bool), Handle<LitMaterial>>,
     models: HashMap<String, Option<Model>>,
     model_paths: HashMap<String, Vec<String>>,
     /// The race's ground: picks the tyres and, when set, gives vehicles
@@ -165,8 +174,7 @@ pub struct Loader<'a> {
     /// original loads the ghost its own models and textures, 0x26240),
     /// and no dirt, shadow or exhaust.
     pub ghost: Option<f32>,
-    ghost_materials: HashMap<AssetId<StandardMaterial>, Handle<StandardMaterial>>,
-    solid_textures: HashMap<AssetId<Image>, Handle<Image>>,
+    ghost_materials: HashMap<AssetId<LitMaterial>, Handle<LitMaterial>>,
     /// The image standing in for the original's front buffer.
     front_buffer: Option<Handle<Image>>,
 }
@@ -226,7 +234,7 @@ pub struct Mud(pub f32);
 #[derive(Component)]
 pub struct MudLayer {
     pub owner: Entity,
-    pub material: Handle<StandardMaterial>,
+    pub material: Handle<LitMaterial>,
     pub shown: f32,
 }
 
@@ -350,22 +358,13 @@ fn bernstein(t: f32) -> [f32; 4] {
 
 /// Vehicle textures whose alpha is a gloss mask rather than coverage: each
 /// quad's own paint atlas (`Tpage*`: shiny plastic opaque, matte seat and
-/// rubber clear) and the tyre (alpha holds the tread pattern). Cutting
-/// them out at alpha 0.5 punched holes through the seat, panels and tyres.
-/// `GEN_components` alpha really is coverage (holed plates, cables, chain).
+/// rubber clear in the prototype; all opaque in retail) and the tyre
+/// (alpha holds the tread pattern). Cutting them out at alpha 0.5 punched
+/// holes through the seat, panels and tyres. `GEN_components` alpha really
+/// is coverage (holed plates, cables, chain).
 fn alpha_is_gloss(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     n.starts_with("tpage") || n == "gen_tyre"
-}
-
-/// Metallic-roughness map (roughness in green) from a gloss mask in alpha.
-fn gloss_rgba(tex: &Texture) -> Vec<u8> {
-    let mut rgba = tex.to_rgba8();
-    for p in rgba.chunks_exact_mut(4) {
-        let rough = 0.8 - 0.55 * (p[3] as f32 / 255.0);
-        p.copy_from_slice(&[255, (rough * 255.0) as u8, 0, 255]);
-    }
-    rgba
 }
 
 /// Baked shadow decals mark shadow as bright texels on black (or, in a few,
@@ -380,16 +379,6 @@ fn shadow_rgba(tex: &Texture) -> Vec<u8> {
         p.copy_from_slice(&[0, 0, 0, (255.0 * 0.55 * s) as u8]);
     }
     rgba
-}
-
-/// Makes every texel of DXT5 data (all its mip levels) fully opaque: each
-/// 16-byte block opens with its two alpha endpoints and 48 bits of alpha
-/// indices; both endpoints at 255 and every index 0 is alpha 255.
-fn solid_bc3(data: &mut [u8]) {
-    for block in data.as_chunks_mut::<16>().0 {
-        block[..2].fill(255);
-        block[2..8].fill(0);
-    }
 }
 
 fn flip(p: [f32; 3]) -> [f32; 3] {
@@ -430,6 +419,7 @@ impl<'a> Loader<'a> {
         game: &'a GameSource,
         meshes: &'a mut Assets<Mesh>,
         materials: &'a mut Assets<StandardMaterial>,
+        lit: &'a mut Assets<LitMaterial>,
         images: &'a mut Assets<Image>,
     ) -> Self {
         let mut texture_paths = HashMap::new();
@@ -447,11 +437,12 @@ impl<'a> Loader<'a> {
             game,
             meshes,
             materials,
+            lit,
             images,
             texture_paths,
             textures: HashMap::new(),
-            gloss_maps: HashMap::new(),
             material_cache: HashMap::new(),
+            lit_cache: HashMap::new(),
             models: HashMap::new(),
             model_paths,
             dirt: None,
@@ -459,7 +450,6 @@ impl<'a> Loader<'a> {
             last_quad: None,
             ghost: None,
             ghost_materials: HashMap::new(),
-            solid_textures: HashMap::new(),
             front_buffer: None,
         }
     }
@@ -532,61 +522,24 @@ impl<'a> Loader<'a> {
         loaded
     }
 
-    /// Roughness map from a texture's gloss-mask alpha (see [`alpha_is_gloss`]).
-    fn gloss_map(&mut self, name: &str) -> Option<Handle<Image>> {
-        let key = name.to_ascii_lowercase();
-        if let Some(t) = self.gloss_maps.get(&key) {
-            return t.clone();
-        }
-        let loaded = self.texture_paths.get(&key).cloned().and_then(|path| {
-            let (tex, _) = crate::hd::texture(self.game, &path).ok()?;
-            let size = Extent3d { width: tex.width, height: tex.height, depth_or_array_layers: 1 };
-            let mut img = Image::new(
-                size,
-                TextureDimension::D2,
-                gloss_rgba(&tex),
-                TextureFormat::Rgba8Unorm,
-                RenderAssetUsages::RENDER_WORLD,
-            );
-            img.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
-                address_mode_u: ImageAddressMode::Repeat,
-                address_mode_v: ImageAddressMode::Repeat,
-                ..ImageSamplerDescriptor::linear()
-            });
-            Some(self.images.add(img))
-        });
-        self.gloss_maps.insert(key, loaded.clone());
-        loaded
-    }
-
     fn material(&mut self, name: Option<&str>, look: Look) -> Handle<StandardMaterial> {
-        let m = self.shared_material(name, look);
-        match self.ghost {
-            Some(alpha) => self.ghostly(m, alpha),
-            None => m,
-        }
-    }
-
-    fn shared_material(&mut self, name: Option<&str>, look: Look) -> Handle<StandardMaterial> {
         let key = (name.unwrap_or("").to_ascii_lowercase(), look);
         if let Some(m) = self.material_cache.get(&key) {
             return m.clone();
         }
         let tex = name.and_then(|n| self.texture(n, look == Look::Shadow));
-        let gloss = look == Look::Lit && name.is_some_and(alpha_is_gloss);
-        let gloss_map = if gloss { name.and_then(|n| self.gloss_map(n)) } else { None };
-        let has_alpha = tex.as_ref().is_some_and(|t| t.1) && !gloss;
+        let has_alpha = tex.as_ref().is_some_and(|t| t.1);
         let alpha_mode = match look {
             Look::Water | Look::Foam | Look::Mist | Look::Shadow | Look::Overlay => AlphaMode::Blend,
             Look::Cutout => AlphaMode::Mask(0.5),
             Look::Glow => AlphaMode::Add,
-            Look::Baked | Look::Lit if has_alpha => AlphaMode::Mask(0.5),
+            Look::Baked if has_alpha => AlphaMode::Mask(0.5),
             _ => AlphaMode::Opaque,
         };
         let m = self.materials.add(StandardMaterial {
             base_color: if look == Look::Mist { Color::srgba(1.0, 1.0, 1.0, 0.3) } else { Color::WHITE },
             base_color_texture: tex.map(|t| t.0),
-            unlit: !matches!(look, Look::Lit | Look::Rider | Look::Dirt),
+            unlit: true,
             fog_enabled: !matches!(look, Look::Sky | Look::Glow),
             cull_mode: None,
             double_sided: true,
@@ -598,51 +551,46 @@ impl<'a> Loader<'a> {
                 Look::Shadow => 8.0,
                 _ => 0.0,
             },
-            perceptual_roughness: if gloss_map.is_some() { 1.0 } else { 0.7 },
-            // Kept low: there is no environment map, and Bevy's flat ambient
-            // turns a higher F0 into bright rims at grazing angles.
-            reflectance: if gloss_map.is_some() { 0.25 } else { 0.15 },
-            metallic_roughness_texture: gloss_map,
             ..default()
         });
         self.material_cache.insert(key, m.clone());
         m
     }
 
-    /// A see-through copy of `m` for the ghost. An opaque material's
-    /// texture alpha (a gloss mask, or nothing) is made solid first, so
-    /// only cut-outs show through more than the rest.
-    fn ghostly(&mut self, m: Handle<StandardMaterial>, alpha: f32) -> Handle<StandardMaterial> {
+    /// A quad or rider surface. `shiny`: the mesh has a dirt layer, so the
+    /// original draws it with `ShinyThingWithDirt`, whose specular the
+    /// texture's alpha masks; without one it is plain `TextureColVertCol`.
+    fn lit_material(&mut self, name: Option<&str>, look: Look, shiny: bool) -> Handle<LitMaterial> {
+        let key = (name.unwrap_or("").to_ascii_lowercase(), look, shiny);
+        let m = match self.lit_cache.get(&key) {
+            Some(m) => m.clone(),
+            None => {
+                let tex = name.and_then(|n| self.texture(n, false));
+                // Rider textures and the quads' gloss-masked ones are opaque.
+                let cutout = look == Look::Lit && tex.as_ref().is_some_and(|t| t.1) && !name.is_some_and(alpha_is_gloss);
+                let flags = if shiny { lit::GLOSS } else { 0 } | if cutout { lit::CUTOUT } else { 0 };
+                let alpha_mode = if cutout { AlphaMode::Mask(0.5) } else { AlphaMode::Opaque };
+                let m = self.lit.add(LitMaterial::new(tex.map(|t| t.0), flags, alpha_mode));
+                self.lit_cache.insert(key, m.clone());
+                m
+            }
+        };
+        match self.ghost {
+            Some(alpha) => self.ghostly(m, alpha),
+            None => m,
+        }
+    }
+
+    /// A see-through copy of `m` for the ghost.
+    fn ghostly(&mut self, m: Handle<LitMaterial>, alpha: f32) -> Handle<LitMaterial> {
         if let Some(g) = self.ghost_materials.get(&m.id()) {
             return g.clone();
         }
-        let Some(mut g) = self.materials.get(&m).cloned() else { return m };
-        if g.alpha_mode == AlphaMode::Opaque {
-            g.base_color_texture = g.base_color_texture.map(|t| self.solid(t));
-        }
+        let Some(mut g) = self.lit.get(&m).cloned() else { return m };
         g.alpha_mode = AlphaMode::Blend;
-        g.base_color.set_alpha(g.base_color.alpha() * alpha);
-        let h = self.materials.add(g);
+        g.uniform.opacity *= alpha;
+        let h = self.lit.add(g);
         self.ghost_materials.insert(m.id(), h.clone());
-        h
-    }
-
-    /// A copy of `tex` with every texel's alpha at full.
-    fn solid(&mut self, tex: Handle<Image>) -> Handle<Image> {
-        if let Some(s) = self.solid_textures.get(&tex.id()) {
-            return s.clone();
-        }
-        let Some(mut img) = self.images.get(&tex).cloned() else { return tex };
-        let format = img.texture_descriptor.format;
-        let Some(data) = img.data.as_mut() else { return tex };
-        match format {
-            TextureFormat::Bc3RgbaUnormSrgb => solid_bc3(data),
-            TextureFormat::Bgra8UnormSrgb | TextureFormat::Rgba8UnormSrgb => data.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255),
-            // DXT1 is see-through only where it cuts out.
-            _ => return tex,
-        }
-        let h = self.images.add(img);
-        self.solid_textures.insert(tex.id(), h.clone());
         h
     }
 
@@ -666,17 +614,10 @@ impl<'a> Loader<'a> {
         } else {
             self.texture(name, false).map(|t| t.0)
         };
-        let material = self.materials.add(StandardMaterial {
-            base_color: Color::srgba(1.0, 1.0, 1.0, 0.0),
-            base_color_texture: tex,
-            alpha_mode: AlphaMode::Blend,
-            cull_mode: None,
-            double_sided: true,
-            depth_bias: 2.0,
-            perceptual_roughness: 1.0,
-            reflectance: 0.1,
-            ..default()
-        });
+        let mut dirt = LitMaterial::new(tex, lit::DIRT, AlphaMode::Blend);
+        dirt.uniform.opacity = 0.0;
+        dirt.depth_bias = 2.0;
+        let material = self.lit.add(dirt);
         let mut mesh = batch.into_mesh();
         if skin.is_some() {
             mesh = match mesh.with_generated_skinned_mesh_bounds() {
@@ -761,9 +702,10 @@ impl<'a> Loader<'a> {
         transform: Transform,
         look: Look,
     ) -> Entity {
-        let mut batches: HashMap<Option<usize>, Batch> = HashMap::new();
+        // Lit meshes with a dirt layer shine (see `lit_material`).
+        let mut batches: HashMap<(Option<usize>, bool), Batch> = HashMap::new();
         for node in &model.nodes {
-            let b = batches.entry(node.material()).or_default();
+            let b = batches.entry((node.material(), look.is_lit() && node.header[2] >= 0)).or_default();
             b.add_tris(&node.vertices, &node.indices, look, false);
             for p in &node.patches {
                 b.add_patch(p, look, false);
@@ -786,7 +728,7 @@ impl<'a> Loader<'a> {
                 self.spawn_dirt(commands, batch, &name, holder, owner, None);
             }
         }
-        for (mat, batch) in batches {
+        for ((mat, shiny), batch) in batches {
             if batch.idx.is_empty() {
                 continue;
             }
@@ -799,9 +741,12 @@ impl<'a> Loader<'a> {
             if look == Look::Shadow && self.ghost.is_some() {
                 continue;
             }
-            let material = self.material(name.as_deref(), look);
-            let mesh = self.meshes.add(batch.into_mesh());
-            let child = commands.spawn((Mesh3d(mesh), MeshMaterial3d(material))).id();
+            let mesh = Mesh3d(self.meshes.add(batch.into_mesh()));
+            let child = if look.is_lit() {
+                commands.spawn((mesh, MeshMaterial3d(self.lit_material(name.as_deref(), look, shiny)))).id()
+            } else {
+                commands.spawn((mesh, MeshMaterial3d(self.material(name.as_deref(), look)))).id()
+            };
             commands.entity(holder).add_child(child);
         }
         holder
@@ -988,16 +933,16 @@ impl<'a> Loader<'a> {
         }
         let inverse = bindposes.add(bind.iter().map(|p| Mat4::from_translation(-*p)).collect::<Vec<_>>());
 
-        let mut batches: HashMap<Option<usize>, Batch> = HashMap::new();
+        let mut batches: HashMap<(Option<usize>, bool), Batch> = HashMap::new();
         for node in &model.nodes {
-            batches.entry(node.material()).or_default().add_skinned(node, Look::Rider, false);
+            batches.entry((node.material(), node.header[2] >= 0)).or_default().add_skinned(node, Look::Rider, false);
         }
-        for (mat, batch) in batches {
+        for ((mat, shiny), batch) in batches {
             if batch.idx.is_empty() {
                 continue;
             }
             let name = mat.and_then(|i| model.materials.get(i)).map(|m| m.name.clone());
-            let material = self.material(name.as_deref(), Look::Rider);
+            let material = self.lit_material(name.as_deref(), Look::Rider, shiny);
             let mesh = batch.into_mesh().with_generated_skinned_mesh_bounds()?;
             let child = commands
                 .spawn((
