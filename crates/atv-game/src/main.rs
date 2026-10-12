@@ -51,6 +51,7 @@ mod respot;
 mod results;
 mod rider;
 mod screens;
+mod sky;
 mod settings;
 mod trickbook;
 mod tuning;
@@ -77,7 +78,7 @@ use atv_sim::track as trk;
 use atv_sim::{Input, TrackCollision, Vehicle};
 
 use controller::Action;
-use convert::{SkyDome, WheelVisual};
+use convert::WheelVisual;
 use crash::{Cause, CrashClips, Wreck};
 use freestyle::{Session, StuntClips};
 use frontend::{FrontEnd, Roster, Screen};
@@ -529,6 +530,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(ghost::GhostPlugin)
         .add_plugins(screens::ScreensPlugin)
         .add_plugins(lit::LitPlugin)
+        .add_plugins(sky::SkyPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
         .add_systems(OnEnter(AppState::Race), setup)
@@ -536,7 +538,7 @@ fn main() -> anyhow::Result<()> {
         .add_systems(FixedUpdate, (drive, records::watch, career::dnf_cutoff, challenge::follow_course).chain().run_if(in_state(AppState::Race)))
         .add_systems(
             Update,
-            (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, respot::show_fade, cycle_camera, chase_camera, fly_camera, follow_sky, rumble)
+            (sync_quad, animate_rider, stunts, crash::rider_follows, rider::pose_riders, respot::show_fade, cycle_camera, chase_camera, fly_camera, rumble)
                 .chain()
                 .run_if(in_state(AppState::Race)),
         )
@@ -717,14 +719,18 @@ fn setup(
         Color::srgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8)
     };
     clear.0 = fog_color;
+    let distance = sky::ViewDistance::for_track(&game.0, &sel.track);
+    commands.insert_resource(distance);
     let view = (
         Camera3d::default(),
         // Colours are baked; show them as authored.
         Tonemapping::None,
-        Projection::Perspective(PerspectiveProjection { far: convert::SKY_RADIUS * 2.0, ..default() }),
+        // The track ends at its draw distance, fogged out on the way; the
+        // sky has its own camera (see `sky`).
+        Projection::Perspective(PerspectiveProjection { far: distance.far, ..default() }),
         DistanceFog {
             color: fog_color,
-            falloff: FogFalloff::Linear { start: 120.0, end: 900.0 },
+            falloff: FogFalloff::Linear { start: distance.fog_start, end: distance.fog_end },
             ..default()
         },
     );
@@ -1261,14 +1267,6 @@ fn rumble(
             });
         }
     }
-}
-
-fn follow_sky(cams: Query<(&Transform, Option<&mp::Split>), (With<Camera3d>, Without<screens::ScreenCam>)>, mut sky: Query<&mut Transform, (With<SkyDome>, Without<Camera3d>)>) {
-    // Player 1's view in split screen.
-    let cam = cams.iter().find(|(_, s)| s.is_none_or(|s| s.0 == 0)).map(|c| c.0);
-    let (Some(cam), Ok(mut sky)) = (cam, sky.single_mut()) else { return };
-    // Sunk a little so the hazy rim sits under the horizon.
-    sky.translation = cam.translation - Vec3::Y * convert::SKY_RADIUS * 0.08;
 }
 
 fn fly_camera(

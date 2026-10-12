@@ -6,7 +6,8 @@
 //! 0x10 u32 material_count, u32 0, u32 locator_count, u32 point_count,
 //!      u32 light_count, u32 instance_count, u32 sprite_count, u32 0,
 //!      u32 effect_count (water, mist...), u32 unknown
-//! 0x38 materials[material_count]   0x8C bytes each, name in the first 32
+//! 0x38 materials[material_count]   0x8C bytes each, name in the first 32,
+//!                                   +0x82/+0x83 wrap U/V (0 = clamp)
 //!      locators[locator_count]     0x7C bytes: name[64], pos, scale, 3x3
 //!      points[point_count]         0x2C bytes
 //!      lights[light_count]         0x4C bytes: name[32], u32 type, u32,
@@ -93,6 +94,9 @@ pub struct Mesh {
 pub struct World {
     pub fog_color: u32,
     pub materials: Vec<String>,
+    /// Per material: whether its texture repeats across U and V; the
+    /// original clamps the axes whose flag is 0 (0x4f3cc0).
+    pub material_wraps: Vec<[bool; 2]>,
     pub locators: Vec<Locator>,
     pub lights: Vec<Light>,
     pub instances: Vec<Instance>,
@@ -119,8 +123,11 @@ impl World {
         let nspr = r.u32()?;
         r.seek(0x38);
         let mut materials = Vec::new();
+        let mut material_wraps = Vec::new();
         for _ in 0..nmat {
-            materials.push(crate::bin::cstr(r.bytes(0x8C)?));
+            let raw = r.bytes(0x8C)?;
+            materials.push(crate::bin::cstr(raw));
+            material_wraps.push(crate::rom::wraps(raw));
         }
         let mut locators = Vec::new();
         for _ in 0..nloc {
@@ -155,7 +162,7 @@ impl World {
             sprites.push(Sprite { kind, material, params: r.f32s::<10>()? });
         }
         let meshes = scan_meshes(bytes, r.pos(), nmat as i32)?;
-        Ok(World { fog_color, materials, locators, lights, instances, sprites, meshes })
+        Ok(World { fog_color, materials, material_wraps, locators, lights, instances, sprites, meshes })
     }
 }
 

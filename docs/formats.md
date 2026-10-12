@@ -96,7 +96,8 @@ Levels 856, shaders 75, other 116).
 0x00 "ROM 1.26\0" + 3 pad
 0x0C u32 materials, locators, points, sprites, 0, nodes
 0x24 i32 -1, -1, f32 -1, bbox_min[3], bbox_max[3]
-0x48 materials  0x8C each (name[32] = texture name, rest is editor junk)
+0x48 materials  0x8C each (name[32] = texture name; +0x82/+0x83 wrap U/V,
+                0 = clamp; the rest is editor junk)
      locators   0x7C each: name[64], pos, scale, 3x3 rotation
      points     0x2C each: name[32], pos  (wheel centres, pivots, lights...)
      sprites    0x68 each: kind[32] ("faceme"), material[32], 10 floats
@@ -192,7 +193,7 @@ points, so the riding clips fit them all); the riding clips
 0x00 "ROW 2.25\0" + pad, u32 fog colour
 0x10 u32 materials, 0, locators, points, lights, instances, sprites, 0,
      effects, unknown
-0x38 materials 0x8C; locators 0x7C; points 0x2C; lights 0x4C (name[32],
+0x38 materials 0x8C (as in ROM); locators 0x7C; points 0x2C; lights 0x4C (name[32],
      type, 0, pos, dir, rgb 0..255); instances 0x80 (flags[32] "FREE" =
      knockable, model[32] "name.clm" -> name.rom, pos, scale, 3x3, ARGB
      tint); sprites 0x68; then effect records (sea, river, mist) and a
@@ -209,7 +210,22 @@ water (and some shadow decals, with 0x400), 0x4000 foam/wake, 0x8000 baked shado
 invisible collision-only geometry. The original's mesh setup (0x106390)
 picks the blend from 0x4 (alpha blend), 0x8 (add ONE, ONE) and 0x10 (add
 SRC_ALPHA, ONE, Stadium 1's lamp beams), none writing depth; 0x2 turns
-off back-face culling. A material named `FrontBuffer` is the console's
+off back-face culling. The rewrite draws all three (0x4 = beach and river
+edges, Forest's wall tops, Glacier's thin ice, Stadium 1's hanging arrows).
+
+Material wrap: the model and world loaders (0x4eec00, 0x4f3cc0) set each
+texture's address mode from material bytes +0x82 (U) and +0x83 (V): 0 =
+clamp (3), else wrap (1). Backdrop cards (Dunes' `DU_islands_02` and
+`DU_DistantCliffs`, beach edges) clamp V; their UVs run past the texture's
+clear top, so wrapping V repeats the island as a strip floating over it.
+
+View distance (retail): the track's camera far plane is `mDrawDistance`
+(`Tracks.xml`, entry +0xc) and its vertex fog runs from `mFogStartDistance`
+to `mFogEndDistance` (+0x10, +0x14), fractions of that distance, clamped
+0..1 (0x46e020 fills the camera's fog block; 0x4d3fc0 turns it into
+vertex constant c90; fog is on when the start is below 1). The sky dome
+(0x481ed0) is scaled to the draw distance, centred on the camera
+`mSkyYOffset` lower (+8), and drawn first with a far plane of 5000. A material named `FrontBuffer` is the console's
 front buffer, so Stadium 1's video screens show the race. `material2` is an overlay layer (grass
 strips, tyre tracks, the checker on inflatable arches) drawn over the base
 with the second UV set, weighted by vertex alpha.
