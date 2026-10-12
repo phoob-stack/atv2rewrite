@@ -539,8 +539,11 @@ with something in its meter.
   trick, per ground trick type and per flip/spin direction). Once all four
   wheels have been down 0.1 s (+0x1e4) the combo pays points x different
   moves (0x74700, "COMPLETE"); the speed boost gets that x `TrickScoreMod`.
-  A crash loses it (0x745c0, "FAILED"). Ground tricks (0x75640): the wheel
-  contacts (0x74030) give Wheelie (rear two down), Endo (front two),
+  A crash loses it (0x745c0, "FAILED"). An air trick (0x74e90) pays
+  `mScorePoints` + trunc(`mHoldPoints` x seconds held at its peak), the
+  held seconds (+0xd0) running on across the combo's tricks and cleared
+  only when the combo pays or fails. Ground tricks (0x75640): the wheel
+  contacts (0x74030) give Wheelie (rear two down), Endo ("Stoppie", front two),
   Bicycle Left/Right (that side's two), in the air with none, unchanged
   with one, else on the ground, which only counts after the 0.1 s on all
   four. A trick starts at 2 m/s or more (an endo at any speed) with

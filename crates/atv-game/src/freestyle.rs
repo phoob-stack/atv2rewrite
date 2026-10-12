@@ -104,13 +104,14 @@ pub enum Ground {
 }
 
 impl Ground {
-    /// The call-out, the game's own strings ("Left Bicycle", 0x153).
+    /// The call-out, the game's own strings ("Left Bicycle", 0x153; the
+    /// `Endo` key reads "Stoppie").
     fn label(self) -> &'static str {
         match self {
             Ground::Wheelie => "WHEELIE",
             Ground::BicycleLeft => "LEFT BICYCLE",
             Ground::BicycleRight => "RIGHT BICYCLE",
-            Ground::Endo => "ENDO",
+            Ground::Endo => "STOPPIE",
         }
     }
 }
@@ -329,7 +330,6 @@ const LANDING_AIR: f32 = 0.2;
 /// Buttons must be steady this long, so pressing a combo's two buttons a
 /// frame apart doesn't start the one-button trick.
 const COMBO_WINDOW: f32 = 0.06;
-const HOLD_TICK: f32 = 0.2;
 /// All four wheels down this long ends a combo (0x75bf0).
 const SETTLE: f32 = 0.1;
 /// A ground trick pays once held longer than this, seconds.
@@ -360,15 +360,8 @@ pub struct ActiveTrick {
     pub def: usize,
     /// Seconds into the trick (paused at the peak while held).
     pub t: f32,
-    held: f32,
     /// The buttons were let go, so the trick can't be held any more.
     released: bool,
-}
-
-impl ActiveTrick {
-    fn hold_points(&self, def: &TrickDef) -> u32 {
-        (self.held / HOLD_TICK) as u32 * def.hold_points
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -413,6 +406,10 @@ struct Combo {
     /// Something is under way (+0x12c): a trick, a ground trick past its
     /// first second, a flip, a box.
     on: bool,
+    /// Seconds tricks have been held at their peak (+0xd0). It runs on
+    /// across the combo's tricks, each paying `mHoldPoints` a second of
+    /// it (0x74e90).
+    held: f32,
 }
 
 impl Combo {
@@ -705,7 +702,7 @@ impl Session {
     /// its full length without being held at the peak.
     pub fn start_trick(&mut self, def: usize) {
         if self.active.is_none() && self.tricks.get(def).is_some_and(|t| t.level <= self.level) {
-            self.active = Some(ActiveTrick { def, t: 0.0, held: 0.0, released: true });
+            self.active = Some(ActiveTrick { def, t: 0.0, released: true });
             self.combo.on = true;
         }
     }
@@ -786,7 +783,7 @@ impl Session {
             && let Some(dir) = dir
             && let Some(def) = self.trick_for(buttons, dir)
         {
-            self.active = Some(ActiveTrick { def, t: 0.0, held: 0.0, released: false });
+            self.active = Some(ActiveTrick { def, t: 0.0, released: false });
             self.combo.on = true;
             self.armed = false;
         }
@@ -798,7 +795,7 @@ impl Session {
             }
             if !a.released && a.t >= peak && air > 0.0 {
                 a.t = peak;
-                a.held += dt;
+                self.combo.held += dt;
             } else {
                 a.t += dt;
             }
@@ -838,7 +835,7 @@ impl Session {
 
     fn finish_trick(&mut self, a: ActiveTrick) {
         let def = &self.tricks[a.def];
-        let pts = fives(def.points + a.hold_points(def));
+        let pts = fives(def.points + (def.hold_points as f32 * self.combo.held) as u32);
         let name = def.name.clone();
         if self.best_trick.as_ref().is_none_or(|b| pts > b.1) {
             self.best_trick = Some((name.clone(), pts));
@@ -1491,6 +1488,22 @@ mod tests {
     }
 
     #[test]
+    fn hold_points_run_on_across_a_combo() {
+        let mut s = session();
+        let done = |def| ActiveTrick { def, t: 1.0, released: true };
+        // Held 1.5 s: 20 a second on top of A's 100.
+        s.combo.held = 1.5;
+        s.finish_trick(done(0));
+        assert_eq!(s.combo.points, 130);
+        // B, held another quarter second, is paid for all 1.75 s.
+        s.combo.held += 0.25;
+        s.finish_trick(done(1));
+        assert_eq!(s.combo.points, 130 + 335);
+        s.complete();
+        assert_eq!(s.combo.held, 0.0);
+    }
+
+    #[test]
     fn gaps_pay_the_end_they_start_from() {
         let (mut s, mut v, w) = (session(), quad(), flat());
         ride(&mut s, &mut v, &w, ALL, 0.2);
@@ -1598,13 +1611,13 @@ mod tests {
         ride(&mut s, &mut v, &w, ALL, 0.2);
         ride(&mut s, &mut v, &w, NONE, 0.5);
         s.combo.add(Some(Move::Trick(1)), 300);
-        s.active = Some(ActiveTrick { def: 0, t: 0.3, held: 0.0, released: false });
+        s.active = Some(ActiveTrick { def: 0, t: 0.3, released: false });
         ride(&mut s, &mut v, &w, ALL, 0.2);
         assert_eq!(s.score, 0, "the whole combo is lost");
         assert!(s.popups.iter().any(|p| p.kind == PopupKind::Bail));
         // In the recovery part it counts.
         ride(&mut s, &mut v, &w, NONE, 0.5);
-        s.active = Some(ActiveTrick { def: 0, t: 0.7, held: 0.0, released: true });
+        s.active = Some(ActiveTrick { def: 0, t: 0.7, released: true });
         ride(&mut s, &mut v, &w, ALL, 0.2);
         assert_eq!(s.score, 100);
         // A crash loses what's under way.
