@@ -1460,15 +1460,19 @@ fn rebuild(
 
     match fe.screen {
         Screen::Title => {
-            let w = 460.0;
-            kids.push(commands.spawn(placed(ui.logo.node(w, w / 4.0), (SCREEN_W - w) / 2.0, 120.0)).id());
+            // The prototype's logo page is 4:1, retail's 2:1: same height.
+            let h = 460.0 / 4.0;
+            let w = h * ui.logo.size.x / ui.logo.size.y;
+            kids.push(commands.spawn(placed(ui.logo.node(w, h), (SCREEN_W - w) / 2.0, 120.0)).id());
             let t = "PRESS START";
             let tw = ui.font(FontId::Menu).width(t, 18.0);
             kids.push(commands.spawn((BitmapText::new(FontId::Menu, 18.0, t), ui_at((SCREEN_W - tw) / 2.0, 330.0), Blink)).id());
         }
         Screen::Main => {
-            let w = 400.0;
-            kids.push(commands.spawn(placed(ui.logo.node(w, w / 4.0), (SCREEN_W - w) / 2.0, 34.0)).id());
+            // The prototype's logo page is 4:1, retail's 2:1: same height.
+            let h = 400.0 / 4.0;
+            let w = h * ui.logo.size.x / ui.logo.size.y;
+            kids.push(commands.spawn(placed(ui.logo.node(w, h), (SCREEN_W - w) / 2.0, 34.0)).id());
             let current = match fe.mode {
                 _ if fe.players > 1 => 4,
                 Mode::Arcade => 0,

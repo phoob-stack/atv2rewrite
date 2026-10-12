@@ -68,7 +68,7 @@ Levels 856, shaders 75, other 116).
 | `Levels/*/World/*.xml` | | XML | Object placements (cameras, triggers, positions, matrices). | Readable text. |
 | `.bas` | 48 | `BAS 1.02` | Rider skeleton in its bind (T-) pose. | **Decoded.** See below. |
 | `.bac` | 121 | `BAC 1.03` | Rider animations (riding leans, celebrations, crashes, idle). | **Decoded** (117; the four `*_bike` stunt files and `punch_floor` have another layout). |
-| `.cuban` | 91 | `CUBAN 1.02` | Compressed or curve animations (crashes). | To do. |
+| `.cuban` | 91 | `CUBAN 1.02` | The same rider animations, palette-packed. The retail disc has only these (132). | **Decoded.** See below. |
 | `.skel` | 1 | text | Rider skeleton definition (31 bones, mirror pairs, two-bone limbs). | Mirror pairs read. |
 | `.pts` | 11 | `POINT 1.00` | Named vehicle hard-points (wheel centres etc.). | Simple, to do. |
 | `.params` | 12 | text | Vehicle physics tuning (torque, gearing, preload, air resistance). | Readable text. |
@@ -146,7 +146,20 @@ BAS: "BAS 1.02\0" + 3 pad, u32 bones (31), then 32 B per bone:
      u32 child_count  -- bones are depth-first, so counts give the tree
 BAC: "BAC 1.03\0" + 3 pad, u32 bones, u32 frames, then bone-major keys,
      28 B each: f32 pos[3], f32 quat[4] (x,y,z,w), parent-relative
+CUBAN: "CUBAN 1.02" + pad to 0x10; u8 bones (0x10), u16 frames (0x14),
+     u32 flags (0x18; bit 0: a base pose follows the frames),
+     u32 pos_bits, u32 rot_bits (8/16/32), u32 pos_count, u32 rot_count,
+     then pos_count f32[3], rot_count f32[4], and two index lists (pos,
+     then rot), each bones*frames (+bones with a base pose) entries,
+     bone-major like BAC, each list padded to 4 bytes. With a base pose a
+     key is relative to its bone's base: pos + base.pos, rot * base.rot.
 ```
+CUBAN clips decode to the BAC clips frame for frame (retail XBE: loader
+0xf1c10, sampler 0x19c00 and 0xea330), except that a CUBAN root key is
+relative to the seated pelvis (-0.00128, 1.02410, -0.28926 in quad-model
+space), which the BAC riding and stunt clips bake in, and the crash clips
+keep no root motion. Some retail clips are cut shorter (`leen_back` has 2
+frames, not 10) and the retail stunts add `*_TB` variants.
 Tree: 0 pelvis; 1-3 spine; 4-6 neck/head; 7-14 left arm (7 clavicle,
 8 upper arm, 9 forearm, 10 wrist, 11-12 hand, 13-14 shoulder); 15-22 the
 right arm likewise; 23-26 right leg (hip, knee, ankle, toe); 27-30 left

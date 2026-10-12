@@ -2,6 +2,8 @@
 //!
 //! - `.bas` ("BAS 1.02"): a rider's skeleton in its bind pose (a T-pose).
 //! - `.bac` ("BAC 1.03"): a sampled animation of the same skeleton.
+//! - `.cuban` ("CUBAN 1.02"): the same, packed. Only the retail disc's
+//!   riding, crash and stunt clips are all CUBAN; the prototype has both.
 //! - `atvrider.skel`: text listing the left/right bone pairs (for mirroring)
 //!   and the two-bone limbs (neck, spine, elbows, knees).
 //!
@@ -15,6 +17,16 @@
 //! BAC: "BAC 1.03\0" + 3 pad, u32 bone_count, u32 frame_count, then
 //!      bone-major keys: for each bone, for each frame (28 B):
 //!      f32 position[3], f32 rotation[4] (x, y, z, w)
+//! CUBAN: "CUBAN 1.02\0" + pad (0x10), u8 bone_count (0x10),
+//!      u16 frame_count (0x14), u32 flags (0x18, bit 0 = has a base pose),
+//!      u32 position_bits, u32 rotation_bits (0x1c, 0x20: 8, 16 or 32),
+//!      u32 position_count, u32 rotation_count (0x24, 0x28), then the
+//!      palettes (f32 position[3] each, f32 rotation[4] each) and two index
+//!      lists, each padded to 4 bytes: bone-major like BAC
+//!      (`bone * frames + frame`), then with a base pose one more key per
+//!      bone. Each frame key is relative to its bone's base key: positions
+//!      add, rotations multiply (`key * base`). Loader 0xf1c10 and sampler
+//!      0x19c00/0xea330 in the retail XBE.
 //! ```
 //!
 //! Bones are stored depth-first, so `child_count` rebuilds the hierarchy.
@@ -120,9 +132,80 @@ impl Animation {
         Ok(Animation { bone_count, frame_count, keys })
     }
 
+    /// A BAC or CUBAN clip, told apart by its magic.
+    pub fn parse_any(bytes: &[u8]) -> Result<Self> {
+        if bytes.starts_with(b"CUBAN") { Self::parse_cuban(bytes) } else { Self::parse(bytes) }
+    }
+
+    pub fn parse_cuban(bytes: &[u8]) -> Result<Self> {
+        if !bytes.starts_with(b"CUBAN 1.0") {
+            return Err(Error::Magic { what: "CUBAN animation", expected: "CUBAN 1.02" });
+        }
+        let mut r = Reader::at(bytes, 0x10, "CUBAN animation");
+        let bone_count = r.u8()? as usize;
+        r.seek(0x14);
+        let frame_count = r.u16()? as usize;
+        r.seek(0x18);
+        let based = r.u32()? & 1 != 0;
+        let (pos_bits, rot_bits) = (r.u32()?, r.u32()?);
+        let (pos_count, rot_count) = (r.u32()? as usize, r.u32()? as usize);
+        if pos_count > r.remaining() / 12 || rot_count > r.remaining() / 16 {
+            return Err(Error::Format("CUBAN: palette runs past the end".into()));
+        }
+        let positions = (0..pos_count).map(|_| r.vec3()).collect::<Result<Vec<_>>>()?;
+        let rotations = (0..rot_count).map(|_| r.f32s::<4>()).collect::<Result<Vec<_>>>()?;
+        let keys = bone_count * frame_count;
+        let n = keys + if based { bone_count } else { 0 };
+        let mut indices = |bits: u32| -> Result<Vec<usize>> {
+            let list = (0..n)
+                .map(|_| match bits {
+                    8 => r.u8().map(usize::from),
+                    16 => r.u16().map(usize::from),
+                    32 => r.u32().map(|v| v as usize),
+                    _ => Err(Error::Format(format!("CUBAN: {bits}-bit indices"))),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            // Each list is padded to a multiple of 4 bytes.
+            let pad = (4 - n * bits as usize / 8 % 4) % 4;
+            r.skip(pad.min(r.remaining()))?;
+            Ok(list)
+        };
+        let pos_index = indices(pos_bits)?;
+        let rot_index = indices(rot_bits)?;
+        let get = |i: usize| -> Result<Key> {
+            match (positions.get(pos_index[i]), rotations.get(rot_index[i])) {
+                (Some(&position), Some(&rotation)) => Ok(Key { position, rotation }),
+                _ => Err(Error::Format("CUBAN: index outside its palette".into())),
+            }
+        };
+        let mut out = Vec::with_capacity(keys);
+        for i in 0..keys {
+            let mut k = get(i)?;
+            if based {
+                let base = get(keys + i / frame_count.max(1))?;
+                k.position = [0, 1, 2].map(|a| k.position[a] + base.position[a]);
+                k.rotation = quat_mul(k.rotation, base.rotation);
+            }
+            out.push(k);
+        }
+        Ok(Animation { bone_count, frame_count, keys: out })
+    }
+
     pub fn key(&self, bone: usize, frame: usize) -> Key {
         self.keys[bone * self.frame_count + frame.min(self.frame_count - 1)]
     }
+}
+
+/// Hamilton product `a * b` of (x, y, z, w) quaternions.
+fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    let [ax, ay, az, aw] = a;
+    let [bx, by, bz, bw] = b;
+    [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
 }
 
 /// The parts of `atvrider.skel` the game needs.
@@ -155,5 +238,39 @@ impl SkelInfo {
             }
         }
         map
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One bone, two frames, a base pose: 8-bit position and 16-bit
+    /// rotation indices (each list padded to 4 bytes).
+    #[test]
+    fn cuban_keys_are_relative_to_the_base_pose() {
+        let mut b = b"CUBAN 1.02\0\0\0\0\0\0".to_vec();
+        b.extend([1, 0, 0, 0]); // bones
+        b.extend([2, 0, 0, 0]); // frames
+        b.extend(1u32.to_le_bytes()); // has a base pose
+        for v in [8u32, 16, 2, 2] {
+            b.extend(v.to_le_bytes());
+        }
+        for f in [0.0f32, 1.0, 0.0, 10.0, 20.0, 30.0] {
+            b.extend(f.to_le_bytes());
+        }
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        for f in [0.0f32, 0.0, 0.0, 1.0, 0.0, half, 0.0, half] {
+            b.extend(f.to_le_bytes());
+        }
+        b.extend([0, 0, 1, 0]); // positions: frame 0, frame 1, base, pad
+        b.extend([0, 0, 1, 0, 1, 0, 0, 0]); // rotations, then 2 pad bytes
+        let a = Animation::parse_any(&b).unwrap();
+        assert_eq!((a.bone_count, a.frame_count), (1, 2));
+        assert_eq!(a.key(0, 1).position, [10.0, 21.0, 30.0]);
+        // A quarter turn about Y on top of another: a half turn.
+        let r = a.key(0, 1).rotation;
+        assert!(r[1].abs() > 0.999 && r[3].abs() < 1e-6, "{r:?}");
+        assert_eq!(a.key(0, 0).rotation, [0.0, half, 0.0, half]);
     }
 }

@@ -100,10 +100,7 @@ pub struct GroundPoints {
 
 pub fn load_tricks(game: &GameSource) -> (Vec<TrickDef>, GroundPoints) {
     let xml = game.read("/Setup/Tricks.xml").map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-    let stems: Vec<String> = game
-        .archive_paths()
-        .filter_map(|p| p.strip_prefix("/Animations/Stunts/Bac/")?.strip_suffix(".bac").map(str::to_owned))
-        .collect();
+    let stems = crate::rider::stunt_stems(game);
     let entries = setup::entries(&xml);
     let num = |name: &str, key: &str, default: u32| {
         entries.iter().find(|e| e.name == name).and_then(|e| e.num(key)).map_or(default, |v| v as u32)

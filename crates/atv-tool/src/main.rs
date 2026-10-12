@@ -143,8 +143,8 @@ fn check(game: &GameSource) -> Result<()> {
                 .map_err(Into::into)
         } else if lower.ends_with(".bas") {
             Skeleton::parse(&data).map(|s| format!("{} bones", s.bones.len())).map_err(Into::into)
-        } else if lower.ends_with(".bac") {
-            match Animation::parse(&data) {
+        } else if lower.ends_with(".bac") || lower.ends_with(".cuban") {
+            match Animation::parse_any(&data) {
                 Ok(a) => Ok(format!("{} bones x {} frames", a.bone_count, a.frame_count)),
                 // The bike stunt clips and punch_floor use another layout.
                 Err(_) if lower.contains("_bike.") || lower.contains("punch_floor") => continue,
