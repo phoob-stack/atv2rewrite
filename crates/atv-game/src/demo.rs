@@ -236,6 +236,7 @@ mod tests {
             others: vec![("Male2".into(), "Nitro".into())],
             lesson: 3,
             lessons_passed: 2,
+            net: None,
         }
     }
 

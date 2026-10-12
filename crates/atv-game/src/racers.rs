@@ -1,5 +1,6 @@
 //! Every quad in a race as one list. Each racer has an id fixed for the
-//! race (player 1 is 0, everyone else 1, 2, ... in grid order), says who
+//! race (the host's player 1 is 0, everyone else 1, 2, ... in grid order;
+//! the same on every game in an online race, see [`PlayerId`]), says who
 //! drives it ([`Control`]), and can be read as data ([`RacerState`]). A
 //! racer someone else's game runs is a [`Control::Puppet`]: it isn't
 //! driven here, only shown where it's told.
@@ -19,6 +20,7 @@ use crate::attack::Fighter;
 use crate::boost::Boost;
 use crate::freestyle::Session;
 use crate::opponents::Opponents;
+use crate::race::{RaceProgress, Report};
 use crate::{AppState, Controls, Player};
 
 /// A racer's number for the race. Every quad's body carries its racer's.
@@ -28,6 +30,11 @@ pub struct RacerId(pub u8);
 impl RacerId {
     pub const PLAYER_1: Self = Self(0);
 }
+
+/// Player 1's racer id: 0, but in an online race joined, the seat the
+/// host gave this game.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+pub struct PlayerId(pub RacerId);
 
 /// Who drives a racer.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -67,21 +74,66 @@ pub struct RacerState {
     pub trick: Option<(usize, f32)>,
 }
 
+impl RacerState {
+    /// `t` of the way from `a` to `b` (0..1), for showing a racer between
+    /// two of the states it was told.
+    pub fn lerp(a: &Self, b: &Self, t: f32) -> Self {
+        let mix = |x: f32, y: f32| x + (y - x) * t;
+        let (p, q) = (&a.quad, &b.quad);
+        let mut quad = q.clone();
+        quad.position = p.position.lerp(q.position, t);
+        quad.rotation = p.rotation.slerp(q.rotation, t).normalize();
+        quad.velocity = p.velocity.lerp(q.velocity, t);
+        quad.angular_velocity = p.angular_velocity.lerp(q.angular_velocity, t);
+        for (w, (u, v)) in quad.wheels.iter_mut().zip(p.wheels.iter().zip(&q.wheels)) {
+            w.compression = mix(u.compression, v.compression);
+            // The roll wraps at a full turn.
+            let roll = (v.spin - u.spin + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+            w.spin = (u.spin + roll * t).rem_euclid(std::f32::consts::TAU);
+            w.steer = mix(u.steer, v.steer);
+        }
+        (quad.steer, quad.throttle, quad.brake, quad.lean) = (mix(p.steer, q.steer), mix(p.throttle, q.throttle), mix(p.brake, q.brake), mix(p.lean, q.lean));
+        (quad.revs, quad.preload) = (mix(p.revs, q.revs), mix(p.preload, q.preload));
+        Self { quad, lean: mix(a.lean, b.lean), ..b.clone() }
+    }
+}
+
 /// Every racer in the race, read alike.
 #[derive(SystemParam)]
 pub struct AllRacers<'w> {
+    me: Option<Res<'w, PlayerId>>,
     player: Option<Res<'w, Player>>,
     controls: Option<Res<'w, Controls>>,
     boost: Option<Res<'w, Boost>>,
     fighter: Option<Res<'w, Fighter>>,
     session: Option<Res<'w, Session>>,
     opponents: Option<Res<'w, Opponents>>,
+    progress: Option<Res<'w, RaceProgress>>,
 }
 
 impl AllRacers<'_> {
+    /// Player 1's racer id.
+    pub fn player_id(&self) -> RacerId {
+        self.me.as_deref().map_or(RacerId::PLAYER_1, |m| m.0)
+    }
+
+    /// Every racer's id, player 1's first.
+    pub fn ids(&self) -> Vec<RacerId> {
+        let others = self.opponents.iter().flat_map(|o| o.racers.iter().map(|r| r.id));
+        self.player.as_ref().map(|_| self.player_id()).into_iter().chain(others).collect()
+    }
+
+    /// How racer `id`'s race is going.
+    pub fn report(&self, id: RacerId) -> Option<Report> {
+        if id != self.player_id() {
+            return self.opponents.as_ref()?.racers.iter().find(|r| r.id == id).map(|r| r.progress.report());
+        }
+        self.progress.as_ref().map(|p| p.report())
+    }
+
     /// Racer `id` as data.
     pub fn state(&self, id: RacerId) -> Option<RacerState> {
-        if id != RacerId::PLAYER_1 {
+        if id != self.player_id() {
             return self.opponents.as_ref()?.racers.iter().find(|r| r.id == id).map(|r| r.state());
         }
         let fighter = self.fighter.as_deref();
@@ -119,7 +171,7 @@ pub struct Echo {
 
 /// Keeps player 1 as each step left them.
 fn remember(time: Res<Time>, all: AllRacers, mut echo: ResMut<Echo>) {
-    if let Some(state) = all.state(RacerId::PLAYER_1) {
+    if let Some(state) = all.state(all.player_id()) {
         echo.past.push_back((time.elapsed_secs(), state));
     }
 }

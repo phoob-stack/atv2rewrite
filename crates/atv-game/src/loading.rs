@@ -145,7 +145,12 @@ fn wrap(text: &str, width: f32, measure: impl Fn(&str) -> f32) -> Vec<String> {
 }
 
 #[derive(Component)]
-struct LoadingScreen;
+pub(crate) struct LoadingScreen;
+
+/// An online race's lobby, over the loading screen's tip (see
+/// [`crate::net`]), and the lines it shows.
+#[derive(Component)]
+struct LobbyPanel(Vec<String>);
 
 pub struct LoadingPlugin;
 
@@ -153,7 +158,9 @@ impl Plugin for LoadingPlugin {
     fn build(&self, app: &mut App) {
         // Drawn once the 2D art is in: on entering the state, or a frame in
         // when a race from the command line starts in it.
-        app.add_systems(Update, show.run_if(in_state(AppState::Loading)).run_if(not(any_with_component::<LoadingScreen>)));
+        app.add_systems(Update, show.run_if(in_state(AppState::Loading)).run_if(not(any_with_component::<LoadingScreen>)))
+            .add_systems(Update, show_lobby.run_if(resource_exists::<crate::net::Lobby>).run_if(in_state(AppState::Loading)))
+            .add_systems(Update, hide_lobby.run_if(not(resource_exists::<crate::net::Lobby>)).run_if(any_with_component::<LobbyPanel>));
     }
 }
 
@@ -215,6 +222,62 @@ fn show(
             f.spawn(centred(MODE_Y, TIP)).with_child(two_tone(TIP, mode, BLUE, Color::WHITE));
         });
     });
+}
+
+/// Shows who's in the online race's lobby while it waits.
+fn show_lobby(
+    mut commands: Commands,
+    online: Res<crate::net::Online>,
+    sel: Res<Selection>,
+    roster: Res<crate::frontend::Roster>,
+    panels: Query<(Entity, &LobbyPanel)>,
+) {
+    let lines = online.lobby_lines(&sel, &roster);
+    if panels.iter().any(|(_, p)| p.0 == lines) {
+        return;
+    }
+    for (e, _) in &panels {
+        commands.entity(e).despawn();
+    }
+    commands.spawn((fullscreen(), GlobalZIndex(1), DespawnOnExit(AppState::Loading), LobbyPanel(lines.clone()))).with_children(|r| {
+        r.spawn(Node {
+            position_type: PositionType::Absolute,
+            left: Val::Percent(50.0),
+            margin: UiRect::left(px(-SCREEN_W / 2.0)),
+            width: px(SCREEN_W),
+            height: px(SCREEN_H),
+            ..default()
+        })
+        .with_children(|f| {
+            f.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: px(TIP_BOX.min.x),
+                    top: px(TIP_TITLE_Y - TIP_TITLE),
+                    width: px(TIP_BOX.width()),
+                    padding: UiRect::all(px(6.0)),
+                    row_gap: px(3.0),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    ..default()
+                },
+                BackgroundColor(Color::BLACK.with_alpha(0.95)),
+            ))
+            .with_children(|b| {
+                for (i, l) in lines.into_iter().enumerate() {
+                    let (fill, outline) = if i == 0 { (BLUE, Color::WHITE) } else { (GREY, Color::BLACK) };
+                    b.spawn(two_tone(TIP, l, fill, outline));
+                }
+            });
+        });
+    });
+}
+
+/// The lobby goes once the race is on.
+fn hide_lobby(mut commands: Commands, panels: Query<Entity, With<LobbyPanel>>) {
+    for e in &panels {
+        commands.entity(e).despawn();
+    }
 }
 
 #[cfg(test)]

@@ -1176,7 +1176,10 @@ fn race_menus(
         // Escape or Start pauses (Backspace is the quick restart), as
         // does a controller in use coming out.
         if (keys.just_pressed(KeyCode::Escape) || nav == Some(Nav::Start) || unplugged) && !over {
-            virt.pause();
+            // An online race goes on (see `net`).
+            if selection.net.is_none() {
+                virt.pause();
+            }
             spawn_race_menu(&mut commands, &ui, false, &p, session.as_deref(), &selection, &roster, field, (None, None, None, None, &[]), overlay, "RETURN TO RACE");
         } else if *finished_for > 2.5 && menus.is_empty() {
             // A championship round's lines for its results page: player 1
@@ -1507,6 +1510,10 @@ fn spawn_race_menu(
     };
     // One player's race can be watched again.
     let mut items = items.to_vec();
+    // An online race can't be started again from one game.
+    if sel.net.is_some() {
+        items.retain(|i| !matches!(*i, "RESTART" | "RESTART RACE" | "RACE AGAIN"));
+    }
     if results && sel.players <= 1 {
         let at = if items.len() > 1 { items.len() - 1 } else { items.len() };
         items.insert(at, "REPLAY");

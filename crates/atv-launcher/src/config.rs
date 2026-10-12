@@ -14,11 +14,15 @@ pub enum Start {
     Arcade,
     Challenge,
     Academy,
+    /// An online race others join (see the game's `net`).
+    Host,
+    /// Joins a friend's online race at an address.
+    Join,
 }
 
 impl Start {
-    pub const ALL: [Start; 7] =
-        [Start::Menu, Start::SingleRace, Start::TimeTrial, Start::Freestyle, Start::Arcade, Start::Challenge, Start::Academy];
+    pub const ALL: [Start; 9] =
+        [Start::Menu, Start::SingleRace, Start::TimeTrial, Start::Freestyle, Start::Arcade, Start::Challenge, Start::Academy, Start::Host, Start::Join];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -29,6 +33,8 @@ impl Start {
             Start::Arcade => "Arcade",
             Start::Challenge => "Freestyle Challenge",
             Start::Academy => "ATV Academy",
+            Start::Host => "Host online race",
+            Start::Join => "Join online race",
         }
     }
 
@@ -41,6 +47,8 @@ impl Start {
             Start::Arcade => "Arcade from the first round: beat the clock at each checkpoint.",
             Start::Challenge => "One of the Freestyle Challenges in the stadium.",
             Start::Academy => "Practice tricks in the stadium with no time limit.",
+            Start::Host => "A race friends join over the internet. Open UDP port 7777 on your router to this PC, give them your public IP address, and press Enter in the lobby once they're in.",
+            Start::Join => "Joins a friend's race: type the address of the PC hosting it (their public IP, or name:port).",
         }
     }
 
@@ -54,6 +62,8 @@ impl Start {
             Start::Arcade => "arcade",
             Start::Challenge => "challenge",
             Start::Academy => "academy",
+            Start::Host => "host",
+            Start::Join => "join",
         }
     }
 
@@ -63,12 +73,12 @@ impl Start {
 
     /// Picks a track (races and freestyle; the rest have their own).
     pub fn picks_track(self) -> bool {
-        matches!(self, Start::SingleRace | Start::TimeTrial | Start::Freestyle)
+        matches!(self, Start::SingleRace | Start::TimeTrial | Start::Freestyle | Start::Host)
     }
 
     /// Races go round circuits; freestyle roams any track.
     pub fn circuits_only(self) -> bool {
-        matches!(self, Start::SingleRace | Start::TimeTrial)
+        matches!(self, Start::SingleRace | Start::TimeTrial | Start::Host)
     }
 }
 
@@ -97,6 +107,8 @@ pub struct Config {
     pub upscaler: PathBuf,
     /// Where the HD pack is built and read (empty = the default folder).
     pub hd_dir: PathBuf,
+    /// The host's address, for joining an online race.
+    pub address: String,
 }
 
 impl Default for Config {
@@ -117,6 +129,7 @@ impl Default for Config {
             hd_world: false,
             upscaler: PathBuf::new(),
             hd_dir: PathBuf::new(),
+            address: String::new(),
         }
     }
 }
@@ -150,6 +163,7 @@ impl Config {
                 "hd_world" => c.hd_world = v == "true",
                 "upscaler" => c.upscaler = PathBuf::from(v),
                 "hd_dir" => c.hd_dir = PathBuf::from(v),
+                "address" => c.address = v.into(),
                 _ => {}
             }
         }
@@ -166,7 +180,7 @@ impl Config {
 
     fn to_text(&self) -> String {
         format!(
-            "game = {}\nstart = {}\ntrack = {}\nquad = {}\nrider = {}\nlaps = {}\nminutes = {}\nchallenge = {}\nwidth = {}\nheight = {}\nfullscreen = {}\nhd = {}\nhd_world = {}\nupscaler = {}\nhd_dir = {}\n",
+            "game = {}\nstart = {}\ntrack = {}\nquad = {}\nrider = {}\nlaps = {}\nminutes = {}\nchallenge = {}\nwidth = {}\nheight = {}\nfullscreen = {}\nhd = {}\nhd_world = {}\nupscaler = {}\nhd_dir = {}\naddress = {}\n",
             self.game.display(),
             self.start.key(),
             self.track,
@@ -181,7 +195,8 @@ impl Config {
             self.hd,
             self.hd_world,
             self.upscaler.display(),
-            self.hd_dir.display()
+            self.hd_dir.display(),
+            self.address
         )
     }
 }

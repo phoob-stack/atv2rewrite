@@ -8,6 +8,7 @@
 //!             [--players N] [--autodrive] [--screenshot out.png [--after SECONDS]]
 //!             [--camera x,y,z,tx,ty,tz] [--orbit yaw,pitch,distance]
 //!             [--resolution 1280x720] [--fullscreen] [--cheat ALLOFEM] [--puppet-test]
+//!             [--host [--port 7777]] [--join ADDRESS[:PORT]]
 //!
 //! Without `--track` the game opens on its front end; with it, it goes
 //! straight into a race (`--frontend` shows the menus anyway, preselected).
@@ -19,6 +20,9 @@
 //! disc's ATV Academy lessons).
 //! `--puppet-test` makes the computer riders puppets that repeat player 1's
 //! moves a second apart, as quads another game drives would be shown.
+//! `--host` hosts an online Single Race on `--track` (UDP port 7777 unless
+//! `--port` says otherwise) and `--join` joins one by the host's address;
+//! see [`net`].
 
 mod aitricks;
 mod arcade;
@@ -46,6 +50,7 @@ mod lit;
 mod loading;
 mod water;
 mod mp;
+mod net;
 mod name_entry;
 mod opponents;
 mod race;
@@ -140,6 +145,10 @@ struct Args {
     /// The computer riders repeat player 1's moves (see
     /// [`racers::Echo`]).
     puppet_test: bool,
+    /// Host an online race on this port (see [`net`]).
+    host: Option<u16>,
+    /// Join the online race hosted at this address.
+    join: Option<String>,
 }
 
 /// The game modes on the main menu.
@@ -221,12 +230,18 @@ struct Selection {
     /// [`lessons`]), and the lessons of its course passed so far.
     lesson: usize,
     lessons_passed: usize,
+    /// An online race's seats (see [`net`]).
+    net: Option<net::NetRace>,
 }
 
 impl Selection {
     /// Player 1's slot on the grid: Arcade's from the last round, a
     /// lesson's own start, else the front.
     fn player_slot(&self) -> usize {
+        if let Some(n) = &self.net {
+            // Online, the grid is in racer id order.
+            return n.you.0 as usize + 1;
+        }
         match self.mode {
             Mode::Arcade => self.grid.max(1),
             Mode::Training if self.lesson > 0 => self.lesson,
@@ -337,7 +352,10 @@ fn parse_args() -> anyhow::Result<Args> {
         cheats: Vec::new(),
         no_intro: false,
         puppet_test: false,
+        host: None,
+        join: None,
     };
+    let mut port = net::link::PORT;
     let mut frontend = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -421,6 +439,9 @@ fn parse_args() -> anyhow::Result<Args> {
             "--no-hd" => a.use_hd = false,
             "--no-intro" => a.no_intro = true,
             "--puppet-test" => a.puppet_test = true,
+            "--host" => a.host = Some(net::link::PORT),
+            "--port" => port = val().parse()?,
+            "--join" => a.join = Some(val()),
             "--fullscreen" => a.fullscreen = true,
             "--resolution" => {
                 let v = val();
@@ -440,6 +461,17 @@ fn parse_args() -> anyhow::Result<Args> {
     }
     if frontend {
         a.direct = false;
+    }
+    if a.host.is_some() {
+        a.host = Some(port);
+    }
+    // Online is Single Race, one player a game, straight from the lobby.
+    if a.host.is_some() || a.join.is_some() {
+        anyhow::ensure!(a.host.is_none() || a.join.is_none(), "--host and --join don't go together");
+        a.direct = true;
+        a.mode = Mode::SingleRace;
+        a.mode_given = true;
+        a.players = 1;
     }
     if a.game.as_os_str().is_empty() {
         anyhow::bail!("pass --game <your ATV 2 disc image or extracted folder> (or set ATV2_GAME)");
@@ -474,6 +506,7 @@ fn main() -> anyhow::Result<()> {
         others: Vec::new(),
         lesson: args.lesson,
         lessons_passed: 0,
+        net: None,
     };
     // Split screen is Single Race and Freestyle (Battle) only.
     if selection.players > 1 && !matches!(args.mode, Mode::SingleRace | Mode::Freestyle) {
@@ -534,6 +567,19 @@ fn main() -> anyhow::Result<()> {
             selection.grid = field.player_slot();
         }
     }
+    // Online: the lobby waits on the loading screen.
+    let online = if let Some(port) = args.host {
+        Some(net::Online::host(port, tuning::quad_params(&game.0, &tuning::load(), &selection.quad, true).retail))
+    } else {
+        args.join.as_deref().map(|a| net::Online::join(a, tuning::quad_params(&game.0, &tuning::load(), &selection.quad, true).retail))
+    };
+    let online = match online.transpose() {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("can't go online: {e}");
+            std::process::exit(1);
+        }
+    };
     let first = if args.direct { AppState::Loading } else { AppState::FrontEnd };
     controller::load_mappings();
     let front_end = FrontEnd::at(args.screen.unwrap_or_default());
@@ -556,6 +602,9 @@ fn main() -> anyhow::Result<()> {
         plugins = plugins.disable::<bevy::gilrs::GilrsPlugin>();
     }
     let mut app = App::new();
+    if let Some(o) = online {
+        app.insert_resource(o).insert_resource(net::Lobby);
+    }
     app.add_plugins(plugins)
         .insert_resource(ClearColor(Color::srgb(0.55, 0.7, 0.9)))
         .insert_resource(Time::<Fixed>::from_hz(120.0))
@@ -581,7 +630,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(screens::ScreensPlugin)
         .add_plugins(lit::LitPlugin)
         .add_plugins(lessons::LessonsPlugin)
-        .add_plugins((inputs::InputsPlugin, racers::RacersPlugin))
+        .add_plugins((inputs::InputsPlugin, racers::RacersPlugin, net::NetPlugin))
         .add_plugins(sky::SkyPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
@@ -685,6 +734,8 @@ fn setup(
     let collision = trk::collision(&scene.world, &game.0, &sel.track);
     // A challenge starts at `start1` too, wherever its course is (0x86e00).
     let start = trk::start_pose(&scene.world, &collision, sel.player_slot());
+    let you = sel.net.as_ref().map_or(racers::RacerId::PLAYER_1, |n| n.you);
+    commands.insert_resource(racers::PlayerId(you));
     let course = in_challenge.then(|| challenge::Course::new(&scene.world, sel.challenge));
     let checkpoints = match &course {
         Some(c) => c.gates.iter().map(|g| g.center()).collect(),
@@ -708,7 +759,7 @@ fn setup(
     let at = Transform::from_translation(start.0).with_rotation(start.1);
     match loader.spawn_quad(&mut commands, &sel.quad, at, &wheel_x) {
         Ok(e) => {
-            commands.entity(e).insert((QuadBody, racers::RacerId::PLAYER_1, scoped.clone()));
+            commands.entity(e).insert((QuadBody, you, scoped.clone()));
             // The riding animations are in the quad model's space, which
             // hangs below the physics body like the quad's own model.
             let seat = commands.spawn((Transform::from_xyz(0.0, -convert::COM_HEIGHT, 0.0), Visibility::default())).id();
@@ -734,6 +785,9 @@ fn setup(
         Mode::SingleRace if sel.players > 1 => mp::FIELD - 1,
         // The demo fills the grid (the track's mMaxPlayers, at most 8).
         Mode::SingleRace if demo.is_some() => 7,
+        // Online: the joined players, then computer riders on the host;
+        // the host's line-up on a joined game.
+        Mode::SingleRace if sel.net.is_some() => sel.net.as_ref().map_or(0, |n| if n.host { n.seats.len() + args.opponents } else { n.seats.len().saturating_sub(1) }),
         Mode::SingleRace => args.opponents,
         Mode::Career => sel.field.len(),
         // The original's arcade state machine seats 1 player and 7 AI.

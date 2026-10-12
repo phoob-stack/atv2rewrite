@@ -70,7 +70,7 @@ impl Plugin for FrontEndPlugin {
                     .chain()
                     .run_if(in_state(AppState::FrontEnd)),
             )
-            .add_systems(Update, finish_loading.run_if(in_state(AppState::Loading)));
+            .add_systems(Update, finish_loading.run_if(in_state(AppState::Loading)).run_if(not(resource_exists::<crate::net::Lobby>)));
     }
 }
 

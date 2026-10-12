@@ -225,6 +225,19 @@ Gamepad Tool write these lines.
   round, and Career's Continue carries it on for player 1, with the other
   players' riders racing as computer riders (Multiplayer Championship
   always starts a new one).
+- **Online**: a first cut. Pick Host online race in the launcher (or
+  `atv2 --host --track Dunes1`) and friends pick Join online race with the
+  host's address (`atv2 --join 81.2.69.160`). The host forwards UDP port
+  7777 on their router to their PC (`--port` picks another), and both need
+  the same version of the game (retail or the preview disc). The loading
+  screen is the lobby: it lists who's in, and the host presses Enter or A
+  to start; Escape or B leaves. The host's grid fills up with computer
+  riders, which the host's game drives. Each player's own game drives
+  their quad, so it answers at once, and everyone else's quad is shown a
+  tenth of a second behind where it last said it was. Single Race only;
+  quads don't bump or kick across games yet, and an online race has no
+  pause or restart. The connection sits behind one small interface
+  (`net::link::Link`) so a relay server can replace direct connections.
 
 Tricks are the 28 from `Setup/Tricks.xml`: hold a trick button (or two for
 the level 5-7 tricks: 1+2, 2+3, 3+4) and a direction while airborne. Keep

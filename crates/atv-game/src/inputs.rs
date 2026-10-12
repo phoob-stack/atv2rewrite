@@ -152,7 +152,8 @@ fn read(
         now.respot &= !paused;
         inputs.pending[n].merge(now);
     }
-    inputs.pending_restart |= ctl.just_pressed(None, Action::Restart) && !paused;
+    // An online race can't be started again from one game.
+    inputs.pending_restart |= ctl.just_pressed(None, Action::Restart) && !paused && sel.net.is_none();
 }
 
 /// Hands the tick what was read for it.

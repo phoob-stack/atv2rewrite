@@ -132,6 +132,8 @@ pub fn args(cfg: &Config) -> Vec<String> {
         Start::Arcade => add(&["--mode", "arcade", "--round", "0"]),
         Start::Challenge => add(&["--challenge", &challenge]),
         Start::Academy => add(&["--mode", "training", "--track", STADIUM]),
+        Start::Host => add(&["--host", "--track", &cfg.track, "--laps", &laps]),
+        Start::Join => add(&["--join", cfg.address.trim()]),
     }
     if cfg.start != Start::Menu {
         add(&["--quad", &cfg.quad, "--rider", &cfg.rider]);

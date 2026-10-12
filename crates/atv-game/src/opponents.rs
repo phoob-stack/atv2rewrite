@@ -84,7 +84,7 @@ impl Opponents {
             .map(|r| Traffic {
                 position: r.vehicle.position,
                 velocity: r.vehicle.velocity,
-                player: r.human().is_some() && r.wreck.fall.is_none(),
+                player: (r.human().is_some() || r.remote) && r.wreck.fall.is_none(),
                 boosting: r.boost.on,
             })
             .collect();
@@ -104,6 +104,9 @@ pub struct Racer {
     pub name: String,
     /// Rider's model folder.
     pub model: String,
+    pub quad: String,
+    /// A player in another game, in an online race (see [`crate::net`]).
+    pub remote: bool,
     pub vehicle: Vehicle,
     driver: AiDriver,
     pub progress: RaceProgress,
@@ -228,14 +231,30 @@ pub fn spawn(
         .take(sel.players.saturating_sub(1))
         .filter_map(|(rider, quad)| Some((roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(rider))?, quad.clone())))
         .collect();
+    // Online: the seats other games drive (on a joined game, everyone
+    // else's, computer riders included), with the ids the host gave them.
+    let you = sel.net.as_ref().map(|n| n.you);
+    let remotes: Vec<_> = sel
+        .net
+        .iter()
+        .flat_map(|n| &n.seats)
+        .filter(|s| Some(s.id) != you)
+        .filter_map(|s| Some((s, roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(&s.rider)).or(roster.riders.first())?)))
+        .collect();
+    let joined = sel.net.as_ref().is_some_and(|n| !n.host);
     // The Stadium has no checkpoints and no AI lap times: the original
-    // never races computer riders there, and they'd only circle it.
-    let count = if checkpoints.is_empty() {
-        count.min(humans.len())
+    // never races computer riders there, and they'd only circle it. A
+    // joined game races only the host's line-up.
+    let count = if joined {
+        remotes.len()
+    } else if checkpoints.is_empty() {
+        count.min(humans.len() + remotes.len())
     } else {
         count
     };
-    let taken = |m: &str| m.eq_ignore_ascii_case(&sel.rider) || humans.iter().any(|h| h.0.model.eq_ignore_ascii_case(m));
+    let taken = |m: &str| {
+        m.eq_ignore_ascii_case(&sel.rider) || humans.iter().any(|h| h.0.model.eq_ignore_ascii_case(m)) || remotes.iter().any(|r| r.1.model.eq_ignore_ascii_case(m))
+    };
     let mut riders: Vec<_> = roster
         .riders
         .iter()
@@ -258,38 +277,63 @@ pub fn spawn(
     let mut quads: Vec<&str> = all_quads
         .iter()
         .copied()
-        .filter(|q| !q.eq_ignore_ascii_case(&sel.quad) && !humans.iter().any(|h| h.1.eq_ignore_ascii_case(q)))
+        .filter(|q| {
+            !q.eq_ignore_ascii_case(&sel.quad) && !humans.iter().any(|h| h.1.eq_ignore_ascii_case(q)) && !remotes.iter().any(|r| r.0.quad.eq_ignore_ascii_case(q))
+        })
         .collect();
     let tuning = crate::tuning::load();
     let scoped = DespawnOnExit(AppState::Race);
     let mut racers = Vec::new();
     let mut ratings = Vec::new();
+    // Racer ids after the ones other games drive.
+    let mut next_id = remotes.iter().map(|r| r.0.id.0 + 1).max().unwrap_or(1);
     for i in 0..count.min(7) {
         if quads.is_empty() {
             quads = all_quads.clone();
         }
-        let human = humans.get(i);
-        if human.is_none() && ((riders.is_empty() && set_field.len() <= i - humans.len()) || quads.is_empty()) {
+        // Online seats first, then split-screen players, then computer
+        // riders.
+        let net_seat = remotes.get(i);
+        let human = i.checked_sub(remotes.len()).and_then(|k| humans.get(k));
+        let ai = i.saturating_sub(remotes.len() + humans.len());
+        if net_seat.is_none() && human.is_none() && ((riders.is_empty() && set_field.len() <= ai) || quads.is_empty()) {
             break;
         }
         // A set field lists the computer riders only, after the players.
-        let rider = match (human, set_field.get(i.saturating_sub(humans.len()))) {
-            (Some(h), _) => h.0,
-            (None, Some(r)) => *r,
-            (None, None) if !sel.field.is_empty() => break,
-            (None, None) => riders.swap_remove(pick(riders.len())),
+        let rider = match (net_seat, human, set_field.get(ai)) {
+            (Some(s), ..) => s.1,
+            (None, Some(h), _) => h.0,
+            (None, None, Some(r)) => *r,
+            (None, None, None) if !sel.field.is_empty() => break,
+            (None, None, None) => riders.swap_remove(pick(riders.len())),
         };
-        let quad = match human {
-            Some(h) => h.1.clone(),
-            None => quads.swap_remove(pick(quads.len())).to_string(),
+        let quad = match (net_seat, human) {
+            (Some(s), _) => s.0.quad.clone(),
+            (None, Some(h)) => h.1.clone(),
+            (None, None) => quads.swap_remove(pick(quads.len())).to_string(),
         };
-        let mut params = crate::tuning::quad_params(game, &tuning, &quad, human.is_some());
-        if human.is_none() {
+        let id = match net_seat {
+            Some(s) => s.0.id,
+            None => {
+                next_id += 1;
+                RacerId(next_id - 1)
+            }
+        };
+        let person = human.is_some() || net_seat.is_some_and(|s| s.0.human);
+        let mut params = crate::tuning::quad_params(game, &tuning, &quad, person);
+        if !person {
             tune_for_ai(&mut params, (rider.stats[0] / 5.0).clamp(0.0, 1.0));
         }
         let wheel_x: Vec<f32> = params.wheels.iter().map(|w| w.offset[0]).collect();
-        // The slots around the player's (Arcade's can be further back).
-        let slot = if i + 1 < sel.player_slot() { i + 1 } else { i + 2 };
+        // The slots around the player's (Arcade's can be further back);
+        // online, in racer id order.
+        let slot = if sel.net.is_some() {
+            id.0 as usize + 1
+        } else if i + 1 < sel.player_slot() {
+            i + 1
+        } else {
+            i + 2
+        };
         let (pos, rot) = trk::start_pose(world, collision, slot);
         let at = Transform::from_translation(pos).with_rotation(rot);
         let body = match loader.spawn_quad(commands, &quad, at, &wheel_x) {
@@ -318,28 +362,32 @@ pub fn spawn(
             Err(e) => error!("failed to load rider {}: {e:#}", rider.model),
         }
         let mut driver = AiDriver::new(&line, pos, i as u32 + 1);
-        if human.is_none() {
+        if !person {
             driver = driver.with_engine_boost();
         }
         let q = roster.quads.iter().find(|q| q.name.eq_ignore_ascii_case(&quad)).map_or([0.0; 5], |q| q.stats);
-        ratings.push(match human {
+        ratings.push(if person {
             // Players don't take a place behind a pace car.
-            Some(_) => f32::MIN,
-            None => pace_rating(rider.stats[0], rider.stats[1], q[0], q[1], q[3]),
+            f32::MIN
+        } else {
+            pace_rating(rider.stats[0], rider.stats[1], q[0], q[1], q[3])
         });
         let on_line = checkpoints
             .first()
             .is_some_and(|&c| (c - pos).with_y(0.0).length() < CHECKPOINT_RADIUS);
-        let control = match human {
-            Some(_) => Control::Player(i + 2),
-            None if puppets => Control::Puppet,
-            None => Control::Computer,
+        let control = match (net_seat, human) {
+            (Some(_), _) => Control::Puppet,
+            (None, Some(_)) => Control::Player(i - remotes.len() + 2),
+            (None, None) if puppets => Control::Puppet,
+            (None, None) => Control::Computer,
         };
-        commands.entity(body).insert(RacerId(racers.len() as u8 + 1));
+        commands.entity(body).insert(id);
         racers.push(Racer {
-            id: RacerId(racers.len() as u8 + 1),
+            id,
             name: rider.name.clone(),
             model: rider.model.clone(),
+            quad: quad.clone(),
+            remote: net_seat.is_some_and(|s| s.0.human),
             vehicle: Vehicle::new(params, pos, rot),
             driver,
             progress: RaceProgress::new(sel.laps, on_line),
@@ -360,7 +408,7 @@ pub fn spawn(
             boost: Boost::default(),
             fighter: Fighter::new(rider.stats[3], rider.stats[2]),
         });
-        info!("computer rider {}: {} on {quad}", i + 1, rider.name);
+        info!("racer {}: {} on {quad} ({control:?})", id.0, rider.name);
     }
     let track = setup::entries(&String::from_utf8_lossy(&game.read("/Setup/Tracks.xml").unwrap_or_default()))
         .into_iter()
@@ -370,7 +418,7 @@ pub fn spawn(
         lap_time(false),
         lap_time(true),
         racers.len() + 1,
-        1 + humans.len(),
+        1 + humans.len() + remotes.iter().filter(|r| r.0.human).count(),
         line.lap_length(),
     );
     let mut pacer = pacer;
@@ -433,7 +481,7 @@ pub(crate) fn drive_opponents(
         && let Some(pacer) = opp.pacer.as_mut()
     {
         let players: Vec<f32> = std::iter::once(opp.player_track.distance())
-            .chain(opp.racers.iter().filter(|r| r.human().is_some()).map(|r| r.driver.distance()))
+            .chain(opp.racers.iter().filter(|r| r.human().is_some() || r.remote).map(|r| r.driver.distance()))
             .collect();
         let line = &opp.line;
         let distances: Vec<f32> = opp
@@ -456,7 +504,7 @@ pub(crate) fn drive_opponents(
     .chain(opp.racers.iter().map(|r| Traffic {
         position: r.vehicle.position,
         velocity: r.vehicle.velocity,
-        player: r.human().is_some() && r.wreck.fall.is_none(),
+        player: (r.human().is_some() || r.remote) && r.wreck.fall.is_none(),
         boosting: r.boost.on,
     }))
     .collect();

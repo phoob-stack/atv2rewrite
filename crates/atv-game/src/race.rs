@@ -58,8 +58,50 @@ impl ArcadeClock {
     }
 }
 
+/// How a racer's race is going, as another game is told it (see
+/// [`RaceProgress::report`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Report {
+    pub clock: f32,
+    pub lap_times: Vec<f32>,
+    pub finished: Option<f32>,
+    pub armed: bool,
+    pub lap_fraction: f32,
+    pub dnf: bool,
+}
+
 impl RaceProgress {
     pub const COUNTDOWN: f32 = 3.0;
+
+    /// The race as far as others need it: laps, the share of this one,
+    /// and the finish.
+    pub fn report(&self) -> Report {
+        Report {
+            clock: self.clock,
+            lap_times: self.lap_times.clone(),
+            finished: self.finished,
+            armed: self.armed,
+            lap_fraction: self.lap_fraction,
+            dnf: self.dnf,
+        }
+    }
+
+    /// Takes a racer's race as another game reports it.
+    pub fn take_report(&mut self, r: &Report) {
+        if self.lap_times.len() != r.lap_times.len() {
+            self.lap_start = r.lap_times.iter().sum();
+            self.last_lap = (!r.lap_times.is_empty()).then_some(self.lap_start);
+        }
+        if r.clock > 0.0 {
+            self.countdown = 0.0;
+        }
+        self.clock = r.clock;
+        self.lap_times.clone_from(&r.lap_times);
+        self.finished = r.finished;
+        self.armed = r.armed;
+        self.lap_fraction = r.lap_fraction;
+        self.dnf = r.dnf;
+    }
 
     /// `armed`: the quad starts on or past checkpoint 1.
     pub fn new(laps: u32, armed: bool) -> Self {
