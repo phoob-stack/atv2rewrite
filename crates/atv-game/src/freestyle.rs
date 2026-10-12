@@ -29,7 +29,6 @@ use atv_sim::track as trk;
 use atv_sim::{TrackCollision, Vehicle};
 
 use crate::race::fmt_time;
-use crate::controller::{self, Action};
 use crate::rider::Clip;
 use crate::hud::{FIGURE, LABEL};
 use crate::ui::{set_text, BitmapText, FontId, UiAssets};
@@ -48,7 +47,7 @@ pub fn limit_label(limit: Option<u32>) -> String {
 }
 
 /// A trick's buttons, as a mask: the disc's D, A, B and E buttons in
-/// order of the tricks' level (1 to 4), [`Action::TRICKS`] (X, Y, LB and
+/// order of the tricks' level (1 to 4), [`crate::controller::Action::TRICKS`] (X, Y, LB and
 /// RB, or 1 to 4, unless remapped). The three two-button combos are
 /// levels 5-7.
 fn combo_mask(combo: &str) -> Option<u8> {
@@ -1073,30 +1072,6 @@ fn pose(v: &Vehicle, down: usize) -> Pose {
             _ => Pose::Down,
         },
     }
-}
-
-/// Held trick buttons and the stick direction, from keyboard and pads
-/// (see [`crate::controller`]). The direction is the steering and leaning
-/// inputs, and on the keyboard accelerate and brake too. `slot`: in split
-/// screen, the player (0-based); alone, every pad and player 1's keys.
-pub fn read_tricks(controls: &controller::Reader, slot: Option<usize>) -> (u8, Option<Dir>) {
-    let mut mask = 0u8;
-    for (i, &a) in Action::TRICKS.iter().enumerate() {
-        if controls.pressed(slot, a, true) {
-            mask |= 1 << i;
-        }
-    }
-    let level = |a: Action| controls.level(slot, a, true);
-    let x = level(Action::SteerRight) - level(Action::SteerLeft);
-    let y = level(Action::LeanForward).max(controls.key_level(slot, Action::Accelerate)) - level(Action::LeanBack).max(controls.key_level(slot, Action::Brake));
-    let dir = if x.abs().max(y.abs()) < 0.5 {
-        None
-    } else if x.abs() > y.abs() {
-        Some(if x > 0.0 { Dir::Right } else { Dir::Left })
-    } else {
-        Some(if y > 0.0 { Dir::Up } else { Dir::Down })
-    };
-    (mask, dir)
 }
 
 /// Each trick's stunt clip, loaded with the race.

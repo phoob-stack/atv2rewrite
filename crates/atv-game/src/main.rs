@@ -36,6 +36,7 @@ mod ghost;
 mod hd;
 mod mud;
 mod hud;
+mod inputs;
 mod intro;
 mod knock;
 mod lessons;
@@ -565,6 +566,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(screens::ScreensPlugin)
         .add_plugins(lit::LitPlugin)
         .add_plugins(lessons::LessonsPlugin)
+        .add_plugins(inputs::InputsPlugin)
         .add_plugins(sky::SkyPlugin)
         .insert_state(first)
         .add_systems(Startup, (load_ui, ui_camera))
@@ -861,32 +863,11 @@ fn setup(
     }
 }
 
-/// The driving controls (see [`controller::Reader`]). `airborne`: the
-/// trick buttons don't brake or pre-load there. `slot`: in split screen,
-/// the player (0-based), with their own keys and pad; alone, every pad and
-/// player 1's keys drive.
-fn read_input(controls: &controller::Reader, airborne: bool, slot: Option<usize>) -> Input {
-    let level = |a: Action| controls.level(slot, a, airborne);
-    Input {
-        throttle: level(Action::Accelerate),
-        brake: level(Action::Brake),
-        steer: (level(Action::SteerRight) - level(Action::SteerLeft)).clamp(-1.0, 1.0),
-        lean: (level(Action::LeanForward) - level(Action::LeanBack)).clamp(-1.0, 1.0),
-        jump: controls.pressed(slot, Action::Hop, airborne),
-    }
-}
-
-/// The speed boost button: Y on the pad (on the ground; it's a trick
-/// button in the air) or Shift, unless remapped.
-pub(crate) fn read_boost(controls: &controller::Reader, airborne: bool, slot: Option<usize>) -> bool {
-    controls.pressed(slot, Action::Boost, airborne)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn drive(
     time: Res<Time>,
     args: Res<Args>,
-    (keys, pads, settings): (Res<ButtonInput<KeyCode>>, controller::Pads, Res<Settings>),
+    inputs: Res<inputs::TickInputs>,
     race: Option<ResMut<Race>>,
     player: Option<ResMut<Player>>,
     progress: Option<ResMut<RaceProgress>>,
@@ -900,8 +881,7 @@ fn drive(
     water: Option<Res<water::Water>>,
 ) {
     let (Some(mut race), Some(mut player), Some(mut progress), Some(mut session)) = (race, player, progress, session) else { return };
-    let ctl = controller::Reader::new(&keys, &pads, &settings.pads);
-    let slot = (race.players > 1).then_some(0);
+    let pad = inputs.player(0);
     let dt = time.delta_secs();
     let v = &mut player.0;
     progress.tick(dt);
@@ -919,7 +899,7 @@ fn drive(
         Input::default()
     } else if !progress.started() {
         // Held on the grid, where the rider can rev for a turbo start.
-        let rev = if demo.is_none() && !args.autodrive { read_input(&ctl, false, slot).throttle } else { 0.0 };
+        let rev = if demo.is_none() && !args.autodrive { pad.throttle } else { 0.0 };
         Input { throttle: rev, ..default() }
     } else if over && (freestyle || race.course || progress.out_of_time() || progress.dnf) {
         // Brake to a stop (braking at a standstill would reverse).
@@ -936,8 +916,8 @@ fn drive(
         held = progress.finished.is_none() && boost.as_ref().is_some_and(|b| b.on || b.meter >= 1.0);
         trk::steer_towards(v, race.checkpoints[next])
     } else {
-        held = read_boost(&ctl, !v.grounded(), slot);
-        read_input(&ctl, !v.grounded(), slot)
+        held = pad.boost(!v.grounded());
+        pad.drive(!v.grounded())
     };
     if held {
         input.throttle = 1.0;
@@ -1000,7 +980,7 @@ fn drive(
     if let Some(c) = controls.as_mut() {
         c.0 = input;
     }
-    let (mut buttons, mut dir) = freestyle::read_tricks(&ctl, slot);
+    let (mut buttons, mut dir) = pad.tricks();
     if args.autodrive && session.active.is_none() && !v.grounded() {
         // The autopilot shows off a different trick every so often.
         let k = (session.time * 0.7) as usize;
@@ -1035,7 +1015,7 @@ fn drive(
     race.upside_down = if v.up().y < 0.2 { race.upside_down + dt } else { 0.0 };
     let fell = v.position.y < race.safe.0.y - 40.0;
     let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
-    if ctl.just_pressed(slot, Action::Respot) || (!crashed && race.upside_down > 2.5) || fell {
+    if pad.respot || (!crashed && race.upside_down > 2.5) || fell {
         ask_respot(&mut race);
     } else if let Some((p, r)) = opponents.as_mut().filter(|_| demo.is_some() && !crashed).and_then(|o| o.respot_player()) {
         // The demo's computer rider gives up where the others would.
@@ -1049,7 +1029,7 @@ fn drive(
         }
         put_back(&mut race, v, opponents.as_deref());
     }
-    if ctl.just_pressed(None, Action::Restart) && demo.is_none() {
+    if inputs.restart && demo.is_none() {
         // The quick restart: as Restart on the pause menu, so the computer
         // riders, the score and the clocks start over too.
         restart.set(AppState::Loading);
