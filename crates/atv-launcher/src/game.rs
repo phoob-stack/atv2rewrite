@@ -132,8 +132,22 @@ pub fn args(cfg: &Config) -> Vec<String> {
         Start::Arcade => add(&["--mode", "arcade", "--round", "0"]),
         Start::Challenge => add(&["--challenge", &challenge]),
         Start::Academy => add(&["--mode", "training", "--track", STADIUM]),
+        Start::Host if cfg.listed && !cfg.server.trim().is_empty() => {
+            add(&["--host", "--server", cfg.server.trim(), "--name", cfg.room_name.trim(), "--track", &cfg.track, "--laps", &laps]);
+            if !cfg.password.is_empty() {
+                add(&["--password", &cfg.password]);
+            }
+        }
         Start::Host => add(&["--host", "--track", &cfg.track, "--laps", &laps]),
-        Start::Join => add(&["--join", cfg.address.trim()]),
+        Start::Join => match cfg.room {
+            Some(room) => {
+                add(&["--server", cfg.server.trim(), "--room", &room.to_string()]);
+                if !cfg.join_password.is_empty() {
+                    add(&["--password", &cfg.join_password]);
+                }
+            }
+            None => add(&["--join", cfg.address.trim()]),
+        },
     }
     if cfg.start != Start::Menu {
         add(&["--quad", &cfg.quad, "--rider", &cfg.rider]);

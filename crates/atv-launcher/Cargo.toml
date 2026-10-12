@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow = "1.0.104"
 atv-hd = { version = "0.1.0", path = "../atv-hd" }
+atv-lobby = { version = "0.1.0", path = "../atv-lobby" }
 atv-formats = { version = "0.1.0", path = "../atv-formats" }
 atv-sim = { version = "0.1.0", path = "../atv-sim" }
 directories = "6"

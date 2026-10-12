@@ -1,0 +1,42 @@
+{
+    "_comment": "Pterodactyl egg for the ATV 2 online server list and relay (atv2-server). Import it under Admin > Nests.",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-10-12T19:00:00+00:00",
+    "name": "ATV 2 Server List",
+    "author": "atv2@example.com",
+    "description": "The ATV Quad Power Racing 2 rewrite's online server list: hosts list their races (name, password, track, laps, players) and players join them through it, with the race's packets relayed so nobody opens a port. One UDP port: the server's allocation. Upload the atv2-server binary to the server's files before starting it.",
+    "features": null,
+    "docker_images": {
+        "Debian": "ghcr.io/parkervcp/yolks:debian"
+    },
+    "file_denylist": [],
+    "startup": "chmod +x ./atv2-server; ./atv2-server --port {{SERVER_PORT}}",
+    "config": {
+        "files": "{}",
+        "startup": "{\"done\": \"listening on UDP port\"}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\nmkdir -p /mnt/server\ncd /mnt/server\nif [ -n \"${DOWNLOAD_URL}\" ]; then\n  curl -fsSL -o atv2-server \"${DOWNLOAD_URL}\" && chmod +x atv2-server\nfi\necho 'If atv2-server is not in the files yet, upload it there (File Manager), then start the server.'\n",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Download URL",
+            "description": "Optional: a direct link to the atv2-server Linux binary, fetched when the server is installed or reinstalled. Leave empty to upload the file yourself.",
+            "env_variable": "DOWNLOAD_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:512",
+            "field_type": "text"
+        }
+    ]
+}

@@ -9,6 +9,10 @@
 //! Single Race only. The lobby is the loading screen: the host starts the
 //! race when the players are in. Quads don't bump or kick across games
 //! yet.
+//!
+//! Games reach each other straight (the host's port open) or through the
+//! online server list, which lists the host's race with its name, password
+//! and track and passes the packets on (see [`link::Relay`]).
 
 pub mod link;
 pub mod wire;
@@ -143,19 +147,38 @@ impl Heard {
 impl Online {
     /// Hosts on `port`.
     pub fn host(port: u16, retail: bool) -> std::io::Result<Self> {
-        let link = link::Udp::host(port)?;
-        let status = format!("HOSTING ON {}", link.describe().to_uppercase());
-        Ok(Self::new(Box::new(link), Role::Host { joined: Vec::new(), started: None }, status, retail))
+        Ok(Self::hosting(Box::new(link::Udp::host(port)?), retail))
+    }
+
+    /// Hosts on the server list at `server`, as `name` (and with
+    /// `password`, if not empty).
+    pub fn host_listed(server: &str, name: &str, password: &str, retail: bool, sel: &Selection) -> std::io::Result<Self> {
+        let info = atv_lobby::Info { track: sel.track.clone(), laps: sel.laps as u8, players: 1, max: GRID as u8, started: false, retail, game: wire::PROTOCOL };
+        Ok(Self::hosting(Box::new(link::Relay::host(server, name, password, info)?), retail))
     }
 
     /// Joins the host at `address`.
     pub fn join(address: &str, retail: bool) -> std::io::Result<Self> {
         let (link, host) = link::Udp::join(address)?;
-        let status = format!("JOINING {}", link.describe());
-        Ok(Self::new(Box::new(link), Role::Client { host, players: Vec::new(), refused: false, heard: 0.0 }, status, retail))
+        Ok(Self::joining(Box::new(link), host, retail))
     }
 
-    fn new(link: Box<dyn Link>, role: Role, status: String, retail: bool) -> Self {
+    /// Joins race `room` on the server list at `server`.
+    pub fn join_listed(server: &str, room: u32, password: &str, retail: bool) -> std::io::Result<Self> {
+        let (link, host) = link::Relay::join(server, room, password)?;
+        Ok(Self::joining(Box::new(link), host, retail))
+    }
+
+    fn hosting(link: Box<dyn Link>, retail: bool) -> Self {
+        Self::new(link, Role::Host { joined: Vec::new(), started: None }, retail)
+    }
+
+    fn joining(link: Box<dyn Link>, host: Peer, retail: bool) -> Self {
+        Self::new(link, Role::Client { host, players: Vec::new(), refused: false, heard: 0.0 }, retail)
+    }
+
+    fn new(link: Box<dyn Link>, role: Role, retail: bool) -> Self {
+        let status = link.describe().to_uppercase();
         Self { link, role, clock: 0.0, next_send: 0.0, next_news: 0.0, go: false, heard: HashMap::new(), status, retail }
     }
 
@@ -166,7 +189,14 @@ impl Online {
     /// The lobby's lines: who's in, and what happens next.
     pub fn lobby_lines(&self, sel: &Selection, roster: &Roster) -> Vec<String> {
         let name = |model: &str| roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(model)).map_or(model.to_uppercase(), |r| r.name.to_uppercase());
-        let mut lines = vec![self.status.clone()];
+        // What's going on: something turned us away, or for a host how
+        // others find it.
+        let headline = match (self.link.trouble(), &self.role) {
+            (Some(why), _) => why.to_uppercase(),
+            (None, Role::Host { .. }) => self.link.describe().to_uppercase(),
+            (None, Role::Client { .. }) => self.status.clone(),
+        };
+        let mut lines = vec![headline];
         match &self.role {
             Role::Host { joined, .. } => {
                 lines.push(format!("{} - {} LAPS", sel.track.to_uppercase(), sel.laps));
@@ -181,7 +211,7 @@ impl Online {
                 for (i, p) in players.iter().enumerate() {
                     lines.push(format!("{}. {}", i + 1, p.to_uppercase()));
                 }
-                if !refused {
+                if !refused && self.link.trouble().is_none() {
                     lines.push(if players.is_empty() { "LOOKING FOR THE HOST".into() } else { "WAITING FOR THE HOST TO START".into() });
                 }
                 lines.push("ESCAPE OR B TO LEAVE".into());
@@ -331,6 +361,7 @@ fn news(mut online: ResMut<Online>, sel: Res<Selection>, roster: Res<Roster>, al
     let mut out = Vec::new();
     match &mut on.role {
         Role::Host { joined, started } => {
+            on.link.advertise(1 + joined.len() as u8, started.is_some());
             let name = |model: &str| roster.riders.iter().find(|r| r.model.eq_ignore_ascii_case(model)).map_or(model.to_string(), |r| r.name.clone());
             if started.is_none() {
                 // A game that went quiet has gone.

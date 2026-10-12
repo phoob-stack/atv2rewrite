@@ -15,6 +15,7 @@ or a folder the disc was extracted to.
 | `atv-game` | The game (binary `atv2`): the original front end (title, main menu, rider / ATV / track select, the race loading screen with the track's picture and a racing tip) into a race with the original HUD (rev gauge, the race panels with place, trick score, lead and lap times, lap meter, 3-2-1-GO countdown, checkpoint and wrong-way banners, pause and results menus); Single Race, Time Trial, Career, Arcade, Open Freestyle, ATV Academy and split-screen multiplayer modes; computer riders; tricks with the original stunt animations; a drivable quad with its rider on any track, chase camera, keyboard and gamepad input. |
 | `atv-hd` | HD texture packs: upscales the game's own textures with an AI upscaler (Real-ESRGAN) on the player's machine into a local cache the game prefers when present. |
 | `atv-launcher` | The launcher (binary `atv2-launcher`): pick your disc image or extracted folder once and press Play to boot into the game's start menu, or start straight into a game mode with a track, rider and quad; resolution, fullscreen and HD texture settings; a Config tab for physics tuning. |
+| `atv-lobby` | The online server list and relay (binary `atv2-server`) and its protocol, shared by the game and the launcher. See [server/README.md](server/README.md). |
 
 ## Running
 
@@ -225,11 +226,15 @@ Gamepad Tool write these lines.
   round, and Career's Continue carries it on for player 1, with the other
   players' riders racing as computer riders (Multiplayer Championship
   always starts a new one).
-- **Online**: a first cut. Pick Host online race in the launcher (or
-  `atv2 --host --track Dunes1`) and friends pick Join online race with the
-  host's address (`atv2 --join 81.2.69.160`). The host forwards UDP port
-  7777 on their router to their PC (`--port` picks another), and both need
-  the same version of the game (retail or the preview disc). The loading
+- **Online**: a first cut. Pick Host online race in the launcher and give
+  the race a name and, if you like, a password: it goes on the online
+  server list (`atv2-server`, see [server/README.md](server/README.md)),
+  and friends pick Join online race, choose it from the list (with its
+  track, laps and players) and type the password. Nobody opens a port: the
+  server passes the race's packets on. Without a server list the host can
+  untick it and forward UDP port 7777 on their router instead, and friends
+  join by address (`atv2 --host --track Dunes1`, `atv2 --join 81.2.69.160`).
+  Both need the same version of the game (retail or the preview disc). The loading
   screen is the lobby: it lists who's in, and the host presses Enter or A
   to start; Escape or B leaves. The host's grid fills up with computer
   riders, which the host's game drives. Each player's own game drives
@@ -237,7 +242,7 @@ Gamepad Tool write these lines.
   tenth of a second behind where it last said it was. Single Race only;
   quads don't bump or kick across games yet, and an online race has no
   pause or restart. The connection sits behind one small interface
-  (`net::link::Link`) so a relay server can replace direct connections.
+  (`net::link::Link`), with direct UDP and the server list's relay behind it.
 
 Tricks are the 28 from `Setup/Tricks.xml`: hold a trick button (or two for
 the level 5-7 tricks: 1+2, 2+3, 3+4) and a direction while airborne. Keep
