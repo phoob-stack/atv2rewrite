@@ -25,6 +25,12 @@ const KDT_NEAR: f32 = 1.0;
 /// stay solid.
 const KDT_SCENERY: f32 = 0.05;
 
+/// A render triangle fills in for the `.kdt` only where the `.kdt` has
+/// nothing this far (m) above or below it.
+const OPEN_REACH: f32 = 50.0;
+/// Spacing (m) of the points that test a render triangle for that.
+const OPEN_SPACING: f32 = 1.0;
+
 /// Converts a left-handed game position to the simulation's frame.
 pub fn to_sim(p: [f32; 3]) -> Vec3 {
     Vec3::new(p[0], p[1], -p[2])
@@ -55,20 +61,51 @@ pub fn collision_from_world(world: &World) -> TrackCollision {
 /// whose model has an `.ink` collision mesh (rocks, buildings, trees, tyre
 /// stacks, the stadium gates) adds that mesh where the prop stands.
 ///
-/// The track's own triangles take their surfaces from the original's
-/// collision (`.kdt`); props keep full grip and no drag. Materials the
-/// `.kdt` all but leaves out are scenery the original lets quads pass
-/// through (Stadium 1's roof cables, neon strips, hanging arrows and blimp,
-/// Swamp's plane wreck, Dunes' yachts), so they keep only the triangles it
-/// covers (a cable's anchor).
+/// The ground is the original's own collision (`.kdt`), as the original
+/// drives on (0x5d030), with its surfaces; props keep full grip and no
+/// drag. The render meshes follow it closely but not everywhere: Industrial
+/// 2 and 3 have a 2-3 m trench across the track that the `.kdt` bridges,
+/// and Glacier 1 and Forest 2 have spots metres apart. A track without a
+/// `.kdt` uses its render meshes.
+///
+/// Where the `.kdt` has no ground at all (river beds under deep water) the
+/// render meshes fill in, less the materials the `.kdt` all but leaves out:
+/// scenery the original lets quads pass through (Stadium 1's roof cables,
+/// neon strips, hanging arrows and blimp, Swamp's plane wreck, Dunes'
+/// yachts).
 pub fn collision(world: &World, game: &GameSource, track: &str) -> TrackCollision {
-    let kdt = kdt_collision(game, track);
-    let mut tris = world_triangles(world);
-    if let Some(kdt) = &kdt {
-        tris = without_scenery(tris, kdt);
-    }
-    let mut tris: Vec<_> = tris.into_iter().map(|t| t.0).collect();
-    let mut ids = surface_ids(&tris, kdt.as_ref());
+    let render = world_triangles(world);
+    let (mut tris, mut ids) = match kdt_triangles(game, track) {
+        Some((mut tris, mut ids)) => {
+            // Under deep water the `.kdt` has no floor at all (the original
+            // takes the quad out of the water first); the render meshes'
+            // river beds stand in there, nowhere the `.kdt` covers.
+            let kdt = TrackCollision::new(tris.clone(), 8.0);
+            // A hole can be smaller than the render triangle over it, so the
+            // test runs on a grid across the whole triangle.
+            let open = |t: &[Vec3; 3]| {
+                let c = (t[0] + t[1] + t[2]) / 3.0;
+                let edge = (t[0] - t[1]).length().max((t[1] - t[2]).length()).max((t[2] - t[0]).length());
+                let n = ((edge / OPEN_SPACING).ceil() as u32).clamp(1, 400);
+                (0..=n).any(|i| {
+                    (0..=n - i).any(|j| {
+                        let k = n - i - j;
+                        let p = (t[0] * i as f32 + t[1] * j as f32 + t[2] * k as f32) / n as f32;
+                        let p = p.lerp(c, 0.01);
+                        kdt.raycast(p + Vec3::Y * OPEN_REACH, Vec3::NEG_Y, 2.0 * OPEN_REACH).is_none()
+                    })
+                })
+            };
+            tris.extend(without_scenery(render, &kdt).into_iter().map(|t| t.0).filter(open));
+            ids.resize(tris.len(), surface::UNKNOWN);
+            (tris, ids)
+        }
+        None => {
+            let tris: Vec<_> = render.into_iter().map(|t| t.0).collect();
+            let ids = vec![surface::UNKNOWN; tris.len()];
+            (tris, ids)
+        }
+    };
     tris.extend(prop_triangles(world, game, track));
     ids.resize(tris.len(), surface::UNKNOWN);
     let surfaces = game
@@ -83,25 +120,13 @@ pub fn collision(world: &World, game: &GameSource, track: &str) -> TrackCollisio
 /// The original's own collision triangles (`.kdt`) with their surface ids,
 /// in the sim frame.
 pub fn kdt_collision(game: &GameSource, track: &str) -> Option<TrackCollision> {
-    let tree = CollisionTree::parse(&game.read(&format!("/Levels/{track}/Kdt/{track}.kdt")).ok()?).ok()?;
-    let (tris, ids) = tree.triangles.iter().map(|t| (t.corners.map(to_sim), t.surface)).unzip();
+    let (tris, ids) = kdt_triangles(game, track)?;
     Some(TrackCollision::with_surfaces(tris, ids, 8.0))
 }
 
-/// Surface ids for the track's render triangles: the surface of the `.kdt`
-/// triangle under (or nearest) each one's centre. The rewrite collides with
-/// the render meshes, which follow the `.kdt` closely.
-fn surface_ids(tris: &[[Vec3; 3]], kdt: Option<&TrackCollision>) -> Vec<u8> {
-    let Some(kdt) = kdt else { return vec![surface::UNKNOWN; tris.len()] };
-    tris.iter()
-        .map(|&[a, b, c]| {
-            let centre = (a + b + c) / 3.0;
-            let n = (b - a).cross(c - a).normalize_or(Vec3::Y);
-            kdt.raycast(centre + n * 0.5, -n, 1.0)
-                .or_else(|| kdt.sphere(centre, 1.0))
-                .map_or(surface::UNKNOWN, |h| h.surface)
-        })
-        .collect()
+fn kdt_triangles(game: &GameSource, track: &str) -> Option<(Vec<[Vec3; 3]>, Vec<u8>)> {
+    let tree = CollisionTree::parse(&game.read(&format!("/Levels/{track}/Kdt/{track}.kdt")).ok()?).ok()?;
+    Some(tree.triangles.iter().map(|t| (t.corners.map(to_sim), t.surface)).unzip())
 }
 
 /// The track's water surfaces (meshes with a water material; the 0x2000
