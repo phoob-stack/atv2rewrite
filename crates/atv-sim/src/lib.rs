@@ -13,4 +13,4 @@ pub mod vehicle;
 
 pub use collision::TrackCollision;
 pub use params::VehicleParams;
-pub use vehicle::{Input, Vehicle};
+pub use vehicle::{Input, Vehicle, WheelPose};

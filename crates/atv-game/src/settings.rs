@@ -27,10 +27,12 @@ pub enum CameraView {
     #[default]
     Far,
     VeryClose,
+    /// Retail's Bouncy Near (`Cameras.xml`).
+    Bouncy,
 }
 
 impl CameraView {
-    pub const ALL: [CameraView; 3] = [CameraView::Close, CameraView::Far, CameraView::VeryClose];
+    pub const ALL: [CameraView; 4] = [CameraView::Close, CameraView::Far, CameraView::VeryClose, CameraView::Bouncy];
 
     /// As the Options menu names it (`CAM_FOLLOW_*`).
     pub fn label(self) -> &'static str {
@@ -38,6 +40,7 @@ impl CameraView {
             CameraView::Close => "FOLLOW CLOSE",
             CameraView::Far => "FOLLOW FAR",
             CameraView::VeryClose => "FOLLOW VERY CLOSE",
+            CameraView::Bouncy => "BOUNCY NEAR",
         }
     }
 
@@ -47,6 +50,7 @@ impl CameraView {
             CameraView::Close => "FollowNear",
             CameraView::Far => "FollowFar",
             CameraView::VeryClose => "FollowVeryClose",
+            CameraView::Bouncy => "BouncyFollowClose",
         }
     }
 
@@ -55,6 +59,26 @@ impl CameraView {
             CameraView::Close => "close",
             CameraView::Far => "far",
             CameraView::VeryClose => "very_close",
+            CameraView::Bouncy => "bouncy",
+        }
+    }
+
+    /// The nearest the camera comes, in lengths of its offset (0x819d0's
+    /// last argument, 0x7e350).
+    pub fn min_distance(self) -> f32 {
+        match self {
+            CameraView::VeryClose | CameraView::Bouncy => 1.5,
+            _ => 1.0,
+        }
+    }
+
+    /// How fast the camera eases to its spot clear of the scenery after
+    /// touching it, and whether that climbs in the clear (0x7f390; Bouncy
+    /// Near's is fixed, 0x7e350).
+    pub fn base_rate(self) -> (f32, bool) {
+        match self {
+            CameraView::Bouncy => (30.0, false),
+            _ => (10.0, true),
         }
     }
 
@@ -212,6 +236,7 @@ impl FollowCam {
             CameraView::Close => (Vec3::new(0.0, 1.5, -2.75), Vec3::new(0.0, 0.0, 1.25)),
             CameraView::Far => (Vec3::new(0.0, 2.7, -4.3), Vec3::new(0.0, 0.0, 1.0)),
             CameraView::VeryClose => (Vec3::new(0.0, 1.5, -0.75), Vec3::new(0.0, 0.0, 1.25)),
+            CameraView::Bouncy => (Vec3::new(0.0, 1.5, -1.0), Vec3::new(0.0, 0.0, 1.25)),
         };
         Self { offset, look, pos_stiffness: [6.0, 4.0], rot_stiffness: [4.0, 4.0] }
     }

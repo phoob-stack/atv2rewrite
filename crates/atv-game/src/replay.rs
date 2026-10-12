@@ -278,7 +278,7 @@ pub struct Broadcast {
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn broadcast(
     mut commands: Commands,
-    (time, real): (Res<Time<Virtual>>, Res<Time<Real>>),
+    (time, real, fixed): (Res<Time<Virtual>>, Res<Time<Real>>, Res<Time<Fixed>>),
     (game, sel, settings): (Res<Game>, Res<Selection>, Res<Settings>),
     (progress, session, race): (Option<Res<RaceProgress>>, Option<Res<Session>>, Option<Res<Race>>),
     (player, wreck, opponents): (Option<Res<Player>>, Option<Res<Wreck>>, Option<Res<Opponents>>),
@@ -306,8 +306,9 @@ fn broadcast(
             return;
         }
     };
+    let ahead = crate::since_step(&fixed);
     let racers: Vec<(Vec3, Quat)> =
-        std::iter::once(&player.0).chain(opponents.iter().flat_map(|o| o.racers.iter().map(|r| &r.vehicle))).map(|v| (v.position, v.rotation)).collect();
+        std::iter::once(&player.0).chain(opponents.iter().flat_map(|o| o.racers.iter().map(|r| &r.vehicle))).map(|v| v.drawn(ahead)).collect();
     let flags = live_flags(Some(player), wreck.as_deref(), opponents.as_deref());
     let quad = |i: usize, _: f32| racers.get(i).copied();
     let flag = |i: usize, _: f32| flags.get(i).copied().unwrap_or(0);

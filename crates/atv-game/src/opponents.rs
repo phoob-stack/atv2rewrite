@@ -618,7 +618,7 @@ fn drive_opponents(
 
 #[allow(clippy::type_complexity)]
 fn sync_opponents(
-    time: Res<Time>,
+    (time, fixed): (Res<Time>, Res<Time<Fixed>>),
     opponents: Option<Res<Opponents>>,
     (clips, crash_clips, fight_clips): (Option<Res<StuntClips>>, Option<Res<CrashClips>>, Option<Res<crate::attack::FightClips>>),
     mut bodies: Query<&mut Transform, (Without<WheelVisual>, Without<OpponentRider>)>,
@@ -626,15 +626,15 @@ fn sync_opponents(
     mut riders: Query<(&ChildOf, &mut Rider, &mut Transform), With<OpponentRider>>,
 ) {
     let Some(opp) = opponents else { return };
+    let ahead = crate::since_step(&fixed);
     for r in &opp.racers {
         if let Ok(mut t) = bodies.get_mut(r.body) {
-            t.translation = r.vehicle.position;
-            t.rotation = r.vehicle.rotation;
+            (t.translation, t.rotation) = r.vehicle.drawn(ahead);
         }
     }
     for (w, mut t) in &mut wheels {
         if let Some(r) = opp.racers.iter().find(|r| r.body == w.owner) {
-            crate::place_wheel(w, &mut t, &r.vehicle);
+            crate::place_wheel(w, &mut t, &r.vehicle, ahead);
         }
     }
     for (parent, mut rider, mut seat) in &mut riders {
@@ -644,8 +644,9 @@ fn sync_opponents(
             match (&r.wreck.fall, crash_clips.as_deref().and_then(|c| r.wreck.pose(c))) {
                 (Some(f), Some(pose)) => {
                     rider.set_crash(Some(pose));
-                    let quad = Transform::from_translation(r.vehicle.position).with_rotation(r.vehicle.rotation);
-                    let world = Transform::from_translation(f.body).with_rotation(f.heading);
+                    let (at, turn) = r.vehicle.drawn(ahead);
+                    let quad = Transform::from_translation(at).with_rotation(turn);
+                    let world = Transform::from_translation(f.drawn(fixed.overstep_fraction())).with_rotation(f.heading);
                     let local = quad.compute_affine().inverse() * world.compute_affine();
                     *seat = Transform::from_matrix(Mat4::from(local));
                     continue;

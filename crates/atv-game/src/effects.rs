@@ -437,6 +437,8 @@ fn load(
 /// One quad's part in the effects this frame.
 struct Quad<'a> {
     v: &'a Vehicle,
+    /// Where the quad is drawn this frame (see [`Vehicle::drawn`]).
+    drawn: (Vec3, Quat),
     body: Option<Entity>,
     boosting: bool,
     /// Player-driven quads throw twice what computer riders' do.
@@ -445,7 +447,7 @@ struct Quad<'a> {
 
 #[allow(clippy::too_many_arguments)]
 fn emit(
-    time: Res<Time>,
+    (time, fixed): (Res<Time>, Res<Time<Fixed>>),
     fx: Option<ResMut<Effects>>,
     player: Option<Res<Player>>,
     boost: Option<Res<Boost>>,
@@ -469,9 +471,10 @@ fn emit(
             WaterFx::Stir(at) => fx.add_ripples(stir(at)),
         }
     }
-    let mut quads = vec![Quad { v: &player.0, body: body.single().ok(), boosting: boost.is_some_and(|b| b.on), human: true }];
+    let ahead = crate::since_step(&fixed);
+    let mut quads = vec![Quad { v: &player.0, drawn: player.0.drawn(ahead), body: body.single().ok(), boosting: boost.is_some_and(|b| b.on), human: true }];
     for r in opponents.iter().flat_map(|o| &o.racers) {
-        quads.push(Quad { v: &r.vehicle, body: Some(r.body), boosting: r.boost.on, human: r.human.is_some() });
+        quads.push(Quad { v: &r.vehicle, drawn: r.vehicle.drawn(ahead), body: Some(r.body), boosting: r.boost.on, human: r.human.is_some() });
     }
     fx.puff.resize(quads.len(), 1.0);
     fx.wet.resize(quads.len(), false);
@@ -629,8 +632,10 @@ fn tint(c: [f32; 4]) -> Vec3 {
 /// out over a second, and a stream of sparks (0x8ada0).
 fn exhaust_smoke(fx: &mut Effects, k: usize, q: &Quad, ex: &Exhaust, rate: f32, dt: f32) {
     let v = q.v;
-    let tip = v.position + v.rotation * ex.tip;
-    let fwd = v.forward();
+    // From the exhaust as drawn, so the smoke leaves it on every frame.
+    let (at, turn) = q.drawn;
+    let tip = at + turn * ex.tip;
+    let fwd = turn * Vec3::NEG_Z;
     let dust = fx.sprite("Dust0");
     let spark = fx.sprite("Spark0");
     let pi = std::f32::consts::PI;

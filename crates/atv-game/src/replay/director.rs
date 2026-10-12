@@ -532,7 +532,9 @@ impl Director {
     /// A follow camera, as the race's own.
     fn follow(&mut self, scene: &Scene, follow: Option<FollowCam>, p: Vec3, r: Quat, grounded: bool, dt: f32) -> Shot {
         let f = follow.unwrap_or(FollowCam { offset: Vec3::new(0.0, 2.7, -4.3), look: Vec3::new(0.0, 0.0, 1.0), pos_stiffness: [6.0, 4.0], rot_stiffness: [4.0, 4.0] });
-        let fwd = (r * Vec3::NEG_Z).with_y(0.0).normalize_or(Vec3::NEG_Z);
+        // From the rider, as the race's camera.
+        let p = p + r * crate::PELVIS;
+        let fwd = crate::follow_heading(r);
         let right = fwd.cross(Vec3::Y);
         let at = |o: Vec3| p + right * o.x + Vec3::Y * o.y + fwd * o.z;
         let air = usize::from(!grounded);
@@ -542,7 +544,7 @@ impl Director {
         offset.y = offset.y.max(0.5);
         self.take.offset = Some(offset);
         let eye = in_view(scene.collision, p, p + offset);
-        let look = at(f.look + Vec3::Y * crate::LOOK_RAISE);
+        let look = crate::follow_look(p, r, f.look);
         let mut facing = self.take.facing.unwrap_or(Quat::IDENTITY);
         if (look - eye).length_squared() > 1e-4 {
             let want = Transform::from_translation(eye).looking_at(look, Vec3::Y).rotation;

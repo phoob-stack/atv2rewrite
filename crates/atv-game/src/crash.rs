@@ -181,6 +181,8 @@ pub struct Fall {
     /// Where the rider's pelvis is, and how it's moving.
     pub body: Vec3,
     vel: Vec3,
+    /// Where the pelvis was before the last step, to draw it in between.
+    prev: Vec3,
     pub heading: Quat,
     clips: Vec<&'static str>,
     clip: usize,
@@ -193,6 +195,15 @@ pub struct Fall {
     floating: bool,
     /// Seconds since the quad or the rider went into the water.
     wet: Option<f32>,
+}
+
+impl Fall {
+    /// The pelvis drawn `between` of the way from the last step to the
+    /// next (the fixed clock's overstep fraction), so it moves on every
+    /// frame.
+    pub fn drawn(&self, between: f32) -> Vec3 {
+        self.prev.lerp(self.body, between.clamp(0.0, 1.0))
+    }
 }
 
 /// Chassis spheres (centre relative to the centre of mass, game frame,
@@ -329,6 +340,7 @@ impl Wreck {
         self.fall = Some(Fall {
             body,
             vel: v.velocity + Vec3::Y * 2.0,
+            prev: body,
             heading: Quat::from_rotation_arc(Vec3::NEG_Z, fwd),
             clips,
             clip: 0,
@@ -350,6 +362,7 @@ impl Wreck {
     /// quad is in it.
     pub fn advance_in(&mut self, clips: Option<&CrashClips>, world: &TrackCollision, water: Option<&Water>, quad_wet: bool, dt: f32) -> bool {
         let Some(f) = &mut self.fall else { return false };
+        f.prev = f.body;
         f.age += dt;
         let frames = |name: &str| clips.and_then(|c| c.get(name)).map_or(1, |c| c.frames());
         let surface = water.and_then(|w| w.surface(f.body));
@@ -428,11 +441,6 @@ impl Wreck {
         done || f.age > 8.0 || f.wet.is_some_and(|w| w >= WET_TIME)
     }
 
-    /// Where the thrown rider is treading water, if they are.
-    pub fn floating(&self) -> Option<Vec3> {
-        self.fall.as_ref().filter(|f| f.floating).map(|f| f.body)
-    }
-
     /// The crash clip and how far through it, for the rider.
     pub fn pose(&self, clips: &CrashClips) -> Option<(Arc<Clip>, f32)> {
         let f = self.fall.as_ref()?;
@@ -446,6 +454,7 @@ impl Wreck {
 /// The player's rider follows the crash, and plays a landing after a big
 /// jump.
 pub fn rider_follows(
+    fixed: Res<Time<Fixed>>,
     mut wreck: Option<ResMut<Wreck>>,
     clips: Option<Res<CrashClips>>,
     quad: Query<&Transform, (With<crate::QuadBody>, Without<Rider>)>,
@@ -460,7 +469,7 @@ pub fn rider_follows(
                 rider.set_crash(Some(pose));
                 // The seat hangs off the quad: place it so the pelvis lands
                 // on the body, facing the way the quad was going.
-                let world = Transform::from_translation(f.body).with_rotation(f.heading);
+                let world = Transform::from_translation(f.drawn(fixed.overstep_fraction())).with_rotation(f.heading);
                 let local = quad.compute_affine().inverse() * world.compute_affine();
                 *seat = Transform::from_matrix(Mat4::from(local));
             }
