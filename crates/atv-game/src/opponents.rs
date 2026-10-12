@@ -464,9 +464,13 @@ fn drive_opponents(
                     held = r.progress.finished.is_none() && (r.boost.on || r.boost.meter >= 1.0);
                     ai
                 }
-                // Computer riders boost flat out on a straight (0x67520).
+                // Computer riders boost flat out on a straight (0x67520);
+                // retail's only while a quarter of the meter is left
+                // (0x7b990).
                 None => {
-                    held = r.progress.finished.is_none() && r.driver.boost;
+                    held = r.progress.finished.is_none()
+                        && r.driver.boost
+                        && (!r.vehicle.params.retail || r.boost.meter > 0.25);
                     ai
                 }
             }
