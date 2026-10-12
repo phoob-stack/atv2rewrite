@@ -32,10 +32,14 @@ pub struct Music {
 pub struct SoundSetup {
     /// Root attributes (`mPlayerEngineVol`, `mMusicVol`, `mEnginePitchZero`...).
     pub mix: HashMap<String, String>,
+    /// The retail file's mix levels instead, `<Platforms><XBox>`
+    /// (`mEngineVol`, `mEngineIdleVol`, `mSurfaceVol`...).
+    platform: HashMap<String, String>,
     surfaces: HashMap<String, HashMap<String, SurfaceSound>>,
     music: HashMap<String, Music>,
-    /// Environment -> (sample bank path, background count).
-    ambient: HashMap<String, (String, u32)>,
+    /// Environment -> (sample bank path, background count, volume: retail
+    /// only).
+    ambient: HashMap<String, (String, u32, Option<f32>)>,
     crowd: HashMap<String, String>,
 }
 
@@ -87,8 +91,10 @@ impl SoundSetup {
                 }
                 [_, "Ambient"] => {
                     let bank = a.get("m_ambientSamplebank").cloned().unwrap_or_default();
-                    s.ambient.insert(name.to_string(), (bank, num("m_noOfBackgrounds", 0.0) as u32));
+                    let volume = a.get("m_ambientVol").and_then(|v| v.trim().parse().ok());
+                    s.ambient.insert(name.to_string(), (bank, num("m_noOfBackgrounds", 0.0) as u32, volume));
                 }
+                [_, "Platforms"] if name == "XBox" => s.platform = a.clone(),
                 [_, "Crowd"] => {
                     if let Some(bank) = a.get("m_crowdSamplebank") {
                         s.crowd.insert(name.to_string(), bank.clone());
@@ -108,6 +114,18 @@ impl SoundSetup {
         self.mix.get(key).and_then(|v| v.trim().parse().ok()).unwrap_or(default)
     }
 
+    /// The retail disc's file: its mix levels are per platform, and its
+    /// banks were rebuilt to go with them.
+    pub fn retail(&self) -> bool {
+        !self.platform.is_empty()
+    }
+
+    /// An Xbox mix level from the retail file, e.g.
+    /// `platform_level("mEngineVol", 1.0)`.
+    pub fn platform_level(&self, key: &str, default: f32) -> f32 {
+        self.platform.get(key).and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+    }
+
     /// The wheel sound for a surface in an environment, falling back to
     /// `DefaultTrack`.
     pub fn surface(&self, env: &str, surface: &str) -> Option<&SurfaceSound> {
@@ -120,7 +138,12 @@ impl SoundSetup {
 
     /// The environment's ambient bank, when it has a background loop.
     pub fn ambient(&self, env: &str) -> Option<&str> {
-        self.ambient.get(env).filter(|(_, n)| *n > 0).map(|(b, _)| b.as_str())
+        self.ambient.get(env).filter(|(_, n, _)| *n > 0).map(|(b, ..)| b.as_str())
+    }
+
+    /// The environment's own ambience level (retail's `m_ambientVol`).
+    pub fn ambient_volume(&self, env: &str) -> Option<f32> {
+        self.ambient.get(env).and_then(|&(_, _, v)| v)
     }
 
     /// The crowd bank (Stadium only).
@@ -154,7 +177,7 @@ mod tests {
    </Music>
    <Ambient>
       <DefaultTrack m_ambientSamplebank="SOUND\FOREST" m_noOfBackgrounds="0"/>
-      <Dunes m_ambientSamplebank="SOUND\DUNES" m_noOfBackgrounds="1"/>
+      <Dunes m_ambientSamplebank="SOUND\DUNES" m_noOfBackgrounds="1" m_ambientVol="0.3"/>
    </Ambient>
    <Crowd>
       <Stadium m_crowdSamplebank="SOUND\STADIUM"/>
@@ -175,5 +198,22 @@ mod tests {
         assert_eq!(s.ambient("Dunes"), Some("SOUND\\DUNES"));
         assert_eq!(s.ambient("Stadium"), None);
         assert_eq!(s.crowd("Stadium"), Some("SOUND\\STADIUM"));
+        assert_eq!((s.ambient_volume("Dunes"), s.ambient_volume("Swamp")), (Some(0.3), None));
+        assert!(!s.retail());
+    }
+
+    #[test]
+    fn retail_platform_levels() {
+        let s = SoundSetup::parse(
+            r#"<Root FileVersion="1.0">
+   <Platforms>
+      <XBox mEngineVol="0.8" mEngineIdleVol="0.35"/>
+      <PS2 mEngineVol="0.55"/>
+   </Platforms>
+</Root>"#,
+        );
+        assert!(s.retail());
+        assert_eq!(s.platform_level("mEngineVol", 1.0), 0.8);
+        assert_eq!(s.platform_level("mSurfaceVol", 1.0), 1.0);
     }
 }

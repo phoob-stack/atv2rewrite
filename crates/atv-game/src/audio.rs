@@ -22,6 +22,13 @@
 //! grunt when a thrown rider hits the ground hard (0x94690: female clips
 //! 0-13, male 14-32, never the same twice running); and a Vehicles-bank
 //! knock when the quad's body hits something (0x94480).
+//!
+//! The retail disc rebuilt the Vehicles and Riders banks, so the same clip
+//! numbers are other sounds there: its engine loops are 0 ("off") and 1
+//! ("on"), and its wheel, knock and rider clips sit elsewhere too. With the
+//! retail Sound.xml (mix levels per platform) the indices, the engine mix
+//! and the one-shot rules come from the retail executable instead (XBE
+//! addresses: engine 0xb1690, knocks 0xb1e90, rider 0xaed30).
 
 use std::sync::Arc;
 
@@ -69,6 +76,23 @@ const VEHICLE_SAMPLES: [(&str, usize); 14] = [
     ("Twigs2", 14),
     ("Screech1", 15),
     ("Screech2", 16),
+];
+/// The retail Vehicles bank (30 clips): the engine loops are first (the
+/// engine part 0xb2150 plays 1 as "on" and 0 as "off"), and the wheel
+/// names are the table at 0x1ce638.
+const RETAIL_ENGINE_OFF: usize = 0;
+const RETAIL_ENGINE_ON: usize = 1;
+const RETAIL_VEHICLE_SAMPLES: [(&str, usize); 10] = [
+    ("Gravel1", 2),
+    ("Rumble1", 3),
+    ("Rumble2", 4),
+    ("Rumble3", 5),
+    ("Rumble4", 6),
+    ("Water1", 7),
+    ("Water2", 8),
+    ("Twigs1", 9),
+    ("Twigs2", 10),
+    ("Screech1", 11),
 ];
 
 /// A playable sound: clips played in order, then repeated from
@@ -289,13 +313,54 @@ struct Bed {
 #[derive(Component)]
 struct PausesWithGame;
 
-/// Mix level for the player's quad (`mPlayerEngineVol`); the wheel noise
-/// shares it, as its samples are as loud as the engine's.
+/// Mix levels for a quad: the prototype has one (`mPlayerEngineVol`) for
+/// both engine loops and the wheel noise, whose samples are as loud as the
+/// engine's; retail has `mEngineVol` for "on", `mEngineIdleVol` for "off",
+/// and its wheels go by `mSurfaceVol` alone.
 #[derive(Resource)]
 struct QuadMix {
-    engine: f32,
+    on: f32,
+    off: f32,
+    wheels: f32,
     pitch_zero: f32,
     pitch_span: f32,
+    retail: bool,
+}
+
+impl QuadMix {
+    fn new(setup: &SoundSetup) -> Self {
+        if setup.retail() {
+            QuadMix {
+                on: setup.platform_level("mEngineVol", 1.0),
+                off: setup.platform_level("mEngineIdleVol", 1.0),
+                wheels: 1.0,
+                pitch_zero: 0.6,
+                pitch_span: 1.2,
+                retail: true,
+            }
+        } else {
+            let engine = setup.mix_level("mPlayerEngineVol", 0.25);
+            QuadMix {
+                on: engine,
+                off: engine,
+                wheels: engine,
+                pitch_zero: setup.mix_level("mEnginePitchZero", 0.6),
+                pitch_span: setup.mix_level("mEnginePitchSpan", 1.2),
+                retail: false,
+            }
+        }
+    }
+
+    /// A quad's engine loops, "on" then "off": (volume, pitch).
+    fn engine(&self, v: &atv_sim::Vehicle) -> [(f32, f32); 2] {
+        let r = (v.revs / v.params.max_revs.max(1.0)).clamp(0.0, 1.0);
+        let [on, off] = if self.retail {
+            retail_engine_mix(r, v.throttle_pedal(), v.clutch(), v.wheelspin().clamp(0.0, 1.0), v.first_gear())
+        } else {
+            engine_mix(r, v.throttle, self.pitch_zero, self.pitch_span)
+        };
+        [(on.0 * self.on, on.1), (off.0 * self.off, off.1)]
+    }
 }
 
 fn start_race_audio(
@@ -339,19 +404,20 @@ fn start_race_audio(
         }
     }
 
-    let ambient = setup.mix_level("mAmbientVol", 0.3);
+    let ambient = if setup.retail() {
+        setup.ambient_volume(&env).unwrap_or(0.35) * setup.platform_level("mEnvironmentVol", 1.0)
+    } else {
+        setup.mix_level("mAmbientVol", 0.3)
+    };
     for name in setup.ambient(&env).into_iter().chain(setup.crowd(&env)) {
         if let Some(bg) = bank(&game.0, name).into_iter().next() {
             play(Sound::looped(bg), ambient * gain(settings.effects), Some(Role::Bed(Bed { base: ambient, music: false })));
         }
     }
 
-    let mix = QuadMix {
-        engine: setup.mix_level("mPlayerEngineVol", 0.25),
-        pitch_zero: setup.mix_level("mEnginePitchZero", 0.6),
-        pitch_span: setup.mix_level("mEnginePitchSpan", 1.2),
-    };
-    for (index, on) in [(ENGINE_ON, true), (ENGINE_OFF, false)] {
+    let mix = QuadMix::new(setup);
+    let (engine_on, engine_off) = if mix.retail { (RETAIL_ENGINE_ON, RETAIL_ENGINE_OFF) } else { (ENGINE_ON, ENGINE_OFF) };
+    for (index, on) in [(engine_on, true), (engine_off, false)] {
         if let Some(pcm) = data.vehicles.get(index) {
             play(Sound::looped(pcm.clone()), 0.0, Some(Role::Engine(on)));
             // Everyone else's engines too, by how far off they are.
@@ -362,8 +428,9 @@ fn start_race_audio(
     }
     // Each quad's wheels on the ground they're on (one loop per sample,
     // mixed from the wheels on surfaces that use it), and in water.
-    let sample = |name: &str| VEHICLE_SAMPLES.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|&(_, i)| i);
-    let surface_vol = setup.mix_level("mSurfaceVol", 1.0);
+    let names: &[(&str, usize)] = if mix.retail { &RETAIL_VEHICLE_SAMPLES } else { &VEHICLE_SAMPLES };
+    let sample = |name: &str| names.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|&(_, i)| i);
+    let surface_vol = if mix.retail { setup.platform_level("mSurfaceVol", 1.0) } else { setup.mix_level("mSurfaceVol", 1.0) };
     let names = atv_sim::surface::NAMES;
     let main = names.iter().position(|n| *n == main_surface(&env)).unwrap_or(0) as u8;
     let mut loops: Vec<(usize, WheelLoop)> = Vec::new();
@@ -406,6 +473,26 @@ pub fn engine_mix(r: f32, t: f32, pitch_zero: f32, pitch_span: f32) -> [(f32, f3
     [(on, pitch_zero + pitch_span * r), (off, 0.85 + 1.8 * r)]
 }
 
+/// Retail's engine mix (0xb1690), r = revs / max revs and t = the throttle
+/// pedal: "on" comes in sooner than the prototype's, and the clutch counts.
+/// While it slips (under 0.3: a gear change, or the throttle off at low
+/// speed) "on" drops to 0.3, and the pitch eases toward half revs, except
+/// in first gear, where "off" swells with the pedal and wheelspin pulls the
+/// pitch up toward the limiter.
+pub fn retail_engine_mix(r: f32, t: f32, clutch: f32, wheelspin: f32, first: bool) -> [(f32, f32); 2] {
+    let mut on = ((t + r) * 0.85).clamp(0.08, 1.0);
+    let mut off = 1.0 - on;
+    if clutch >= 0.3 {
+        off = off.clamp(0.1, 1.0);
+    } else {
+        on = 0.3;
+        let k = t * 0.3 + 0.7;
+        off = if first { (off - k) * clutch + k } else { 0.1 };
+    }
+    let r = if first { r + (1.0 - r) * wheelspin } else { (r - 0.5) * clutch + 0.5 };
+    [(on, 0.6 + 1.2 * r), (off, 0.85 + 1.8 * r)]
+}
+
 #[allow(clippy::type_complexity)]
 fn engine_and_wheels(
     player: Option<Res<Player>>,
@@ -427,14 +514,10 @@ fn engine_and_wheels(
     let (Some(player), Some(mix)) = (player, mix) else { return };
     let ears = listeners(&player, opponents.as_deref(), demo.as_deref().map_or(1, crate::demo::Demo::views));
     let v = &player.0;
-    let r = (v.revs / v.params.max_revs.max(1.0)).clamp(0.0, 1.0);
-    let [on, off] = engine_mix(r, v.throttle, mix.pitch_zero, mix.pitch_span);
+    let [on, off] = mix.engine(v);
     for (mut sink, engine, wheel, other) in &mut sinks {
         let (vol, pitch) = match (engine, wheel, other) {
-            (Some(e), ..) => {
-                let (vol, pitch) = if e.on { on } else { off };
-                (vol * mix.engine, pitch)
-            }
+            (Some(e), ..) => if e.on { on } else { off },
             (_, Some(w), _) => {
                 let (q, human) = match w.racer {
                     None => (v, true),
@@ -466,14 +549,13 @@ fn engine_and_wheels(
                     None if depth > 0.05 => (0.0, w.pitch),
                     None => (pace * contact, ground_pitch),
                 };
-                (w.volume * mix.engine * vol * near, pitch * (0.8 + 0.4 * pace))
+                (w.volume * mix.wheels * vol * near, pitch * (0.8 + 0.4 * pace))
             }
             (.., Some(o)) => {
                 let Some(q) = opponents.as_ref().and_then(|opp| opp.racers.get(o.racer)).map(|r| &r.vehicle) else { continue };
-                let r = (q.revs / q.params.max_revs.max(1.0)).clamp(0.0, 1.0);
-                let [on, off] = engine_mix(r, q.throttle, mix.pitch_zero, mix.pitch_span);
+                let [on, off] = mix.engine(q);
                 let (vol, pitch) = if o.on { on } else { off };
-                (vol * mix.engine * nearness(&ears, q.position), pitch)
+                (vol * nearness(&ears, q.position), pitch)
             }
             _ => continue,
         };
@@ -574,13 +656,23 @@ const KNOCKS: [usize; 6] = [25, 29, 30, 17, 18, 23];
 /// The original's knock threshold (0.3) is in its own impact units; this
 /// is the chassis closing speed (m/s) under which a scrape stays quiet.
 const KNOCK_MIN: f32 = 2.0;
+/// Retail's banks (tables at 0x1ce554, 0x1ce5b8, 0x1ce5e4, 0x1ce6a0): a
+/// thrown rider's body thuds, then sometimes cries out, by voice, and
+/// the quad's knocks, softest first.
+const RETAIL_MALE_VOICES: std::ops::Range<usize> = 12..23;
+const RETAIL_FEMALE_VOICES: std::ops::Range<usize> = 37..48;
+const RETAIL_THUDS: std::ops::Range<usize> = 48..56;
+const RETAIL_KNOCKS: [usize; 5] = [14, 20, 12, 13, 18];
 
 #[derive(Default)]
 struct CrashVoices {
     /// Per quad (player 1 first, then the computer riders): seconds since
     /// its last grunt and knock, and how hard each was.
     timers: Vec<[(f32, f32); 2]>,
+    /// Per quad: retail's cries since the rider came off (two at most).
+    cries: Vec<u8>,
     last_voice: Option<usize>,
+    last_knock: Option<usize>,
     seed: u32,
 }
 
@@ -593,6 +685,9 @@ impl CrashVoices {
     /// The grunt and knock, if any, from quad `slot`'s crash state. `near`
     /// scales them by how far it is from the nearest player.
     fn play(&mut self, slot: usize, wreck: &mut crate::crash::Wreck, female: bool, near: f32, out: &mut impl FnMut(&Arc<Pcm>, f32, f32), banks: &Banks) {
+        if banks.setup.retail() {
+            return self.play_retail(slot, wreck, female, near, out, banks);
+        }
         let [mut grunt, mut knock_t] = self.timers[slot];
         // A bailed rider hitting the ground: impulse over 2.5 while moving,
         // at most once a second unless it's twice as hard as the last.
@@ -602,13 +697,7 @@ impl CrashVoices {
             && (grunt.0 > 1.0 || impulse > grunt.1 * 2.0)
         {
             let voices = if female { FEMALE_VOICES } else { MALE_VOICES };
-            let mut pick = voices.start + self.rand(voices.len());
-            for _ in 0..8 {
-                if Some(pick) != self.last_voice {
-                    break;
-                }
-                pick = voices.start + self.rand(voices.len());
-            }
+            let pick = self.pick(voices, self.last_voice);
             if let Some(pcm) = banks.riders.get(pick) {
                 debug!("rider voice {pick} (impulse {impulse:.1})");
                 out(pcm, near, 1.0);
@@ -631,6 +720,70 @@ impl CrashVoices {
             }
         }
         self.timers[slot] = [grunt, knock_t];
+    }
+
+    /// One of `clips` at random, re-rolling a repeat of `last`.
+    fn pick(&mut self, clips: std::ops::Range<usize>, last: Option<usize>) -> usize {
+        let mut pick = clips.start + self.rand(clips.len());
+        for _ in 0..8 {
+            if Some(pick) != last {
+                break;
+            }
+            pick = clips.start + self.rand(clips.len());
+        }
+        pick
+    }
+
+    /// Retail's rules for the same events. A thrown rider's body hitting
+    /// something faster than 2.2347 m/s (at most every half second) thuds
+    /// louder with speed (0xaeaf0), and 61 times in 100 the rider also cries
+    /// out, twice a crash at most (0xae930). A knock (0xb1e90) draws on two
+    /// clips when soft (at 0.8), four when harder and all five past 12, at
+    /// pitch 0.8 to 0.9, never the same clip twice running.
+    fn play_retail(&mut self, slot: usize, wreck: &mut crate::crash::Wreck, female: bool, near: f32, out: &mut impl FnMut(&Arc<Pcm>, f32, f32), banks: &Banks) {
+        let [mut thud, mut knock_t] = self.timers[slot];
+        self.cries.resize(self.timers.len(), 0);
+        if wreck.fall.is_none() {
+            self.cries[slot] = 0;
+        }
+        let level = |key: &str| banks.setup.platform_level(key, 1.0);
+        if let Some((impulse, speed)) = wreck.thump.take()
+            && impulse > 0.2
+            && speed > 2.2347
+            && thud.0 > 0.5
+        {
+            let loud = (speed * 0.223_741_46).min(1.0);
+            let pick = self.pick(RETAIL_THUDS, None);
+            if let Some(pcm) = banks.riders.get(pick) {
+                debug!("rider thud {pick} (speed {speed:.1})");
+                out(pcm, level("mRiderCollVol") * loud * near, 1.0);
+            }
+            thud = (0.0, impulse);
+            if self.rand(100) < 61 && loud > 0.5 && self.cries[slot] < 2 {
+                let voices = if female { RETAIL_FEMALE_VOICES } else { RETAIL_MALE_VOICES };
+                let pick = self.pick(voices, self.last_voice);
+                if let Some(pcm) = banks.riders.get(pick) {
+                    debug!("rider voice {pick}");
+                    out(pcm, level("mRiderVoiceVol") * near, 1.0);
+                    self.last_voice = Some(pick);
+                    self.cries[slot] += 1;
+                }
+            }
+        }
+        let knock = std::mem::take(&mut wreck.knock);
+        if knock > KNOCK_MIN && (knock_t.0 > 0.25 || knock > knock_t.1 * 2.0) {
+            let (choices, volume) = if knock <= 6.0 { (2, 0.8) } else if knock <= 12.0 { (4, 1.0) } else { (5, 1.0) };
+            let pick = self.pick(0..choices, self.last_knock.and_then(|k| RETAIL_KNOCKS.iter().position(|&i| i == k)));
+            let i = RETAIL_KNOCKS[pick];
+            if let Some(pcm) = banks.vehicles.get(i) {
+                let pitch = 0.8 + self.rand(1000) as f32 / 10_000.0;
+                debug!("knock {i} (impact {knock:.1})");
+                out(pcm, level("mBikeCollVol") * volume * near, pitch);
+                self.last_knock = Some(i);
+                knock_t = (0.0, knock);
+            }
+        }
+        self.timers[slot] = [thud, knock_t];
     }
 }
 
@@ -714,5 +867,22 @@ mod tests {
         assert!((on.1 - 0.6).abs() < 1e-6 && (off.1 - 0.85).abs() < 1e-6);
         let [on, off] = engine_mix(1.0, 1.0, 0.6, 1.2);
         assert_eq!((on.0, off.0), (1.0, 0.3));
+    }
+
+    #[test]
+    fn retail_engine() {
+        // Driving in gear: "on" from the pedal and revs, "off" the rest.
+        let [on, off] = retail_engine_mix(0.5, 0.5, 1.0, 0.0, false);
+        assert!((on.0 - 0.85).abs() < 1e-6 && (off.0 - 0.15).abs() < 1e-6);
+        assert!((on.1 - 1.2).abs() < 1e-6 && (off.1 - 1.75).abs() < 1e-6);
+        // Idling in first, clutch out: quiet "on", the idle loop at 0.7.
+        let [on, off] = retail_engine_mix(0.15, 0.0, 0.0, 0.0, true);
+        assert!((on.0 - 0.3).abs() < 1e-6 && (off.0 - 0.7).abs() < 1e-6);
+        // Mid-shift the pitch sits at half revs.
+        let [on, off] = retail_engine_mix(0.9, 1.0, 0.0, 0.0, false);
+        assert!((on.0 - 0.3).abs() < 1e-6 && (off.0 - 0.1).abs() < 1e-6 && (on.1 - 1.2).abs() < 1e-6);
+        // Wheelspin in first revs it toward the limiter.
+        let [on, _] = retail_engine_mix(0.5, 1.0, 1.0, 1.0, true);
+        assert!((on.1 - 1.8).abs() < 1e-6);
     }
 }
