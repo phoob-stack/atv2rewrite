@@ -508,13 +508,13 @@ fn drive_opponents(
                     buttons = 1 << (k % 4);
                     dir = Some([Dir::Up, Dir::Right, Dir::Down, Dir::Left][k / 4 % 4]);
                 }
-                s.step(&r.vehicle, buttons, dir, dt, live);
+                s.step(&r.vehicle, &race.collision, (buttons, dir), dt, live, crashed);
             }
             (Some(s), None) => {
                 if live && r.wreck.fall.is_none() {
                     r.tricks.step(s, &r.vehicle, &race.collision);
                 }
-                s.step(&r.vehicle, 0, None, dt, live);
+                s.step(&r.vehicle, &race.collision, (0, None), dt, live, crashed);
             }
             _ => {}
         }

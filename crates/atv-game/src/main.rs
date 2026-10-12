@@ -140,7 +140,7 @@ enum Mode {
     /// The rounds of `Setup/Arcade.xml` in a row, against a checkpoint
     /// clock.
     Arcade,
-    /// Open Freestyle: roam a track scoring tricks, trick boxes and spots.
+    /// Open Freestyle: roam a track scoring tricks and trick boxes.
     Freestyle,
     /// A round of a career championship (see [`career`]).
     Career,
@@ -697,6 +697,11 @@ fn setup(
     // Player 1's tricks are the profile's: its skill level from career and
     // challenge skill points.
     session.level = rules.skill_level(career.skill_points) as u8;
+    // The Big Air bonus measures jumps against the track's Biggest Air
+    // record, but in the challenges and training (0x75bf0).
+    if !matches!(sel.mode, Mode::Challenge | Mode::Training) {
+        session.air_record = records.as_deref().and_then(|r| r.get(&sel.track, records::Kind::HighestJump)).map(|r| r.value);
+    }
     opponents::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, &roster, &sel, (&scene.world, &collision), &session, field);
     if sel.mode == Mode::TimeTrial && demo.is_none() {
         ghost::spawn(&mut commands, &mut loader, &mut bindposes, &game.0, (&sel.track, &sel.rider, &sel.quad));
@@ -962,10 +967,10 @@ fn drive(
         dir = Some([freestyle::Dir::Up, freestyle::Dir::Right, freestyle::Dir::Down, freestyle::Dir::Left][k / 4 % 4]);
     }
     let live = progress.started() && !over;
-    session.step(v, buttons, dir, dt, live);
+    let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
+    session.step(v, &race.collision, (buttons, dir), dt, live, crashed);
 
     // The original's automatic respots, with the rider on the quad.
-    let crashed = wreck.as_ref().is_some_and(|w| w.fall.is_some());
     let gates = race.gates.len();
     let next = race.next_checkpoint % gates.max(1);
     let racing = progress.racing();

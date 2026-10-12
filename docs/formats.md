@@ -492,7 +492,11 @@ with something in its meter.
   Scarecrow = `crucifixtion`, Scissors = `leg_splt`, Spin Bike = `bike_spin`,
   Reverse Spin = `reverse_spin_grab`, Yogi = `Y`. `*_bike.bac` (1 bone) move
   the quad for the tricks that spin it. `Wheelie`, `Bicycle` and `Endo` give
-  ground-trick points; `SpeedBoost` is the race boost tricks earn: a
+  ground-trick points (the prototype's one number each; retail's
+  `Wheelie`, `Bicycle_Left`, `Bicycle_Right` and `Endo` have `Score`,
+  `Accel` and `Max`, and `Forward_Flip`, `Backward_Flip`, `Clockwise_Spin`
+  and `Counter_Clockwise_Spin` a `Score`; retail air tricks are worth
+  about 13 times the prototype's); `SpeedBoost` is the race boost tricks earn: a
   landed combo adds points x `TrickScoreMod` (0.0004) to a 0..1 meter
   (0x62040 -> 0x1b830); while the boost input (input slot 11) is held and
   the meter isn't empty the drive is multiplied by `BoostTorqueMod` (2.5,
@@ -520,10 +524,47 @@ with something in its meter.
   and right, `BUTTON4-7` Y, B, A and X, `BUTTON8/9` the triggers on the top
   view, and the `BUTTON` and `SHOULDER1` glows that light them.
   `FrontEnd/TrickPics` is a placeholder (one picture repeated).
-- `TrickBoxes.xml`: per track, `TBOXn Name Points LinkedBox`. Only the
-  stadiums have real ones; they are the `TBOXn` locator boxes in the
-  `.row` (scale = half size), several boxes per id for hoops. Linked boxes
-  are the two ends of a gap.
+- `TrickBoxes.xml`: per track, `TBOXn Name Points LinkedBox NeedsTrick`.
+  In the prototype only the stadiums have real ones; retail adds a
+  `Special_Trick` box (1000-3000 points) to every outdoor track, some with
+  `NeedsTrick="1"`. They are the `TBOXn` locator boxes in the `.row`
+  (scale = half size), several boxes per id for hoops. Retail's Stadium 2
+  boxes with a `GroundTrick Type Bronze Silver Gold` child are the
+  lessons' wheelie, endo and bicycle zones; the box lookup skips them
+  (0x72a20). See "Trick scoring (retail)" below for how boxes pay.
+- Trick scoring (retail, the stunt manager's update 0x75bf0; ATV.exe
+  addresses are these plus 0x3ef440). Every move adds its points, rounded
+  up to fives, to a combo (+0x128), counts a move (+0x130) and, the first
+  time that kind of move appears, a different move (+0x124, flags per air
+  trick, per ground trick type and per flip/spin direction). Once all four
+  wheels have been down 0.1 s (+0x1e4) the combo pays points x different
+  moves (0x74700, "COMPLETE"); the speed boost gets that x `TrickScoreMod`.
+  A crash loses it (0x745c0, "FAILED"). Ground tricks (0x75640): the wheel
+  contacts (0x74030) give Wheelie (rear two down), Endo (front two),
+  Bicycle Left/Right (that side's two), in the air with none, unchanged
+  with one, else on the ground, which only counts after the 0.1 s on all
+  four. A trick starts at 2 m/s or more (an endo at any speed) with
+  `Score` points a second; each tick the rate grows by `Accel` x dt of
+  itself, the points by rate x dt, held to `Max` past the first second.
+  Under 2 m/s (not an endo) it pauses. It pays into the combo when it
+  ends after more than a second: on the ground, in the air with a trick
+  under way, or straight into another ground trick, which then starts 0.5
+  s in with the old one's points carried on. In the air the trick only
+  pauses, so landing back in it carries on (its points so far included).
+  Flips and spins (0x74b90, trackers 0x73b90 reset at take-off): per tick
+  the angles the forward and up axes turned (a flip; + nose up) or the
+  right and forward axes (a spin; + to the right) are added while each is
+  under 180 degrees. A flip pays at 198 degrees (Backward_Flip +, else
+  Forward_Flip) and the next can't until both pass 342 degrees forward
+  of the start; a spin ("360") pays at 270 degrees and starts again.
+  Rolls are tracked but never pay. Trick boxes (0x75360): the first box
+  flown into in a jump pays its points (a different move every time,
+  0x75020), once the combo has something under way if `NeedsTrick`; a
+  linked box waits for its other end to come next and then pays its own
+  points, so a gap pays by the way it's jumped. Big Air: 100 points as a
+  box when the quad's height over the ground comes within 0.5 m of the
+  track's Biggest Air record (raised by any higher jump), then not for
+  7 s; not in game types 5, 10 and 11.
 - `VehicleCameras.xml`: the follow cameras the Options menu offers,
   `FollowNear` (CAM_FOLLOW_CLOSE), `FollowFar` and `FollowVeryClose`, plus
   the replay mounts (`MountOnFront`, `MountOnWheel`, ...) and the
