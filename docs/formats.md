@@ -669,8 +669,11 @@ into 0x58-byte records). Besides grip it says what a wheel throws up:
 turning fast), `WheelParticleType` (`Dirt`, `Gravel` or `Snow`, the chunk
 sprites `Dirt0..2`, `Gravel0..3` or `Dust0`), `WheelParticleProb`,
 `WheelParticleDustProb`, `WheelParticleColour`, `WheelParticleSize`.
-Colours are stored as bytes and scaled by 1/128 when used, so 0.5 draws a
-sprite as it is.
+Colours are packed 128 per 1.0 into bytes (the reader's 0x113ce0 through
+0x15cd0) and unpacked with 1/128 by the wheel effects, so the file's value
+is the tint itself (1.0 draws a sprite as it is). Each is also multiplied
+by the quad's light colour (+0x10ac, white unless it sits in a `Tint r g b`
+weather zone, 0x101200), and the end colour by it twice (retail 0xa83b0).
 
 The particle manager (set up at 0x8e440, run by 0x8e380) keeps five pools
 on `Sprites/Particles`: sparks (50, 0.3 s), chunks (600, 1.5 s, gravity
