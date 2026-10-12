@@ -212,6 +212,9 @@ picks the blend from 0x4 (alpha blend), 0x8 (add ONE, ONE) and 0x10 (add
 SRC_ALPHA, ONE, Stadium 1's lamp beams), none writing depth; 0x2 turns
 off back-face culling. The rewrite draws all three (0x4 = beach and river
 edges, Forest's wall tops, Glacier's thin ice, Stadium 1's hanging arrows).
+DXT1 textures with one-bit alpha (distant tree
+cards, roots, girders) are cut out on any mesh, flagged 0x2 or not;
+drawn solid, their clear parts show as black or fog.
 
 Material wrap: the model and world loaders (0x4eec00, 0x4f3cc0) set each
 texture's address mode from material bytes +0x82 (U) and +0x83 (V): 0 =
