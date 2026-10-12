@@ -546,3 +546,29 @@ fn quads_bump_with_little_bounce() {
     assert!(closest > 1.2 && closest < 2.0, "closest {closest:.2}");
     assert!(vb - va > -1.0 * va.abs() * 0.35, "bounced apart: a {va:.2} b {vb:.2}");
 }
+
+#[test]
+fn a_shown_quad_is_drawn_where_it_was_told() {
+    let Some((mut v, world)) = settled() else { return };
+    let mut puppet = Vehicle::new(v.params.clone(), Vec3::new(50.0, 0.6, 0.0), Quat::IDENTITY);
+    let input = Input { throttle: 1.0, steer: 0.5, ..Input::default() };
+    puppet.show(&v.pose(), 1.0 / 60.0);
+    for _ in 0..120 {
+        let before = v.pose().position;
+        v.step(&input, 1.0 / 60.0, &world);
+        let now = v.pose().position;
+        puppet.show(&v.pose(), 1.0 / 60.0);
+        // From the pose shown before to the new one.
+        assert!(puppet.drawn(0.0).0.distance(before) < 1e-3);
+        assert!(puppet.drawn(1.0 / 120.0).0.distance(before.lerp(now, 0.5)) < 1e-3);
+        assert!(puppet.drawn(1.0 / 60.0).0.distance(now) < 1e-3);
+    }
+    let (pose, shown) = (v.pose(), puppet.pose());
+    assert!(shown.position.distance(pose.position) < 1e-4 && shown.rotation.angle_between(pose.rotation) < 1e-4);
+    assert!(shown.velocity.distance(pose.velocity) < 1e-4 && shown.angular_velocity.distance(pose.angular_velocity) < 1e-4);
+    assert_eq!((shown.gear, shown.wheels.len()), (pose.gear, pose.wheels.len()));
+    for (a, b) in shown.wheels.iter().zip(&pose.wheels) {
+        assert!((a.compression - b.compression).abs() < 1e-4 && (a.spin - b.spin).abs() < 1e-4 && a.contact == b.contact);
+    }
+    assert!((puppet.speed_mph() - v.speed_mph()).abs() < 1e-3 && puppet.grounded() == v.grounded());
+}

@@ -21,9 +21,10 @@ use crate::crash::{CrashClips, Wreck};
 use crate::aitricks::AiTricks;
 use crate::attack::Fighter;
 use crate::boost::{Boost, BoostRules};
-use crate::freestyle::{Dir, Session, StuntClips};
+use crate::freestyle::{ActiveTrick, Dir, Session, StuntClips};
 use crate::frontend::Roster;
 use crate::race::RaceProgress;
+use crate::racers::{Control, RacerId, RacerState};
 use crate::rider::Rider;
 use crate::{AppState, Player, Race};
 
@@ -71,7 +72,7 @@ pub struct Opponents {
 impl Opponents {
     /// Split-screen player `n`'s (2 to 4) quad.
     pub fn human(&self, n: usize) -> Option<&Racer> {
-        self.racers.iter().find(|r| r.human == Some(n))
+        self.racers.iter().find(|r| r.human() == Some(n))
     }
 
     /// Drives player 1's quad as the computer riders drive theirs (the
@@ -83,7 +84,7 @@ impl Opponents {
             .map(|r| Traffic {
                 position: r.vehicle.position,
                 velocity: r.vehicle.velocity,
-                player: r.human.is_some() && r.wreck.fall.is_none(),
+                player: r.human().is_some() && r.wreck.fall.is_none(),
                 boosting: r.boost.on,
             })
             .collect();
@@ -98,6 +99,7 @@ impl Opponents {
 }
 
 pub struct Racer {
+    pub id: RacerId,
     /// Rider's name as the menus show it.
     pub name: String,
     /// Rider's model folder.
@@ -110,9 +112,9 @@ pub struct Racer {
     /// The quad's root entity.
     pub body: Entity,
     upside_down: f32,
-    /// A split-screen player (2 to 4) drives this quad; the AI driver only
-    /// keeps track and brings it home after the flag.
-    pub human: Option<usize>,
+    /// Who drives the quad. A split-screen player's AI driver only keeps
+    /// track and brings them home after the flag.
+    pub control: Control,
     /// The rider's tricks (and in Freestyle Battle, a player's score).
     pub session: Option<Session>,
     /// A computer rider's trick picker.
@@ -122,6 +124,36 @@ pub struct Racer {
     pub boost: Boost,
     /// Kicks given and taken.
     pub fighter: Fighter,
+}
+
+impl Racer {
+    /// The split-screen player (2 to 4) driving this quad.
+    pub fn human(&self) -> Option<usize> {
+        self.control.human()
+    }
+
+    /// The racer as data (see [`RacerState`]).
+    pub fn state(&self) -> RacerState {
+        RacerState {
+            quad: self.vehicle.pose(),
+            lean: self.input.lean,
+            boost: self.boost,
+            kick: self.fighter.kick,
+            flinch: self.fighter.flinch,
+            trick: self.session.as_ref().and_then(|s| s.active.as_ref()).map(|a| (a.def, a.t)),
+        }
+    }
+
+    /// Shows a puppet as `state` says, moving there over `span` seconds.
+    pub fn tell(&mut self, state: &RacerState, span: f32) {
+        self.vehicle.show(&state.quad, span);
+        self.input.lean = state.lean;
+        self.boost = state.boost;
+        (self.fighter.kick, self.fighter.flinch) = (state.kick, state.flinch);
+        if let Some(s) = self.session.as_mut() {
+            s.active = state.trick.filter(|&(def, _)| def < s.tricks.len()).map(|(def, t)| ActiveTrick::shown(def, t));
+        }
+    }
 }
 
 /// Marks a computer rider's seat, so the player's rider systems leave its
@@ -154,6 +186,7 @@ pub fn spawn(
     (world, collision): (&TrackWorld, &TrackCollision),
     session: &Session,
     count: usize,
+    puppets: bool,
 ) {
     if count == 0 {
         return;
@@ -297,7 +330,14 @@ pub fn spawn(
         let on_line = checkpoints
             .first()
             .is_some_and(|&c| (c - pos).with_y(0.0).length() < CHECKPOINT_RADIUS);
+        let control = match human {
+            Some(_) => Control::Player(i + 2),
+            None if puppets => Control::Puppet,
+            None => Control::Computer,
+        };
+        commands.entity(body).insert(RacerId(racers.len() as u8 + 1));
         racers.push(Racer {
+            id: RacerId(racers.len() as u8 + 1),
             name: rider.name.clone(),
             model: rider.model.clone(),
             vehicle: Vehicle::new(params, pos, rot),
@@ -307,7 +347,7 @@ pub fn spawn(
             input: Input::default(),
             body,
             upside_down: 0.0,
-            human: human.map(|_| i + 2),
+            control,
             // Other players and computer riders pull the tricks of their
             // rider's own skill rating.
             session: Some({
@@ -366,7 +406,7 @@ fn lap_fraction(checkpoints: &[Vec3], next: usize, at: Vec3, armed: bool) -> f32
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn drive_opponents(
+pub(crate) fn drive_opponents(
     time: Res<Time>,
     race: Option<Res<Race>>,
     player: Option<ResMut<Player>>,
@@ -393,7 +433,7 @@ fn drive_opponents(
         && let Some(pacer) = opp.pacer.as_mut()
     {
         let players: Vec<f32> = std::iter::once(opp.player_track.distance())
-            .chain(opp.racers.iter().filter(|r| r.human.is_some()).map(|r| r.driver.distance()))
+            .chain(opp.racers.iter().filter(|r| r.human().is_some()).map(|r| r.driver.distance()))
             .collect();
         let line = &opp.line;
         let distances: Vec<f32> = opp
@@ -416,11 +456,15 @@ fn drive_opponents(
     .chain(opp.racers.iter().map(|r| Traffic {
         position: r.vehicle.position,
         velocity: r.vehicle.velocity,
-        player: r.human.is_some() && r.wreck.fall.is_none(),
+        player: r.human().is_some() && r.wreck.fall.is_none(),
         boosting: r.boost.on,
     }))
     .collect();
     for (i, r) in opp.racers.iter_mut().enumerate() {
+        if r.control == Control::Puppet {
+            // Shown where it's told (see `Racer::tell`).
+            continue;
+        }
         r.progress.tick(dt);
         let others: Vec<Traffic> = traffic
             .iter()
@@ -435,7 +479,7 @@ fn drive_opponents(
         let mut held = false;
         r.input = if !r.progress.started() && !crashed {
             // Held on the grid, where players can rev for a turbo start.
-            match r.human {
+            match r.human() {
                 Some(n) if !args.autodrive => {
                     Input { throttle: inputs.player(n - 1).throttle, ..default() }
                 }
@@ -447,11 +491,11 @@ fn drive_opponents(
         } else if time_up {
             Input { brake: if r.vehicle.speed_mph() > 2.0 { 0.3 } else { 0.0 }, ..default() }
         } else {
-            if let (Some(pacer), Some(&car), None) = (&opp.pacer, opp.pace_car.get(i), r.human) {
+            if let (Some(pacer), Some(&car), None) = (&opp.pacer, opp.pace_car.get(i), r.human()) {
                 r.driver.pace = pacer.scale(car, r.driver.distance());
             }
             let ai = r.driver.drive(&opp.line, &r.vehicle, &others, dt);
-            match r.human {
+            match r.human() {
                 // A player drives until the flag; the AI brings them home
                 // (and drives for them with --autodrive).
                 Some(n) if r.progress.finished.is_none() && !args.autodrive => {
@@ -502,7 +546,8 @@ fn drive_opponents(
             debug!("{} crashed ({cause:?})", r.name);
         }
         let live = r.progress.started() && !time_up && r.progress.finished.is_none();
-        match (r.session.as_mut(), r.human) {
+        let human = r.human();
+        match (r.session.as_mut(), human) {
             (Some(s), Some(n)) => {
                 let (mut buttons, mut dir) = inputs.player(n - 1).tricks();
                 if args.autodrive && s.active.is_none() && !r.vehicle.grounded() {
@@ -554,7 +599,7 @@ fn drive_opponents(
             0.0
         };
         let fell = r.vehicle.position.y < race.safe.0.y.min(race.start.0.y) - 60.0;
-        let gave_up = r.driver.wants_respot() && (r.human.is_none() || r.progress.finished.is_some());
+        let gave_up = r.driver.wants_respot() && (r.human().is_none() || r.progress.finished.is_some());
         let crashed = r.wreck.fall.is_some();
         if back_on || fell || (!crashed && (gave_up || r.upside_down > 2.5)) {
             r.wreck.fall = None;
@@ -569,11 +614,18 @@ fn drive_opponents(
     }
 
     // Quads knock each other about, the player's included.
+    // A puppet's game knocks it about.
+    let puppet = |r: &Racer| r.control == Control::Puppet;
     for i in 0..opp.racers.len() {
+        if puppet(&opp.racers[i]) {
+            continue;
+        }
         bump(&mut player.0, &mut opp.racers[i].vehicle);
         for j in i + 1..opp.racers.len() {
             let (a, b) = opp.racers.split_at_mut(j);
-            bump(&mut a[i].vehicle, &mut b[0].vehicle);
+            if !puppet(&b[0]) {
+                bump(&mut a[i].vehicle, &mut b[0].vehicle);
+            }
         }
     }
 

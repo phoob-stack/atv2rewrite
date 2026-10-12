@@ -103,7 +103,7 @@ pub fn spawn_views(commands: &mut Commands, view: impl Bundle + Clone, players: 
 
 /// Freestyle Battle: each player's (1-based) score.
 pub fn battle_scores(p1: &Session, opp: &Opponents) -> Vec<(usize, u32)> {
-    std::iter::once((1, p1.score)).chain(opp.racers.iter().filter_map(|r| Some((r.human?, r.session.as_ref()?.score)))).collect()
+    std::iter::once((1, p1.score)).chain(opp.racers.iter().filter_map(|r| Some((r.human()?, r.session.as_ref()?.score)))).collect()
 }
 
 /// Player `n`'s place by score (players level share a place).
@@ -179,7 +179,7 @@ impl MpChamp {
 /// Whether every player is home, or the others have had long enough.
 pub fn all_home(p1: &RaceProgress, opponents: Option<&Opponents>) -> bool {
     let Some(opp) = opponents else { return p1.over() };
-    let humans: Vec<&RaceProgress> = std::iter::once(p1).chain(opp.racers.iter().filter(|r| r.human.is_some()).map(|r| &r.progress)).collect();
+    let humans: Vec<&RaceProgress> = std::iter::once(p1).chain(opp.racers.iter().filter(|r| r.human().is_some()).map(|r| &r.progress)).collect();
     if humans.iter().all(|p| p.over()) {
         return true;
     }

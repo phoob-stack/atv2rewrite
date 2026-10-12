@@ -47,7 +47,7 @@ impl BoostRules {
 
 /// One rider's boost: player 1's is a resource, every other rider's is
 /// kept with their racer.
-#[derive(Resource, Clone, Copy, Debug, Default)]
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub struct Boost {
     /// 0..1.
     pub meter: f32,

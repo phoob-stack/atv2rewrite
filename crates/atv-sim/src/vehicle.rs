@@ -49,7 +49,7 @@ pub struct Input {
     pub jump: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct WheelState {
     /// Suspension travel measured from full extension (`min_pos`), metres.
     pub compression: f32,
@@ -62,6 +62,26 @@ pub struct WheelState {
     pub steer: f32,
     /// Surface id under the tyre (see [`crate::surface`]).
     pub surface: u8,
+}
+
+/// What another game needs to show a quad (see [`Vehicle::pose`] and
+/// [`Vehicle::show`]): its pose and motion, its wheels, and the smoothed
+/// controls the rider and the engine sound follow. Sim frame.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QuadPose {
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub velocity: Vec3,
+    pub angular_velocity: Vec3,
+    pub wheels: Vec<WheelState>,
+    pub steer: f32,
+    pub throttle: f32,
+    pub brake: f32,
+    pub lean: f32,
+    pub gear: usize,
+    pub revs: f32,
+    pub preload: f32,
+    pub air_time: f32,
 }
 
 /// A wheel as drawn: its travel from full extension, roll and steering
@@ -180,6 +200,10 @@ pub struct Vehicle {
     shown_pos: Vec3,
     shown_rot: Mat3,
     shown_wheels: Vec<WheelPose>,
+    /// How long the shown pose takes to blend into the current one: a
+    /// tick, or the time between the poses a puppet is shown (see
+    /// [`Vehicle::show`]).
+    span: f32,
     /// Where each body sphere was last step (the original keeps it to tell
     /// which side of a face a sphere came from).
     body_prev: Vec<Vec3>,
@@ -496,6 +520,7 @@ impl Vehicle {
             shown_pos: Vec3::ZERO,
             shown_rot: Mat3::IDENTITY,
             shown_wheels: vec![WheelPose::default(); n],
+            span: TICK,
             body_prev: Vec::new(),
             ticks: 0,
             struts: vec![Strut::default(); n],
@@ -673,6 +698,57 @@ impl Vehicle {
         p.min_turbo_rev_scale < x && x < p.max_turbo_rev_scale
     }
 
+    /// The quad as the last tick left it, for another game to show (see
+    /// [`Vehicle::show`]).
+    pub fn pose(&self) -> QuadPose {
+        QuadPose {
+            position: self.pos * FLIP,
+            rotation: Quat::from_mat3(&mirror(self.rot)).normalize(),
+            velocity: self.velocity,
+            angular_velocity: self.angular_velocity,
+            wheels: self.wheels.clone(),
+            steer: self.steer,
+            throttle: self.throttle,
+            brake: self.brake,
+            lean: self.lean,
+            gear: self.gear,
+            revs: self.revs,
+            preload: self.preload,
+            air_time: self.air_time,
+        }
+    }
+
+    /// Shows the quad at `pose` without simulating it, for a quad another
+    /// game drives: drawn, it moves from where it was shown last to `pose`
+    /// over the next `span` seconds.
+    pub fn show(&mut self, pose: &QuadPose, span: f32) {
+        self.shown_pos = self.pos;
+        self.shown_rot = self.rot;
+        self.shown_wheels = self.wheel_poses();
+        self.pending = 0.0;
+        self.span = span.max(1e-4);
+        self.ticks = 0;
+        self.pos = pose.position * FLIP;
+        self.rot = mirror(Mat3::from_quat(pose.rotation.normalize()));
+        self.vel = pose.velocity * FLIP;
+        self.momentum = self.vel * self.params.mass;
+        self.ang_vel = -(pose.angular_velocity * FLIP);
+        self.ground_fwd = pose.velocity.dot(pose.rotation * Vec3::NEG_Z);
+        (self.steer, self.throttle, self.brake, self.lean) = (pose.steer, pose.throttle, pose.brake, pose.lean);
+        (self.gear, self.revs, self.preload, self.air_time) = (pose.gear, pose.revs, pose.preload, pose.air_time);
+        for (i, wp) in self.params.wheels.iter().enumerate() {
+            let Some(w) = pose.wheels.get(i) else { continue };
+            let s = &mut self.struts[i];
+            s.pos = wp.min_pos + w.compression;
+            s.contact = w.contact;
+            s.surface = w.surface;
+            s.normal = w.contact_normal * FLIP;
+            self.wheels[i].spin = w.spin;
+        }
+        self.airborne = !self.grounded();
+        self.sync_out();
+    }
+
     /// Moves the quad by `offset` and changes its velocity by `delta_v`
     /// (sim frame), as knocking a prop over does.
     pub fn nudge(&mut self, offset: Vec3, delta_v: Vec3) {
@@ -689,6 +765,7 @@ impl Vehicle {
     pub fn step(&mut self, input: &Input, dt: f32, world: &TrackCollision) {
         // As the original, at most 0.1 s per frame.
         self.pending += dt.clamp(0.0, 0.1);
+        self.span = TICK;
         self.ticks = 0;
         while self.pending >= TICK - 1e-5 {
             self.ticks += 1;
@@ -1748,7 +1825,7 @@ impl Vehicle {
     /// How far between the last two ticks the pose `ahead` seconds after
     /// the last call to [`Vehicle::step`] is.
     fn blend(&self, ahead: f32) -> f32 {
-        ((self.pending + ahead.max(0.0)) / TICK).clamp(0.0, 1.0)
+        ((self.pending + ahead.max(0.0)) / self.span).clamp(0.0, 1.0)
     }
 
     /// The pose to draw `ahead` seconds after the last call to

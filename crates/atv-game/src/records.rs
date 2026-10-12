@@ -510,7 +510,7 @@ pub fn watch(
     let crashed = wreck.is_some_and(|w| w.fall.is_some());
     feats.0[0].step(&player.0, &race.collision, on(&progress, session.as_deref()) && !crashed);
     for r in opponents.iter().flat_map(|o| &o.racers) {
-        if let Some(j) = r.human.and_then(|n| feats.0.get_mut(n.wrapping_sub(1))) {
+        if let Some(j) = r.human().and_then(|n| feats.0.get_mut(n.wrapping_sub(1))) {
             j.step(&r.vehicle, &race.collision, on(&r.progress, r.session.as_ref()) && r.wreck.fall.is_none());
         }
     }

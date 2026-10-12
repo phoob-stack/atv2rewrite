@@ -363,6 +363,13 @@ pub struct ActiveTrick {
     released: bool,
 }
 
+impl ActiveTrick {
+    /// A trick another game says is `t` seconds in.
+    pub fn shown(def: usize, t: f32) -> Self {
+        Self { def, t, released: true }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PopupKind {
     Trick,
@@ -1280,7 +1287,7 @@ fn update_hud(
     // real one, as the original's does.
     if let Some(m) = s.medals {
         let mut scores = vec![(1, s.score)];
-        scores.extend(opponents.iter().flat_map(|o| &o.racers).filter_map(|r| Some((r.human?, r.session.as_ref()?.score))));
+        scores.extend(opponents.iter().flat_map(|o| &o.racers).filter_map(|r| Some((r.human()?, r.session.as_ref()?.score))));
         let list = live_medals([m[2], m[1], m[0]], &scores);
         for (MedalFigure(i), mut t) in &mut medals {
             let (value, who) = list[*i];
