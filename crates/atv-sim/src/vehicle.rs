@@ -156,7 +156,8 @@ enum Preload {
 #[derive(Debug, Clone)]
 pub struct Vehicle {
     pub params: VehicleParams,
-    /// Sim-frame pose and motion (mirrors of the internal game-frame state).
+    /// Sim-frame pose and motion as the last tick left them (mirrors of
+    /// the internal game-frame state). Draw with [`Vehicle::drawn`].
     pub position: Vec3,
     pub rotation: Quat,
     pub velocity: Vec3,
@@ -1865,9 +1866,10 @@ impl Vehicle {
     }
 
     fn sync_out(&mut self) {
-        // The pose between the last two ticks, so motion stays smooth when
-        // the caller steps faster than the tick.
-        (self.position, self.rotation) = self.drawn(0.0);
+        // The pose the last tick left, which the game plays by; drawing
+        // blends towards it (see `drawn`).
+        self.position = self.pos * FLIP;
+        self.rotation = Quat::from_mat3(&mirror(self.rot)).normalize();
         self.velocity = self.vel * FLIP;
         // Angular velocity is an axial vector: mirroring flips its sign.
         self.angular_velocity = -(self.ang_vel * FLIP);
