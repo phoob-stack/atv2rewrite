@@ -157,8 +157,10 @@ fn spawn_page(mut commands: Commands, ui: Option<Res<UiAssets>>, sel: Res<Select
             ..default()
         })
         .with_children(|frame| {
-            let w = 320.0;
-            frame.spawn(placed(ui.logo.node(w, w / 4.0), (SCREEN_W - w) / 2.0, 26.0));
+            // The prototype's logo page is 4:1, retail's 2:1: same height.
+            let h = 320.0 / 4.0;
+            let w = h * ui.logo.size.x / ui.logo.size.y;
+            frame.spawn(placed(ui.logo.node(w, h), (SCREEN_W - w) / 2.0, 26.0));
             let at = |text: &str, font: FontId, size: f32, top: f32| {
                 let width = ui.font(font).width(text, size);
                 Node { position_type: PositionType::Absolute, left: px((SCREEN_W - width) / 2.0), top: px(top), ..default() }

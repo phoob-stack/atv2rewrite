@@ -338,6 +338,19 @@ impl Vehicle {
     pub fn wheelspin(&self) -> f32 {
         self.wheelspin
     }
+    /// The throttle pedal before smoothing.
+    pub fn throttle_pedal(&self) -> f32 {
+        self.throttle_target
+    }
+    /// How far the clutch is in: 0 slipping (a gear change, or rolling off
+    /// the throttle slowly) to 1 driving.
+    pub fn clutch(&self) -> f32 {
+        self.clutch
+    }
+    /// The gearbox is in, or changing into, first gear.
+    pub fn first_gear(&self) -> bool {
+        self.gear_target == 1
+    }
 
     /// Puts the quad back at `position`, at rest.
     pub fn reset(&mut self, position: Vec3, rotation: Quat) {
@@ -480,7 +493,7 @@ impl Vehicle {
                 self.torque += right * self.lean * self.params.lean_force;
                 self.wheelies();
             }
-            self.force += Vec3::NEG_Y * GRAVITY * self.params.mass;
+            self.force += Vec3::NEG_Y * self.params.gravity * self.params.mass;
             self.ground_forces(h);
         } else {
             self.air_forces();
@@ -1086,7 +1099,7 @@ impl Vehicle {
             p.in_air_grav_down
         };
         self.force += Vec3::NEG_Y
-            * GRAVITY
+            * p.gravity
             * p.in_air_grav_scale
             * scale
             * self.gravity_scale

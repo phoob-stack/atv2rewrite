@@ -162,6 +162,9 @@ pub struct VehicleParams {
     /// handling code (see `docs/physics.md`); the prototype's files lack
     /// its ENGINEREVRATEREVVING key.
     pub retail: bool,
+    /// The world's gravity, m/s^2: the engine's 25 unless the player's
+    /// tuning (`tuning.cfg`) changes it.
+    pub gravity: f32,
     pub mass: f32,
     pub friction: f32,
     pub resistance: [f32; 3],
@@ -337,6 +340,7 @@ impl VehicleParams {
             .collect();
         VehicleParams {
             retail: r.values.contains_key("ENGINEREVRATEREVVING"),
+            gravity: crate::vehicle::GRAVITY,
             mass: g("MASS", 1.0),
             friction: g("FRICTION", 1.0),
             resistance: [

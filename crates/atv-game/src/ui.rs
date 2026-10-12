@@ -245,36 +245,43 @@ struct GlyphNode;
 fn layout_bitmap_text(
     mut commands: Commands,
     assets: Option<Res<UiAssets>>,
-    mut texts: Query<(Entity, &BitmapText, &mut Node, Option<&Children>), Changed<BitmapText>>,
-    glyphs: Query<(), With<GlyphNode>>,
+    mut texts: Query<(Entity, &BitmapText, &mut Node, Option<&Children>), (Changed<BitmapText>, Without<GlyphNode>)>,
+    mut glyphs: Query<(&mut Node, &mut ImageNode), With<GlyphNode>>,
 ) {
     let Some(assets) = assets else { return };
     for (e, t, mut node, children) in &mut texts {
-        for &c in children.into_iter().flatten() {
-            if glyphs.contains(c) {
-                commands.entity(c).despawn();
-            }
-        }
         let font = assets.font(t.font);
         let (glyph_list, size) = font.layout(&t.text, t.size);
         node.width = px(size.x);
         node.height = px(size.y);
-        commands.entity(e).with_children(|p| {
-            for (rect, at, sz) in glyph_list {
-                p.spawn((
-                    GlyphNode,
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: px(at.x),
-                        top: px(at.y),
-                        width: px(sz.x),
-                        height: px(sz.y),
-                        ..default()
-                    },
-                    ImageNode { image: font.tex.image.clone(), rect: Some(font.tex.image_rect(rect)), color: t.color, image_mode: NodeImageMode::Stretch, ..default() },
-                ));
+        // Glyphs already there are moved and retextured rather than
+        // respawned: a new entity isn't drawn until the frame after it
+        // appears, so a figure changing every frame (the speed) would
+        // never show.
+        let old: Vec<Entity> = children.into_iter().flatten().copied().filter(|&c| glyphs.contains(c)).collect();
+        let mut old = old.into_iter();
+        let mut fresh = Vec::new();
+        for (rect, at, sz) in glyph_list {
+            let image = ImageNode { image: font.tex.image.clone(), rect: Some(font.tex.image_rect(rect)), color: t.color, image_mode: NodeImageMode::Stretch, ..default() };
+            let place = Node { position_type: PositionType::Absolute, left: px(at.x), top: px(at.y), width: px(sz.x), height: px(sz.y), ..default() };
+            match old.next().and_then(|c| glyphs.get_mut(c).ok()) {
+                Some((mut n, mut img)) => {
+                    *n = place;
+                    *img = image;
+                }
+                None => fresh.push((GlyphNode, place, image)),
             }
-        });
+        }
+        for c in old {
+            commands.entity(c).despawn();
+        }
+        if !fresh.is_empty() {
+            commands.entity(e).with_children(|p| {
+                for g in fresh {
+                    p.spawn(g);
+                }
+            });
+        }
     }
 }
 
@@ -394,9 +401,14 @@ impl UiAssets {
 
     pub fn load(game: &GameSource, images: &mut Assets<Image>) -> Result<Self> {
         let mut l = PageLoader { game, images };
-        let hud = l.sheet("Sprites/HUDTPAGE")?;
-        let preload_steps = l.preload_steps(&hud)?;
-        let boost_steps = l.boost_steps(&hud)?;
+        // The retail disc redesigned the front end: pages the prototype's
+        // menus use are gone or split up, so they're put together from
+        // retail's own art (see `retail_design` and friends).
+        let retail = !l.exists("FrontEnd/NewDesign");
+        let hud_page = if l.exists("Sprites/HUDTPAGE") { "Sprites/HUDTPAGE" } else { "Sprites/HUDTPAGE_b" };
+        let hud = l.sheet(hud_page)?;
+        let preload_steps = l.preload_steps(hud_page, &hud)?;
+        let boost_steps = l.boost_steps(hud_page, &hud)?;
         let meter_tex = l.tex("Sprites/Position_meter")?;
         let meter = Sheet {
             tex: meter_tex,
@@ -434,23 +446,27 @@ impl UiAssets {
             positions: l.sheet("Sprites/positions")?,
             countdown: l.sheet("Sprites/321go")?,
             meter,
-            design: l.sheet("FrontEnd/NewDesign")?,
-            pad: l.sheet("FrontEnd/controlpadbuttonsXbox")?,
-            pad_ps: l.sheet_on_black("FrontEnd/controlpadbuttonsPS2")?,
-            pad_gc: l.sheet("FrontEnd/controlpadbuttonsGC")?,
-            bio: l.sheet("FrontEnd/BioPanel")?,
+            design: if retail { l.retail_design()? } else { l.sheet("FrontEnd/NewDesign")? },
+            pad: if retail { l.aliased("FrontEnd/Buttons_Xbox", &RETAIL_XBOX)? } else { l.sheet("FrontEnd/controlpadbuttonsXbox")? },
+            pad_ps: if retail { l.aliased("FrontEnd/Buttons_PS2", &RETAIL_PS2)? } else { l.sheet_on_black("FrontEnd/controlpadbuttonsPS2")? },
+            pad_gc: if retail { l.aliased("FrontEnd/Buttons_GC", &RETAIL_GC)? } else { l.sheet("FrontEnd/controlpadbuttonsGC")? },
+            bio: if retail { l.whole("FrontEnd/BioPanel", &["BIOPANEL", "SELECTIONPANEL"])? } else { l.sheet("FrontEnd/BioPanel")? },
             sound_bar: l.sheet("FrontEnd/SoundBar")?,
             checkbox: l.sheet("FrontEnd/checkbox")?,
             trick_pad: l.sheet("FrontEnd/TrickPad_XBox")?,
             trick_pad_ps: l.sheet("FrontEnd/TrickPad_PS2")?,
             trick_pad_gc: l.sheet("FrontEnd/TrickPad_GC")?,
             points: l.sheet("FrontEnd/PointsTpage")?,
-            name_entry: l.sheet("FrontEnd/nameentrypanel")?,
+            name_entry: if retail {
+                l.atlas(&[("NAMEPANEL", "FrontEnd/AlphaLarge", None), ("SMALLNAMEPANEL", "FrontEnd/FEButton", None)])?
+            } else {
+                l.sheet("FrontEnd/nameentrypanel")?
+            },
             small_medals: l.sheet("FrontEnd/SmallMedals")?,
             profile_numbers: l.tex("FrontEnd/ProfileNumbers")?,
-            logo: l.tex("FrontEnd/ATVLogoBIG")?,
+            logo: l.tex(if retail { "FrontEnd/ATVLogo" } else { "FrontEnd/ATVLogoBIG" })?,
             mugs: l.tex("FrontEnd/RiderMugs")?,
-            loading: l.tex("FrontEnd/FELoading1")?,
+            loading: l.tex(if retail { "FrontEnd/TestCard" } else { "FrontEnd/FELoading1" })?,
             loading_overlay: l.tex("FrontEnd/LoadingOverlay")?,
             results_overlay: l.tex("FrontEnd/ResultsOverlay")?,
             results_overlay2: l.tex("FrontEnd/ResultsOverlay2")?,
@@ -460,7 +476,7 @@ impl UiAssets {
             fonts: [
                 l.font("Fonts/MgrammeCombined")?,
                 l.font("Fonts/MgrammeSmall")?,
-                l.font("Fonts/kim36")?,
+                l.font(if retail { "Fonts/Font32" } else { "Fonts/kim36" })?,
                 l.font("Fonts/MgrammeInside")?,
                 l.font("Fonts/Mgrammeoutline")?,
             ],
@@ -468,6 +484,32 @@ impl UiAssets {
         })
     }
 }
+
+/// Retail's button pages name their pictures BUTTON1-5 and TBTN1-8; these
+/// give them the prototype's names, which [`UiAssets::button`] asks for.
+const RETAIL_XBOX: [(&str, &str); 6] = [
+    ("controlbuttoncross", "BUTTON3"),
+    ("controlbuttoncircle", "BUTTON2"),
+    ("controlbuttonsquare", "BUTTON1"),
+    ("YButton", "BUTTON4"),
+    ("controlbuttontriangle", "TBTN5"),
+    ("StartButton", "BUTTON5"),
+];
+const RETAIL_PS2: [(&str, &str); 5] = [
+    ("controlbuttoncross", "BUTTON3"),
+    ("controlbuttoncircle", "BUTTON4"),
+    ("controlbuttonsquare", "BUTTON1"),
+    ("controlbuttontriangle", "BUTTON2"),
+    ("StartButton", "BUTTON5"),
+];
+/// By label, as `button` reads the GameCube page: B, A, Y, X and Start.
+const RETAIL_GC: [(&str, &str); 5] = [
+    ("controlbuttontriangle", "BUTTON2"),
+    ("controlbuttoncross", "BUTTON3"),
+    ("controlbuttonsquare", "BUTTON1"),
+    ("controlbuttoncircle", "BUTTON4"),
+    ("StartButton", "BUTTON5"),
+];
 
 struct PageLoader<'a> {
     game: &'a GameSource,
@@ -491,6 +533,82 @@ impl PageLoader<'_> {
             RenderAssetUsages::RENDER_WORLD,
         );
         UiTex { image: self.images.add(image), size: Vec2::new(w as f32, h as f32), px: 1.0 }
+    }
+
+    fn exists(&self, path: &str) -> bool {
+        self.game.exists(&format!("/{}.bog", path.trim_start_matches('/')))
+    }
+
+    /// A page with no sprite file, each of `names` covering all of it.
+    fn whole(&mut self, path: &str, names: &[&str]) -> Result<Sheet> {
+        let tex = self.tex(path)?;
+        let all = SheetSprite { rect: Rect::from_corners(Vec2::ZERO, tex.size), pivot: None };
+        Ok(Sheet { tex, sprites: names.iter().map(|n| (n.to_ascii_lowercase(), all)).collect() })
+    }
+
+    /// A sheet with extra names for some of its sprites (`(alias, sprite)`).
+    fn aliased(&mut self, path: &str, aliases: &[(&str, &str)]) -> Result<Sheet> {
+        let mut sheet = self.sheet(path)?;
+        for (alias, name) in aliases {
+            let s = sheet.get(name);
+            sheet.sprites.insert(alias.to_ascii_lowercase(), s);
+        }
+        Ok(sheet)
+    }
+
+    /// One page built from pieces of several: `(name, page, sprite)` takes
+    /// the page's named sprite, or all of it. Disc art only (no HD pack),
+    /// so every piece is in the same texels.
+    fn atlas(&mut self, parts: &[(&str, &str, Option<&str>)]) -> Result<Sheet> {
+        let mut pieces = Vec::new();
+        for &(name, path, sprite) in parts {
+            let file = format!("/{}.bog", path.trim_start_matches('/'));
+            let tex = atv_formats::bog::Texture::parse(&self.game.read(&file).map_err(|e| anyhow::anyhow!("reading {file}: {e}"))?)?;
+            let (w, h) = (tex.width, tex.height);
+            let rect = match sprite {
+                Some(sp) => {
+                    let bed = self.bed(path)?;
+                    let s = bed.sprites().find(|(n, _)| n.eq_ignore_ascii_case(sp)).map(|(_, s)| s).ok_or_else(|| anyhow::anyhow!("{path} has no {sp}"))?;
+                    let r = to_texels(&s, Vec2::new(w as f32, h as f32)).rect;
+                    [r.min.x.floor() as u32, r.min.y.floor() as u32, (r.max.x.ceil() as u32).min(w), (r.max.y.ceil() as u32).min(h)]
+                }
+                None => [0, 0, w, h],
+            };
+            pieces.push((name, w, tex.to_rgba8(), rect));
+        }
+        // Side by side, a texel apart so filtering doesn't bleed.
+        let width: u32 = pieces.iter().map(|p| p.3[2] - p.3[0] + 1).sum();
+        let height = pieces.iter().map(|p| p.3[3] - p.3[1]).max().unwrap_or(1);
+        let mut out = vec![0u8; (width * height * 4) as usize];
+        let mut sprites = HashMap::new();
+        let mut x = 0;
+        for (name, w, px, [x0, y0, x1, y1]) in pieces {
+            for y in y0..y1 {
+                let src = ((y * w + x0) * 4) as usize;
+                let dst = (((y - y0) * width + x) * 4) as usize;
+                let n = ((x1 - x0) * 4) as usize;
+                out[dst..dst + n].copy_from_slice(&px[src..src + n]);
+            }
+            let rect = Rect::new(x as f32, 0.0, (x + x1 - x0) as f32, (y1 - y0) as f32);
+            sprites.insert(name.to_ascii_lowercase(), SheetSprite { rect, pivot: None });
+            x += x1 - x0 + 1;
+        }
+        Ok(Sheet { tex: self.add(width, height, out), sprites })
+    }
+
+    /// The prototype's `NewDesign` page, from the retail pages its sprites
+    /// moved to.
+    fn retail_design(&mut self) -> Result<Sheet> {
+        self.atlas(&[
+            ("MENU_SELECT", "FrontEnd/FEButton", None),
+            ("SELECTION_SQUARE", "FrontEnd/UnlockBox", None),
+            ("DARKLRARROW", "FrontEnd/Buttons_Xbox", Some("DARKLRARROW")),
+            ("LIGHTLRARROW", "FrontEnd/Buttons_Xbox", Some("LIGHTLRARROW")),
+            ("DARKUDARROW", "FrontEnd/Buttons_Xbox", Some("DARKUDARROW")),
+            ("LIGHTUDARROW", "FrontEnd/Buttons_Xbox", Some("LIGHTUDARROW")),
+            ("ATTRIBBAR_BLANK", "FrontEnd/attribs", Some("ATTRIBBAR_BLANK")),
+            ("ATTRIBBAR_FULL", "FrontEnd/attribs", Some("ATTRIBBAR_FULL")),
+        ])
     }
 
     fn tex(&mut self, path: &str) -> Result<UiTex> {
@@ -546,9 +664,9 @@ impl PageLoader<'_> {
     /// The gauge's preload meter fills along its arc. The arc sprite is cut
     /// into angular steps around the gauge hub, from its blue end (bottom)
     /// round to its red end (top right).
-    fn boost_steps(&mut self, hud: &Sheet) -> Result<Vec<Handle<Image>>> {
+    fn boost_steps(&mut self, page: &str, hud: &Sheet) -> Result<Vec<Handle<Image>>> {
         const STEPS: usize = 32;
-        let (w, _h, px, k) = self.pixels("Sprites/HUDTPAGE")?;
+        let (w, _h, px, k) = self.pixels(page)?;
         let disc = hud.get("BOOST").rect;
         let (x0, y0) = ((disc.min.x * k) as u32, (disc.min.y * k) as u32);
         let (dw, dh) = ((disc.width() * k) as u32, (disc.height() * k) as u32);
@@ -575,9 +693,9 @@ impl PageLoader<'_> {
         Ok(steps)
     }
 
-    fn preload_steps(&mut self, hud: &Sheet) -> Result<Vec<Handle<Image>>> {
+    fn preload_steps(&mut self, page: &str, hud: &Sheet) -> Result<Vec<Handle<Image>>> {
         const STEPS: usize = 24;
-        let (w, _h, px, k) = self.pixels("Sprites/HUDTPAGE")?;
+        let (w, _h, px, k) = self.pixels(page)?;
         // Worked in image pixels, which are texels unless the page is HD.
         let arc = hud.get("PRELOAD").rect;
         let arc = Rect { min: arc.min * k, max: arc.max * k };

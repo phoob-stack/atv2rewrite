@@ -1477,15 +1477,19 @@ fn rebuild(
 
     match fe.screen {
         Screen::Title => {
-            let w = 460.0;
-            kids.push(commands.spawn(placed(ui.logo.node(w, w / 4.0), (SCREEN_W - w) / 2.0, 120.0)).id());
+            // The prototype's logo page is 4:1, retail's 2:1: same height.
+            let h = 460.0 / 4.0;
+            let w = h * ui.logo.size.x / ui.logo.size.y;
+            kids.push(commands.spawn(placed(ui.logo.node(w, h), (SCREEN_W - w) / 2.0, 120.0)).id());
             let t = "PRESS START";
             let tw = ui.font(FontId::Menu).width(t, 18.0);
             kids.push(commands.spawn((BitmapText::new(FontId::Menu, 18.0, t), ui_at((SCREEN_W - tw) / 2.0, 330.0), Blink)).id());
         }
         Screen::Main => {
-            let w = 400.0;
-            kids.push(commands.spawn(placed(ui.logo.node(w, w / 4.0), (SCREEN_W - w) / 2.0, 34.0)).id());
+            // The prototype's logo page is 4:1, retail's 2:1: same height.
+            let h = 400.0 / 4.0;
+            let w = h * ui.logo.size.x / ui.logo.size.y;
+            kids.push(commands.spawn(placed(ui.logo.node(w, h), (SCREEN_W - w) / 2.0, 34.0)).id());
             let current = match fe.mode {
                 _ if fe.players > 1 => 4,
                 Mode::Arcade => 0,
@@ -2663,6 +2667,7 @@ fn showroom(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    (mut lit_materials, mut lighting): (ResMut<Assets<crate::lit::LitMaterial>>, ResMut<crate::lit::Lighting>),
     mut images: ResMut<Assets<Image>>,
     mut bindposes: ResMut<Assets<bevy::mesh::skinning::SkinnedMeshInverseBindposes>>,
 ) {
@@ -2693,17 +2698,16 @@ fn showroom(
                         Transform::from_translation(eye).looking_at(look, Vec3::Y),
                         ShowroomCamera,
                     ));
-                    r.spawn((
-                        DirectionalLight { illuminance: 7000.0, ..default() },
-                        Transform::default().looking_to(Vec3::new(-0.4, -0.8, -0.5), Vec3::Y),
-                    ));
                 })
                 .id();
             let generic = game.0.read("/Cars/Generic/Generic.params").map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
             let own = game.0.read(&format!("/Cars/{quad}/{quad}.params")).ok().map(|b| String::from_utf8_lossy(&b).into_owned());
             let params = atv_sim::VehicleParams::from_files(&generic, own.as_deref());
             let wheel_x: Vec<f32> = params.wheels.iter().map(|w| w.offset[0]).collect();
-            let mut loader = crate::convert::Loader::new(&game.0, &mut meshes, &mut materials, &mut images);
+            // The original's light for a scene without its own: half
+            // ambient, half sun.
+            *lighting = crate::lit::Lighting { to_sun: Vec3::new(0.4, 0.8, 0.5).normalize(), ..default() };
+            let mut loader = crate::convert::Loader::new(&game.0, &mut meshes, &mut materials, &mut lit_materials, &mut images);
             match loader.spawn_quad(&mut commands, &quad, Transform::from_xyz(0.0, crate::convert::COM_HEIGHT, 0.0), &wheel_x) {
                 Ok(body) => {
                     if let Some(rider) = &rider {

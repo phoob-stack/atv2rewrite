@@ -8,6 +8,7 @@ pub mod collision;
 pub mod params;
 pub mod surface;
 pub mod track;
+pub mod tuning;
 pub mod vehicle;
 
 pub use collision::TrackCollision;

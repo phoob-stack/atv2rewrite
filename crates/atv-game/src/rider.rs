@@ -11,6 +11,10 @@
 //! landing clip once on top, and a crash replaces the whole pose with the
 //! crash clips (`Animations/Crashes/Bac`) while the rider tumbles free of
 //! the quad.
+//!
+//! The retail disc has no `Bac` folders: every clip is packed as a `.cuban`
+//! one folder up, with its root key relative to the seated pelvis, which
+//! the `.bac` clips bake in ([`SEAT`]).
 
 use std::sync::Arc;
 
@@ -23,6 +27,38 @@ use atv_formats::anim::{Animation, SkelInfo};
 use crate::convert::RiderRig;
 
 const CLIP_DIR: &str = "/Animations/Generic/Bac/";
+
+/// The seated pelvis in quad-model space (game frame): every prototype
+/// `.bac` riding, crash and stunt clip's root key is its `.cuban` twin's
+/// plus this.
+const SEAT: [f32; 3] = [-0.001_279_1, 1.024_095_4, -0.289_261_25];
+
+/// Where a clip is on this disc: the `.bac` path if it is there, else its
+/// `.cuban` twin (`/Animations/X/Bac/name.bac` -> `/Animations/X/name.cuban`).
+fn clip_path(game: &GameSource, path: &str) -> String {
+    if game.exists(path) {
+        return path.to_string();
+    }
+    match path.strip_suffix(".bac").and_then(|p| p.rsplit_once("/Bac/")) {
+        Some((dir, name)) => format!("{dir}/{name}.cuban"),
+        None => path.to_string(),
+    }
+}
+
+/// The stunt clips on this disc, by file stem.
+pub fn stunt_stems(game: &GameSource) -> Vec<String> {
+    let mut stems: Vec<String> = game
+        .archive_paths()
+        .filter_map(|p| p.strip_prefix("/Animations/Stunts/Bac/")?.strip_suffix(".bac").map(str::to_owned))
+        .collect();
+    if stems.is_empty() {
+        stems = game
+            .archive_paths()
+            .filter_map(|p| p.strip_prefix("/Animations/Stunts/")?.strip_suffix(".cuban").map(str::to_owned))
+            .collect();
+    }
+    stems
+}
 
 /// One bone's local transform (Bevy space).
 #[derive(Clone, Copy)]
@@ -42,8 +78,14 @@ impl Clip {
     }
 
     pub fn load_from(game: &GameSource, path: &str) -> Result<Self> {
-        let anim = Animation::parse(&game.read(path)?)?;
+        let path = clip_path(game, path);
+        let mut anim = Animation::parse_any(&game.read(&path)?)?;
         anyhow::ensure!(anim.frame_count > 0, "{path}: no frames");
+        if path.ends_with(".cuban") {
+            for k in &mut anim.keys[..anim.frame_count] {
+                k.position = [0, 1, 2].map(|a| k.position[a] + SEAT[a]);
+            }
+        }
         let frames = (0..anim.frame_count)
             .map(|f| {
                 (0..anim.bone_count)

@@ -1,11 +1,13 @@
 //! Checking the player's game data and starting the game binary.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 use atv_formats::{setup, GameSource};
+use atv_sim::VehicleParams;
 
 use crate::config::{Config, Start};
 
@@ -26,6 +28,8 @@ pub struct Catalog {
     pub quads: Vec<String>,
     /// (name, model folder) in the game's own order.
     pub riders: Vec<(String, String)>,
+    /// Each quad's handling as the game's own files set it.
+    pub params: Arc<BTreeMap<String, VehicleParams>>,
 }
 
 impl Catalog {
@@ -85,7 +89,13 @@ pub fn scan(path: &Path) -> anyhow::Result<Catalog> {
         .into_iter()
         .filter_map(|e| Some((e.name.replace('_', " "), e.get("mModelFilename")?.to_string())))
         .collect();
-    Ok(Catalog { disc_image: !path.is_dir(), tracks, arenas, quads, riders })
+    let generic = read("/Cars/Generic/Generic.params");
+    let params = quads
+        .iter()
+        .map(|q| (q.clone(), VehicleParams::from_files(&generic, Some(&read(&format!("/Cars/{q}/{q}.params"))))))
+        .collect::<BTreeMap<_, _>>();
+    let params = Arc::new(params);
+    Ok(Catalog { disc_image: !path.is_dir(), tracks, arenas, quads, riders, params })
 }
 
 /// "Industrial2" -> "Industrial 2".

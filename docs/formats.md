@@ -68,7 +68,7 @@ Levels 856, shaders 75, other 116).
 | `Levels/*/World/*.xml` | | XML | Object placements (cameras, triggers, positions, matrices). | Readable text. |
 | `.bas` | 48 | `BAS 1.02` | Rider skeleton in its bind (T-) pose. | **Decoded.** See below. |
 | `.bac` | 121 | `BAC 1.03` | Rider animations (riding leans, celebrations, crashes, idle). | **Decoded** (117; the four `*_bike` stunt files and `punch_floor` have another layout). |
-| `.cuban` | 91 | `CUBAN 1.02` | Compressed or curve animations (crashes). | To do. |
+| `.cuban` | 91 | `CUBAN 1.02` | The same rider animations, palette-packed. The retail disc has only these (132). | **Decoded.** See below. |
 | `.skel` | 1 | text | Rider skeleton definition (31 bones, mirror pairs, two-bone limbs). | Mirror pairs read. |
 | `.pts` | 11 | `POINT 1.00` | Named vehicle hard-points (wheel centres etc.). | Simple, to do. |
 | `.params` | 12 | text | Vehicle physics tuning (torque, gearing, preload, air resistance). | Readable text. |
@@ -112,8 +112,9 @@ patch (672 B): u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16]
      elsewhere).
 ```
 Quad paint atlases (`Tpage*`) and `GEN_Tyre` keep a gloss mask in alpha
-(shiny plastic opaque, seat and rubber clear; the tyre tread pattern);
-it is not coverage. `GEN_components` alpha is real cut-out coverage.
+(shiny plastic opaque, seat and rubber clear; the tyre tread pattern;
+retail's atlases are opaque all over); it is not coverage.
+`GEN_components` alpha is real cut-out coverage.
 Node header[1] is the base material, header[2] the overlay material (mud,
 tyre dirt), header[0] probably a render group. Vertex colours are baked
 light with 0x80 = 1.0 (Xbox MODULATE2X); vertex alpha drives effects, not
@@ -133,6 +134,20 @@ The overlay layers are dirt that builds up during a race:
   alpha × vertex alpha × the lighting alpha. The vertex shader takes that
   last value from the ambient colour constant (`c5.a`), which is how the
   game feeds in the dirt level. Dirt also cuts the specular.
+- Lighting (both discs ship the shader sources in `VertexShader/` and
+  `PixelShader/`; port in `atv-game/src/lit.rs`): per vertex,
+  diffuse = saturate(vertex colour × (ambient + N·L × sun)) and specular =
+  (N·H)^16 × the sun's specular colour (`SunLight.asm`, c95 = (1, 2, 16,
+  0.5) set at 0x4e8cfe). A mesh without an overlay draws with
+  `TextureColVertCol` (texture × diffuse × 2, no specular); one with an
+  overlay with `ShinyThingWithDirt`, which adds the specular × base
+  texture alpha (pixel shader picked by the generic mesh draw 0x4ef690;
+  shader table 0x5121b0; `Tyres.txt` and `Wheels.txt` are loaded but never
+  used). The colours are `Tracks.xml`'s `mAmbientColour`, `mSunColour`
+  and `mSunSpecColour` (× 0.5 × (0.65, 0.75, 1) for R, G, B), times the
+  XBox `mGlobalTint`, read at race start by 0x41f840; the sun's direction
+  is the track's `sun` light, else (0, -1, 0.5) (0x4f2600). Quad bodies
+  have vertex colour 0x7f, tyres 0xff, riders 0x80.
 - Rider vertex alpha is all zero and `CH_quadsnow_01` has no alpha. The
   port gives rider dirt the mud texture's coverage.
 - The port's dirt level grows with distance driven on the ground: full
@@ -146,7 +161,20 @@ BAS: "BAS 1.02\0" + 3 pad, u32 bones (31), then 32 B per bone:
      u32 child_count  -- bones are depth-first, so counts give the tree
 BAC: "BAC 1.03\0" + 3 pad, u32 bones, u32 frames, then bone-major keys,
      28 B each: f32 pos[3], f32 quat[4] (x,y,z,w), parent-relative
+CUBAN: "CUBAN 1.02" + pad to 0x10; u8 bones (0x10), u16 frames (0x14),
+     u32 flags (0x18; bit 0: a base pose follows the frames),
+     u32 pos_bits, u32 rot_bits (8/16/32), u32 pos_count, u32 rot_count,
+     then pos_count f32[3], rot_count f32[4], and two index lists (pos,
+     then rot), each bones*frames (+bones with a base pose) entries,
+     bone-major like BAC, each list padded to 4 bytes. With a base pose a
+     key is relative to its bone's base: pos + base.pos, rot * base.rot.
 ```
+CUBAN clips decode to the BAC clips frame for frame (retail XBE: loader
+0xf1c10, sampler 0x19c00 and 0xea330), except that a CUBAN root key is
+relative to the seated pelvis (-0.00128, 1.02410, -0.28926 in quad-model
+space), which the BAC riding and stunt clips bake in, and the crash clips
+keep no root motion. Some retail clips are cut shorter (`leen_back` has 2
+frames, not 10) and the retail stunts add `*_TB` variants.
 Tree: 0 pelvis; 1-3 spine; 4-6 neck/head; 7-14 left arm (7 clavicle,
 8 upper arm, 9 forearm, 10 wrist, 11-12 hand, 13-14 shoulder); 15-22 the
 right arm likewise; 23-26 right leg (hip, knee, ankle, toe); 27-30 left
@@ -667,8 +695,11 @@ into 0x58-byte records). Besides grip it says what a wheel throws up:
 turning fast), `WheelParticleType` (`Dirt`, `Gravel` or `Snow`, the chunk
 sprites `Dirt0..2`, `Gravel0..3` or `Dust0`), `WheelParticleProb`,
 `WheelParticleDustProb`, `WheelParticleColour`, `WheelParticleSize`.
-Colours are stored as bytes and scaled by 1/128 when used, so 0.5 draws a
-sprite as it is.
+Colours are packed 128 per 1.0 into bytes (the reader's 0x113ce0 through
+0x15cd0) and unpacked with 1/128 by the wheel effects, so the file's value
+is the tint itself (1.0 draws a sprite as it is). Each is also multiplied
+by the quad's light colour (+0x10ac, white unless it sits in a `Tint r g b`
+weather zone, 0x101200), and the end colour by it twice (retail 0xa83b0).
 
 The particle manager (set up at 0x8e440, run by 0x8e380) keeps five pools
 on `Sprites/Particles`: sparks (50, 0.3 s), chunks (600, 1.5 s, gravity
@@ -1242,6 +1273,23 @@ the ROW spatial tree and effect records, and the material record fields.
   `clamp(1 - on, 0.3, 1)` and pitch `0.85 + 1.8 * r`. Another branch
   (a vehicle value at `+0x2b0` below 0.6) changes the mix and isn't
   ported.
+- Retail (Sound.xml with `<Platforms>`; XBE addresses): the Vehicles
+  bank has 30 clips with the engine loops first, 0 "off" and 1 "on"
+  (engine part `0xb2150`), and wheel names `Gravel1` 2, `Rumble1`–`4`
+  3–6, `Water1`–`2` 7–8, `Twigs1`–`2` 9–10, `Screech1` 11 (`0x1ce638`).
+  Mix levels come from `<Platforms><XBox>`: "on" × `mEngineVol` 0.8,
+  "off" × `mEngineIdleVol` 0.35, wheels × `mSurfaceVol` 0.5; ambience is
+  each area's `m_ambientVol`. Engine update `0xb1690`, t = throttle pedal,
+  c = clutch: on `clamp((t + r) * 0.85, 0.08, 1)`, off
+  `clamp(1 - on, 0.1, 1)`; with c < 0.3 on is 0.3 and off is
+  `(off - k) * c + k` (k = 0.3t + 0.7) in first gear, else 0.1. Pitch
+  uses r' = `r + (1 - r) * wheelspin` in first gear, else
+  `(r - 0.5) * c + 0.5`: on `0.6 + 1.2r'`, off `0.85 + 1.8r'`. Knocks
+  (`0xb1e90`): table `0x1ce6a0` [14, 20, 12, 13, 18], the first 2 at 0.8
+  up to 6, the first 4 up to 12, else all; pitch 0.8–0.9; never the same
+  twice. Riders bank (56): a thrown rider's body thud is 48–55 louder with
+  speed (`0xaeaf0`, speed over 2.2347, every 0.5 s), then 61% of the time
+  a cry, at most twice a crash: male 12–22, female 37–47 (`0xae930`).
 - Banks load into slots: 0 Vehicles, 1 Riders, 2 SpotFX, 3 the track's
   ambient or crowd bank. One-shots go through `0x92e30` (bank, index,
   volume, pitch).
