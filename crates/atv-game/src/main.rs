@@ -39,6 +39,7 @@ mod convert;
 mod crash;
 mod demo;
 mod effects;
+mod fog;
 mod freestyle;
 mod frontend;
 mod ghost;
@@ -649,7 +650,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(records::RecordsPlugin)
         .add_plugins(ghost::GhostPlugin)
         .add_plugins(screens::ScreensPlugin)
-        .add_plugins(lit::LitPlugin)
+        .add_plugins((lit::LitPlugin, fog::FogPlugin))
         .add_plugins(lessons::LessonsPlugin)
         .add_plugins((inputs::InputsPlugin, racers::RacersPlugin, net::NetPlugin))
         .add_plugins(sky::SkyPlugin)
@@ -850,10 +851,10 @@ fn setup(
     // riders are lit, as the original lights them (see `lit`).
     let sun_dir = scene.world.lights.iter().find(|l| l.name.eq_ignore_ascii_case("sun")).map(|l| trk::to_sim(l.dir));
     commands.insert_resource(lit::Lighting::for_track(&game.0, &sel.track, sun_dir));
-    let fog_color = {
+    let fog_color = sky::fog_colour(&game.0, &sel.track).unwrap_or_else(|| {
         let c = scene.world.fog_color;
         Color::srgb_u8((c >> 16) as u8, (c >> 8) as u8, c as u8)
-    };
+    });
     clear.0 = fog_color;
     let distance = sky::ViewDistance::for_track(&game.0, &sel.track);
     commands.insert_resource(distance);
