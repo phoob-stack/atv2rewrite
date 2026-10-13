@@ -190,7 +190,7 @@ points, so the riding clips fit them all); the riding clips
 ## ROW 2.25 track worlds (mostly decoded in step 2)
 
 ```
-0x00 "ROW 2.25\0" + pad, u32 fog colour
+0x00 "ROW 2.25\0" + pad, u32 fog colour (the race views use Tracks.xml's)
 0x10 u32 materials, 0, locators, points, lights, instances, sprites, 0,
      effects, unknown
 0x38 materials 0x8C (as in ROM); locators 0x7C; points 0x2C; lights 0x4C (name[32],
@@ -226,8 +226,12 @@ View distance (retail): the track's camera far plane is `mDrawDistance`
 (`Tracks.xml`, entry +0xc) and its vertex fog runs from `mFogStartDistance`
 to `mFogEndDistance` (+0x10, +0x14), fractions of that distance, clamped
 0..1 (0x46e020 fills the camera's fog block; 0x4d3fc0 turns it into
-vertex constant c90; fog is on when the start is below 1). The sky dome
-(0x481ed0) is scaled to the draw distance, centred on the camera
+vertex constant c90; fog is on when the start is below 1). The fog colour,
+which the view also clears to, is `mFogColour` (+0x18, packed into the
+camera's `rFogColour` and set every frame by 0x4d90c0); the race camera
+doesn't take the ROW header's colour. The Xbox mixes fog on gamma-encoded
+colours. The sky dome
+(0x481ed0) is drawn unfogged while fog is on, scaled to the draw distance, centred on the camera
 `mSkyYOffset` lower (+8), and drawn first with a far plane of 5000. A material named `FrontBuffer` is the console's
 front buffer, so Stadium 1's video screens show the race. `material2` is an overlay layer (grass
 strips, tyre tracks, the checker on inflatable arches) drawn over the base

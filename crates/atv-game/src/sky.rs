@@ -58,6 +58,20 @@ impl ViewDistance {
     }
 }
 
+/// A track's fog colour, which its race views also clear to: `Tracks.xml`
+/// `mFogColour`, which the race camera packs into its `rFogColour` (0x46e020)
+/// and sets as the fog and clear colour every frame (0x4d90c0). The world
+/// file's header carries a colour too, but the race camera doesn't take it.
+pub fn fog_colour(game: &GameSource, track: &str) -> Option<Color> {
+    fog_colour_in(&String::from_utf8_lossy(&game.read("/Setup/Tracks.xml").ok()?), track)
+}
+
+fn fog_colour_in(xml: &str, track: &str) -> Option<Color> {
+    let c = setup::child(xml, track, "mFogColour")?;
+    let ch = |k: &str| c.get(k).and_then(|v| v.trim().parse::<f32>().ok()).map(|v| v.clamp(0.0, 1.0));
+    Some(Color::srgb(ch("R")?, ch("G")?, ch("B")?))
+}
+
 /// A race view's sky camera.
 #[derive(Component)]
 struct SkyCam(Entity);
@@ -149,5 +163,15 @@ mod tests {
         assert!((g.fog_start + 60.0).abs() < 1e-3 && (g.fog_end - 270.0).abs() < 1e-3);
         assert!((g.sky_lift - 0.2).abs() < 1e-6);
         assert_eq!(ViewDistance::new(None, None, None, None).far, 600.0);
+    }
+
+    #[test]
+    fn fog_colour_is_the_tracks_xml_one() {
+        let xml = r#"<Tracks><Swamp1 mDrawDistance="450.0">
+      <mAmbientColour A="1.0" R="0.25" G="0.25" B="0.25"/>
+      <mFogColour A="1.0" R="0.7" G="0.7" B="0.75"/>
+   </Swamp1><Swamp2 mDrawDistance="450.0"></Swamp2></Tracks>"#;
+        assert_eq!(fog_colour_in(xml, "Swamp1"), Some(Color::srgb(0.7, 0.7, 0.75)));
+        assert_eq!(fog_colour_in(xml, "Swamp2"), None);
     }
 }
