@@ -29,7 +29,7 @@ pub const SCALES: [Scale; 8] = [
     Scale {
         key: "gravity",
         label: "Gravity",
-        hint: "The world's pull, on the ground and in the air (the engine's 25 m/s²). Less also means less grip.",
+        hint: "The world's pull, on the ground and in the air (the original's 9.81 m/s²).",
         min: 20.0,
         max: 200.0,
         apply: |p, s| p.gravity *= s,
@@ -363,7 +363,7 @@ mod tests {
         t.set_quad_value("Bandit", "AIRGRAVITYSCALE", Some(1.0));
         t.set_quad_value("Bandit", "REAR.WHEELSTIFFNESS", Some(90.0));
         let p = t.params("bandit", GENERIC, None);
-        assert_eq!(p.gravity, 12.5);
+        assert_eq!(p.gravity, crate::vehicle::GRAVITY * 0.5);
         assert_eq!(p.mass, 2.0);
         assert_eq!(p.in_air_grav_scale, 1.0);
         assert_eq!(p.cornering_max, [60.0, 10.0]);

@@ -83,7 +83,7 @@ impl PlayerInput {
     /// The driving controls on the ground or in the air.
     pub fn drive(&self, airborne: bool) -> Input {
         let air = airborne as usize;
-        Input { throttle: self.throttle, brake: self.brake[air], steer: self.steer, lean: self.lean, jump: self.hop[air] }
+        Input { throttle: self.throttle, brake: self.brake[air], steer: self.steer, lean: self.lean, jump: self.hop[air], hop: None }
     }
 
     /// The speed boost button.

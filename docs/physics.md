@@ -8,7 +8,15 @@ disassembly; "Retail" lists what the USA retail XBE (2002-12-22) changes.
 
 ## Model
 
-* Mass is 1, so forces are accelerations. Gravity is 25 m/s².
+* Mass is 1, so forces are accelerations. Gravity is 9.81 m/s². The XBE's
+  data holds (0, −25, 0), but the race loader overwrites it with
+  (0, −9.81, 0) before the quads are built (retail `0xa0b50` writes
+  `0x1cf0c4`, the prototype's `0x857de` writes `0x1d324c`) and nothing
+  writes it again, so every race runs at 9.81: on the ground, in the air
+  (× INAIRGRAVUPSCALE 2.8 rising, × INAIRGRAVDOWNSCALE 1.5 falling) and in
+  the tyre load (`0x6e6e0` divides the springs' load by it). Until
+  2026-10-16 the port used 25: for the same take-off speed a jump went
+  only 39% as high and as far, and was over in 39% of the time.
 * The game frame is left handed (X right, Y up, +Z forward). The port runs in
   game coordinates internally and mirrors (negates Z) when it exposes state
   and when it raycasts the track.
@@ -53,6 +61,7 @@ prototype's files nothing below applies. Retail addresses:
 | `0x6cfa0` | `wheelies` | Torque scale lerps WHEELIETORQUE0MPH..100MPH by speed, times the 0 mph value again |
 | `0x6e6e0` | `ground_forces` | Wheelspin only above 3/4 throttle; side grip × ground normal.y²; reversing yaw damping 0.8 (was 0.4); CONSTMASSTORQUE only going forward; turbo drive |
 | `0x6db90` | `preload_update` | The hop also spins: (lean − throttle + brake) × PRELOADVERTSPINMAG about right, steer × PRELOADHORIZSPINMAG about up |
+| `0x6cf00`, `0x27470` | `hop`, `AiDriver::hop` | Computer riders don't use the button: their update calls the hop itself every tick, with `boost / 100` × heading along the line on the tick they pass a jump node and 0 otherwise. So no charge, no spin, and gravity back to normal straight away |
 | `0x6d1b0` | `stabiliser` | On one or two wheels, `speed × BICYCLETORQUE × (ground side.y − right.y − BICYCLEDAMPING × roll rate)` about the forward axis, at the front right wheel (the bicycle trick's resting state; the trick itself isn't ported) |
 | `0x6e2e0` | `post_step` | ENGINEREVRATENORMAL/REVVING are RPM/s slew limits on the target revs; revs then ease toward it at 50/s (`0x6e540`) |
 | `0x6e470`, `0x6d490`, `0x6d570` | `set_grid`, `start_race` | Held on the grid (only the springs move it, Dyne `0xd9190`) the rider can rev. Letting go with the revs between MINTURBOREVSCALE and MAXTURBOREVSCALE of the range gives a turbo start: drive × DRIVEFORCETURBOSCALE for MAXTURBOTIME seconds |
@@ -181,7 +190,7 @@ reads it for every race (`atv-game/src/tuning.rs`) and builds each quad's
   after the quad's own file. `FRONT.`/`REAR.` wheel keys set the wheels in
   front of or behind the centre. `AIRGRAVITYSCALE` wins over `INAIRGRAVSCALE`.
 * percentages scale the parsed values on every quad: `gravity` scales
-  `VehicleParams::gravity` (the engine's 25 m/s², on the ground and in the
+  `VehicleParams::gravity` (the original's 9.81 m/s², on the ground and in the
   air), `air_gravity` the in-air gravity scale, and so on.
 
 Computer riders keep the game's tuning unless `computer_riders = true`.

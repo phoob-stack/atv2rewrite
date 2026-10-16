@@ -6,7 +6,7 @@
 //! struts that only hold the quad up; grip, drive, braking and steering are
 //! body-level forces worked out in a "ground frame" built from the wheel
 //! contacts, shaped by the `.params` response curves. Mass is 1, so forces
-//! are accelerations, and gravity is the game's 25 m/s^2.
+//! are accelerations, and gravity is 9.81 m/s^2 (see [`GRAVITY`]).
 //!
 //! The model runs in the game's own left-handed frame (X right, Y up,
 //! +Z forward) so the original formulas carry over unchanged; the public
@@ -20,7 +20,12 @@ use glam::{Mat3, Quat, Vec3};
 use crate::collision::TrackCollision;
 use crate::params::{VehicleParams, by_grip};
 
-pub const GRAVITY: f32 = 25.0;
+/// The world's gravity, m/s². The executable's data holds (0, -25, 0), but
+/// loading a race overwrites it with (0, -9.81, 0) before any quad is built
+/// (retail 0xa0b50 writes 0x1cf0c4; the prototype's 0x857de writes 0x1d324c),
+/// and nothing writes it again. Every race in the original runs at 9.81:
+/// on the ground, in the air (times the up/down scales) and in the tyre load.
+pub const GRAVITY: f32 = 9.81;
 const MPS_TO_MPH: f32 = 2.237_41;
 const MPH_TO_MPS: f32 = 0.446_944;
 /// Radians per second -> revs per minute.
@@ -47,6 +52,11 @@ pub struct Input {
     pub lean: f32,
     /// Held to charge the suspension pre-load, released to hop.
     pub jump: bool,
+    /// A computer rider's hop instead of the button: the original's AI
+    /// (retail 0x27470) calls the hop (0x6cf00) every tick with a strength
+    /// that is 0 except on the tick it passes a jump node. No charge, and
+    /// none of the button's spin (0x6db90).
+    pub hop: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -812,7 +822,10 @@ impl Vehicle {
             self.torque -= self.ang_vel * WATER_SPIN_DRAG;
         }
         if racing {
-            self.preload_update(input.jump, h);
+            match input.hop {
+                Some(strength) => self.hop(strength),
+                None => self.preload_update(input.jump, h),
+            }
         }
         self.landing_stabiliser(h);
         if self.params.retail && self.start == Start::Turbo {
@@ -1361,7 +1374,7 @@ impl Vehicle {
             .filter(|(_, s)| s.contact && s.pos > 0.0)
             .map(|(w, s)| w.stiffness * s.pos)
             .sum();
-        let load = (load / GRAVITY).clamp(0.0, 1.0);
+        let load = (load / self.params.gravity).clamp(0.0, 1.0);
         let side = side * load;
         let drive = drive * load;
         let brake = brake * load;
@@ -1420,6 +1433,20 @@ impl Vehicle {
 
     /// Hold to compress the suspension, release to hop. Charge builds over
     /// PRELOADRATE, holds for PRELOADHOLDTIME, then fades.
+    /// The hop itself (0x6cf00): the pre-load push for the speed times
+    /// `strength`, as a force for this tick, and gravity eased the same way
+    /// for half a second. A strength of 0 puts gravity back to normal.
+    fn hop(&mut self, strength: f32) {
+        let p = &self.params;
+        let t = self.vel.length() * MPS_TO_MPH * 0.01;
+        let push = t * (p.preload_100mph - p.preload_0mph) + p.preload_0mph;
+        self.momentum.y += push * strength * TICK;
+        let g = t * (p.preload_grav_scale_100mph - p.preload_grav_scale_0mph)
+            + p.preload_grav_scale_0mph;
+        self.gravity_scale = 1.0 - (1.0 - g) * strength;
+        self.gravity_timer = 0.5;
+    }
+
     fn preload_update(&mut self, held: bool, h: f32) {
         let p = &self.params;
         self.gravity_timer -= h;

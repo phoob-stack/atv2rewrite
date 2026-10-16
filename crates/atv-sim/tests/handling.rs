@@ -460,7 +460,7 @@ fn drawn_pose_moves_every_frame() {
     }
     let drops: Vec<f32> = heights.windows(2).map(|w| w[0] - w[1]).collect();
     // A frame's drop grows by at most a tick's gain in speed (falling
-    // gravity 25 x 1.5 for 1/60 s) over a frame: 4.3 mm. Showing the
+    // gravity 9.81 x 1.5 for 1/60 s) over a frame: 1.7 mm. Showing the
     // stepped pose instead drops 0 and then twice as far.
     for d in drops.windows(2).skip(10) {
         assert!(d[0] > 0.0 && d[1] > 0.0, "a frame stood still: {drops:?}");

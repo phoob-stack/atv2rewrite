@@ -217,14 +217,16 @@ const PLUNGE_SPEED: f32 = 4.8;
 const PLUNGE_HEIGHT: f32 = 3.0;
 /// In the water (0x2ca40) the original pulls the rider's body up by
 /// `FLOAT_PULL × (FLOAT_LEVEL − height over the surface − 0.5 × rising
-/// speed)` and damps its motion at [`WATER_DRAG`] a second. Against the
-/// game's gravity that floats the body 0.2 m under the surface. (The
+/// speed)` and damps its motion at [`WATER_DRAG`] a second. (The
 /// original measures from the water box's top and only pulls a body a
-/// metre under it; here the body floats by the water you can see.)
+/// metre under it; here the body floats by the water you can see, held
+/// down by [`FLOAT_GRAVITY`] so it sits 0.2 m under the surface.)
 const FLOAT_PULL: f32 = 50.0;
 const FLOAT_LEVEL: f32 = 0.3;
 const WATER_DRAG: f32 = 25.0;
-const FLOAT_GRAVITY: f32 = atv_sim::vehicle::GRAVITY;
+/// Not the game's gravity (9.81): the pull down that floats the body at
+/// the depth chosen when water crashes were ported.
+const FLOAT_GRAVITY: f32 = 25.0;
 /// Seconds in the water before the original starts its respot (0x26e30);
 /// the quad is put back after the respot's half-second fade (0x25f20).
 const WET_TIME: f32 = 1.5;
