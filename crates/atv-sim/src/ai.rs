@@ -476,6 +476,8 @@ pub struct AiDriver {
     /// Where the current no-progress window started, and its age.
     window: (Vec3, f32, f32),
     respot: bool,
+    /// The edge whose end node, a jump node, the rider has just passed.
+    passed_jump: Option<usize>,
     /// Edge chosen at each branch node, so a driver commits to one route.
     choice: Option<(usize, usize)>,
     /// Where respots keep happening: the furthest edge and distance the
@@ -514,6 +516,7 @@ impl AiDriver {
             off_line: 0.0,
             window: (position, 0.0, 0.0),
             respot: false,
+            passed_jump: None,
             choice: None,
             last_respot: None,
             rng: seed.wrapping_mul(2_654_435_761).max(1),
@@ -608,7 +611,12 @@ impl AiDriver {
             let (t, _) = line.project(self.edge, p);
             if t > 1.0 {
                 match self.next_edge(line, self.edge) {
-                    Some(e) => self.edge = e,
+                    Some(e) => {
+                        if line.nodes[line.edges[self.edge].to].boost > 0 {
+                            self.passed_jump = Some(self.edge);
+                        }
+                        self.edge = e;
+                    }
                     None => break,
                 }
             } else if t < 0.0 {
@@ -696,6 +704,7 @@ impl AiDriver {
         self.edge = e;
         self.t = 0.0;
         self.respot = false;
+        self.passed_jump = None;
         self.mode = Mode::Race;
         self.stuck_timer = 0.0;
         self.stuck_attempts = 0;
@@ -854,7 +863,7 @@ impl AiDriver {
             *d -= dt;
         }
         let boosted = self.torque_scale() > 1.0;
-        let mut input = Input::default();
+        let mut input = Input { hop: Some(self.hop(line, v)), ..Default::default() };
         self.boost = false;
         match self.mode {
             Mode::Race => {
@@ -926,7 +935,6 @@ impl AiDriver {
                 } else if speed > 0.894 {
                     input.brake = (-out).min(max_brake);
                 }
-                input.jump = self.hop(line, pos, v.velocity, v.params.preload_rate);
             }
             Mode::Reverse => {
                 self.steer_pid.gains[0] = 0.3;
@@ -982,29 +990,22 @@ impl AiDriver {
         false
     }
 
-    /// Jump nodes (0x66380, 0x66460, 0x5a9e0): passing one at 40 mph or
-    /// more, the original releases a preload of strength `boost / 100`
-    /// times how well the rider's travel lines up with the line. The rider
-    /// here holds the preload button for as long as that charge takes to
-    /// build at `PRELOADRATE` and lets go at the node.
-    fn hop(&self, line: &RacingLine, pos: Vec3, vel: Vec3, preload_rate: f32) -> bool {
-        let e = &line.edges[self.edge];
-        let node = &line.nodes[e.to];
-        let speed = vel.length();
-        if node.boost == 0 || speed < HOP_SPEED {
-            return false;
+    /// Jump nodes (0x66380, 0x66460; the hop is retail 0x6cf00): passing
+    /// one at 40 mph or more, the original hops with strength `boost / 100`
+    /// times how well the quad's heading lines up with the line, on that
+    /// tick only, and with 0 on every other tick.
+    fn hop(&mut self, line: &RacingLine, v: &Vehicle) -> f32 {
+        let Some(e) = self.passed_jump.take() else { return 0.0 };
+        let e = &line.edges[e];
+        if v.velocity.length() < HOP_SPEED {
+            return 0.0;
         }
-        let along = vel
+        let along = v
+            .forward()
             .with_y(0.0)
             .normalize_or_zero()
             .dot(e.dir.with_y(0.0).normalize_or_zero());
-        let strength = (along * f32::from(node.boost) / 100.0).min(1.0);
-        if strength <= 0.0 {
-            return false;
-        }
-        let d = (node.pos - pos).dot(e.dir);
-        let hold = speed * strength / preload_rate.max(0.01);
-        d > 0.5 && d < hold
+        (along * f32::from(line.nodes[e.to].boost) / 100.0).clamp(0.0, 1.0)
     }
 
     #[allow(clippy::too_many_arguments)]

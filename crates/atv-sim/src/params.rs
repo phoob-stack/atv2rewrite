@@ -165,7 +165,7 @@ pub struct VehicleParams {
     /// handling code (see `docs/physics.md`); the prototype's files lack
     /// its ENGINEREVRATEREVVING key.
     pub retail: bool,
-    /// The world's gravity, m/s^2: the engine's 25 unless the player's
+    /// The world's gravity, m/s^2: the original's 9.81 unless the player's
     /// tuning (`tuning.cfg`) changes it.
     pub gravity: f32,
     pub mass: f32,
