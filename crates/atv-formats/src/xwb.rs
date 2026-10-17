@@ -100,7 +100,7 @@ mod tests {
         b.extend(block);
         let bank = WaveBank::parse(&b).unwrap();
         assert_eq!(bank.waves[0].rate, 22050);
-        assert_eq!(bank.waves[0].samples.len(), 65);
+        assert_eq!(bank.waves[0].samples.len(), 64);
         assert_eq!(bank.waves[0].samples[0], 100);
     }
 }

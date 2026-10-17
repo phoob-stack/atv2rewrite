@@ -518,6 +518,31 @@ fn nearness(listeners: &[Vec3], at: Vec3) -> f32 {
     listeners.iter().map(|l| falloff(l.distance(at))).fold(0.0, f32::max)
 }
 
+/// Which racers' engines are heard. The original has engine voices for
+/// four quads (0x92ff0): every player's own, and the rest go to the
+/// computer riders nearest a player (0x92c80 hands them round), so a pack
+/// on the grid doesn't stack up six engines.
+fn heard_engines(ears: &[Vec3], opponents: Option<&crate::opponents::Opponents>) -> Vec<bool> {
+    let Some(opp) = opponents else { return Vec::new() };
+    let players = 1 + opp.racers.iter().filter(|r| r.human().is_some()).count();
+    let mut computers: Vec<(f32, usize)> = opp
+        .racers
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.human().is_none())
+        .map(|(i, r)| (ears.iter().map(|e| e.distance(r.vehicle.position)).fold(f32::MAX, f32::min), i))
+        .collect();
+    computers.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut heard: Vec<bool> = opp.racers.iter().map(|r| r.human().is_some()).collect();
+    for &(_, i) in computers.iter().take(ENGINE_VOICES.saturating_sub(players)) {
+        heard[i] = true;
+    }
+    heard
+}
+
+/// Quads with an engine voice at once (0x92ff0).
+const ENGINE_VOICES: usize = 4;
+
 /// How many of a quad's wheels (from wheel 0) make its wheel noise: with
 /// three or four players the original gives each player's quad a voice for
 /// wheel 0 only (0x94ef0's mode 1), and with one or two a voice per wheel.
@@ -598,15 +623,18 @@ impl QuadMix {
         }
     }
 
-    /// A quad's engine loops, "on" then "off": (volume, pitch).
-    fn engine(&self, v: &atv_sim::Vehicle) -> [(f32, f32); 2] {
+    /// A quad's engine loops, "on" then "off": (volume, pitch). Retail
+    /// halves both while the quad's rider is off it (0xb1690 checks the
+    /// rider's thrown flag, the one the rider sounds go by).
+    fn engine(&self, v: &atv_sim::Vehicle, thrown: bool) -> [(f32, f32); 2] {
         let r = (v.revs / v.params.max_revs.max(1.0)).clamp(0.0, 1.0);
         let [on, off] = if self.retail {
             retail_engine_mix(r, v.throttle_pedal(), v.clutch(), v.wheelspin().clamp(0.0, 1.0), v.first_gear())
         } else {
             engine_mix(r, v.throttle, self.pitch_zero, self.pitch_span)
         };
-        [(on.0 * self.on, on.1), (off.0 * self.off, off.1)]
+        let k = if self.retail && thrown { 0.5 } else { 1.0 };
+        [(on.0 * self.on * k, on.1), (off.0 * self.off * k, off.1)]
     }
 }
 
@@ -766,7 +794,7 @@ fn engine_and_wheels(
     mix: Option<Res<QuadMix>>,
     settings: Res<Settings>,
     virt: Res<Time<Virtual>>,
-    (water, demo): (Option<Res<crate::water::Water>>, Option<Res<crate::demo::Demo>>),
+    (water, demo, wreck): (Option<Res<crate::water::Water>>, Option<Res<crate::demo::Demo>>, Option<Res<crate::crash::Wreck>>),
     mut sinks: Query<(&mut AudioSink, Option<&EngineLoop>, Option<&WheelLoop>, Option<&OtherEngine>), With<PausesWithGame>>,
 ) {
     let paused = virt.is_paused();
@@ -780,7 +808,8 @@ fn engine_and_wheels(
     let (Some(player), Some(mix)) = (player, mix) else { return };
     let ears = listeners(&player, opponents.as_deref(), demo.as_deref().map_or(1, crate::demo::Demo::views));
     let v = &player.0;
-    let [on, off] = mix.engine(v);
+    let [on, off] = mix.engine(v, wreck.is_some_and(|w| w.fall.is_some()));
+    let heard = heard_engines(&ears, opponents.as_deref());
     for (mut sink, engine, wheel, other) in &mut sinks {
         let (vol, pitch) = match (engine, wheel, other) {
             (Some(e), ..) => if e.on { on } else { off },
@@ -818,8 +847,13 @@ fn engine_and_wheels(
                 (w.volume * mix.wheels * vol * near, pitch * (0.8 + 0.4 * pace))
             }
             (.., Some(o)) => {
-                let Some(q) = opponents.as_ref().and_then(|opp| opp.racers.get(o.racer)).map(|r| &r.vehicle) else { continue };
-                let [on, off] = mix.engine(q);
+                let Some(r) = opponents.as_ref().and_then(|opp| opp.racers.get(o.racer)) else { continue };
+                if !heard.get(o.racer).copied().unwrap_or(false) {
+                    sink.set_volume(Volume::Linear(0.0));
+                    continue;
+                }
+                let q = &r.vehicle;
+                let [on, off] = mix.engine(q, r.wreck.fall.is_some());
                 let (vol, pitch) = if o.on { on } else { off };
                 (vol * nearness(&ears, q.position), pitch)
             }

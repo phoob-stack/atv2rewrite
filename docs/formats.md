@@ -25,7 +25,7 @@ python3 tools/disc/extract.py bark.txt disc/ATV.bad assets/  # 1,931 files, ~190
 | `default.xbe` | Game executable. The reference for reverse engineering logic, physics and any format detail we can't infer. |
 | `user.xml` | Debug/boot config left on disc (track, laps, AI count, editor mode). Useful for testing. |
 | `ATV.bah` / `ATV.bad` | "Bark" archive: index + data, holds almost all game content. |
-| `Music/*.wav` | 19 music sections, RIFF WAV, Xbox IMA ADPCM (format 0x69), 44.1 kHz, stereo except the mono `Stadium.wav`. 36-byte blocks per channel decode to 65 samples. **Decoded** by `wav.rs`, sample-exact with ffmpeg; `Setup/Sound.xml` says which play on each environment. |
+| `Music/*.wav` | 19 music sections, RIFF WAV, Xbox IMA ADPCM (format 0x69), 44.1 kHz, stereo except the mono `Stadium.wav`. 36-byte blocks per channel decode to 64 samples (the header sample and 63 codes; the last code is always 0, padding, though ffmpeg decodes it as a 65th). **Decoded** by `wav.rs`; `Setup/Sound.xml` says which play on each environment. |
 | `Movies/*.xmv` | Acclaim/Climax intro videos (Xbox XMV, ffmpeg can decode). |
 | `Fonts/blimey.ttf` | Standard TrueType font. |
 | `Sound/dsstdfx.bin` | Xbox DSP effects image. Not needed on PC. |
@@ -1373,6 +1373,10 @@ the ROW spatial tree and effect records, and the material record fields.
   twice. Riders bank (56): a thrown rider's body thud is 48–55 louder with
   speed (`0xaeaf0`, speed over 2.2347, every 0.5 s), then 61% of the time
   a cry, at most twice a crash: male 12–22, female 37–47 (`0xae930`).
+  The engine update halves both loops while the quad's rider is off it.
+- Engine voices: four quads at once (`0x92ff0`), each player's own and the
+  rest for the computer riders nearest a player; the rewrite gives the
+  others' loops zero volume.
 - Retail race music (XBE addresses). `Setup/Music.xml` lists the licensed
   songs as `<Track1>`, `<Track2>`... (`ArtistName`, `SongName`,
   `LevelSpecific`, `FileName` `Licensed\TrackN` -> `/Licensed/TrackN.wav`,
