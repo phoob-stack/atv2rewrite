@@ -19,7 +19,7 @@
 //! patch (672 B): u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16];
 //!       u32 0; uv, uv2, uv3 nets (16 pairs each, see `NET_ORDER`; only the
 //!       4 corners are valid when the flag is 0); u32 ARGB[4] at word 148;
-//!       i32 bone[16] at word 152 (-1 when unskinned)
+//!       i32 bone[16] at word 152, column-major (-1 when unskinned)
 //! ```
 //! Node header: [kind, material, overlay material, -1, ?]. The overlay
 //! (quad mud, tyre dust) uses the second UV set: vertex `extra[0..2]` and
@@ -224,10 +224,13 @@ impl Model {
                 let uv2 = r.f32s::<32>()?;
                 r.seek(start + 148 * 4);
                 let c = [r.u32()?, r.u32()?, r.u32()?, r.u32()?];
-                let mut bones = [-1i32; 16];
-                for b in &mut bones {
+                // Stored column by column, unlike the control points: the
+                // original transposes the table as it loads it (0x123be0).
+                let mut stored = [-1i32; 16];
+                for b in &mut stored {
                     *b = r.i32()?;
                 }
+                let bones = std::array::from_fn(|k| stored[(k % 4) * 4 + k / 4]);
                 r.seek(start + PATCH_SIZE);
                 patches.push(Patch {
                     header,
