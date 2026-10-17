@@ -665,7 +665,9 @@ fn main() -> anyhow::Result<()> {
                 .chain()
                 .run_if(in_state(AppState::Race)),
         )
-        .add_systems(Update, auto_screenshot);
+        .add_systems(Update, auto_screenshot)
+        // After everything that poses joints, replays included.
+        .add_systems(PostUpdate, convert::bend_patches.after(bevy::transform::TransformSystems::Propagate));
     #[cfg(windows)]
     if xinput {
         app.add_plugins(xinput::XInputPlugin);

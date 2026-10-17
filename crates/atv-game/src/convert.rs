@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::visibility::DynamicSkinnedMeshBounds;
+use bevy::camera::visibility::{DynamicSkinnedMeshBounds, NoFrustumCulling};
 use bevy::image::{Image, ImageSampler, ImageSamplerDescriptor, ImageAddressMode};
 use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology, VertexAttributeValues};
@@ -257,6 +257,8 @@ struct Batch {
     /// Skinning, for riders only: up to four bones per vertex.
     joints: Vec<[u16; 4]>,
     weights: Vec<[f32; 4]>,
+    /// Rider patches posed on the CPU (see [`PatchSkin`]), in vertex order.
+    bent: Vec<BentPatch>,
 }
 
 impl Batch {
@@ -282,16 +284,11 @@ impl Batch {
         let base = self.pos.len() as u32;
         let n = PATCH_STEPS + 1;
         let cols = p.corner_color.map(|c| look.color(c));
+        let grid: Vec<Vec3> = pos.iter().map(|p| Vec3::from(*p)).collect();
         for (k, (pp, tt)) in pos.iter().zip(uv).enumerate() {
             let (u, v) = ((k % n) as f32 / PATCH_STEPS as f32, (k / n) as f32 / PATCH_STEPS as f32);
-            // Normal from finite differences across the grid.
-            let at = |i: usize, j: usize| Vec3::from(pos[j.min(n - 1) * n + i.min(n - 1)]);
-            let (i, j) = (k % n, k / n);
-            let du = at(i + 1, j) - at(i.saturating_sub(1), j);
-            let dv = at(i, j + 1) - at(i, j.saturating_sub(1));
-            let nrm = du.cross(dv).normalize_or(Vec3::Y);
             self.pos.push(flip(*pp));
-            self.normal.push(flip(nrm.into()));
+            self.normal.push(flip(grid_normal(&grid, k).into()));
             self.uv.push(*tt);
             let mut c = [0.0; 4];
             for ch in 0..4 {
@@ -305,42 +302,23 @@ impl Batch {
         }
     }
 
-    /// Adds a rider node: its triangles follow one bone per vertex; patch
-    /// vertices blend the bones of the control points by their Bezier
-    /// weights, which is exact for rigidly skinned control points.
+    /// Adds a rider node's triangles, each vertex following one bone.
     fn add_skinned(&mut self, node: &Node, look: Look, overlay: bool) {
         self.add_tris(&node.vertices, &node.indices, look, overlay);
         for v in &node.vertices {
             self.joints.push([v.bone as u16, 0, 0, 0]);
             self.weights.push([1.0, 0.0, 0.0, 0.0]);
         }
+    }
+
+    /// Adds a rider node's patches, to be posed by [`PatchSkin`].
+    fn add_bent(&mut self, node: &Node, look: Look, overlay: bool) {
         for p in &node.patches {
             self.add_patch(p, look, overlay);
-            for j in 0..=PATCH_STEPS {
-                let bv = bernstein(j as f32 / PATCH_STEPS as f32);
-                for i in 0..=PATCH_STEPS {
-                    let bu = bernstein(i as f32 / PATCH_STEPS as f32);
-                    let mut per_bone: Vec<(u16, f32)> = Vec::new();
-                    for (k, &bone) in p.bones.iter().enumerate() {
-                        let w = bu[k % 4] * bv[k / 4];
-                        let bone = bone.max(0) as u16;
-                        match per_bone.iter_mut().find(|(b, _)| *b == bone) {
-                            Some(e) => e.1 += w,
-                            None => per_bone.push((bone, w)),
-                        }
-                    }
-                    per_bone.sort_by(|a, b| b.1.total_cmp(&a.1));
-                    per_bone.truncate(4);
-                    let total: f32 = per_bone.iter().map(|e| e.1).sum::<f32>().max(1e-6);
-                    let (mut j4, mut w4) = ([0u16; 4], [0f32; 4]);
-                    for (n, (b, w)) in per_bone.into_iter().enumerate() {
-                        j4[n] = b;
-                        w4[n] = w / total;
-                    }
-                    self.joints.push(j4);
-                    self.weights.push(w4);
-                }
-            }
+            self.bent.push(BentPatch {
+                control: p.control.map(|c| Vec3::from(flip(c))),
+                bones: p.bones.map(|b| b.max(0) as u16),
+            });
         }
     }
 
@@ -362,6 +340,88 @@ impl Batch {
 fn bernstein(t: f32) -> [f32; 4] {
     let s = 1.0 - t;
     [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t]
+}
+
+/// Normal at grid vertex `k` of a tessellated patch, from finite
+/// differences across the grid (unflipped: callers flip it with the
+/// positions).
+fn grid_normal(grid: &[Vec3], k: usize) -> Vec3 {
+    let n = PATCH_STEPS + 1;
+    let at = |i: usize, j: usize| grid[j.min(n - 1) * n + i.min(n - 1)];
+    let (i, j) = (k % n, k / n);
+    let du = at(i + 1, j) - at(i.saturating_sub(1), j);
+    let dv = at(i, j + 1) - at(i, j.saturating_sub(1));
+    du.cross(dv).normalize_or(Vec3::Y)
+}
+
+/// A rider patch: its control points in the bind pose (flipped) and the
+/// bone each one follows.
+#[derive(Clone, Debug)]
+struct BentPatch {
+    control: [Vec3; 16],
+    bones: [u16; 16],
+}
+
+/// A rider's joints as [`PatchSkin`] walks them.
+pub struct PatchRig {
+    joints: Vec<Entity>,
+    parents: Vec<Option<usize>>,
+    /// Bind-pose joint positions (flipped).
+    bind: Vec<Vec3>,
+}
+
+/// A rider mesh made of curved patches, posed on the CPU. The original
+/// moves each control point with its own bone and evaluates the patch
+/// after that (0x123820). Blending the bones per vertex, as GPU skinning
+/// does, is not the same: where a patch spans two bones (pelvis and
+/// thigh, say) the blended matrices pull the surface in. Vertices are in
+/// the rider's seat space.
+#[derive(Component)]
+pub struct PatchSkin {
+    rig: std::sync::Arc<PatchRig>,
+    patches: Vec<BentPatch>,
+}
+
+/// How a rider mesh follows the skeleton.
+enum Skin {
+    /// Triangles: GPU skinning, one bone per vertex.
+    Joints(SkinnedMesh),
+    /// Patches: [`PatchSkin`].
+    Patches(std::sync::Arc<PatchRig>),
+}
+
+/// Poses every [`PatchSkin`] mesh: each control point moved by its bone,
+/// then the patch evaluated, as the original does.
+pub fn bend_patches(skins: Query<(&PatchSkin, &Mesh3d)>, joints: Query<&Transform>, mut meshes: ResMut<Assets<Mesh>>) {
+    let n = PATCH_STEPS + 1;
+    let weights: Vec<[f32; 4]> = (0..n).map(|i| bernstein(i as f32 / PATCH_STEPS as f32)).collect();
+    for (skin, mesh) in &skins {
+        let rig = &skin.rig;
+        let mut posed: Vec<Mat4> = Vec::with_capacity(rig.joints.len());
+        for (i, e) in rig.joints.iter().enumerate() {
+            let local = joints.get(*e).map_or(Mat4::IDENTITY, |t| Mat4::from(t.compute_affine()));
+            let m = rig.parents[i].and_then(|p| posed.get(p)).map_or(local, |p| *p * local);
+            posed.push(m);
+        }
+        let bones: Vec<Mat4> = posed.iter().zip(&rig.bind).map(|(m, b)| *m * Mat4::from_translation(-*b)).collect();
+        let Some(mut mesh) = meshes.get_mut(&mesh.0) else { continue };
+        let mut pos: Vec<[f32; 3]> = Vec::with_capacity(skin.patches.len() * n * n);
+        let mut normal: Vec<[f32; 3]> = Vec::with_capacity(pos.capacity());
+        let mut grid = vec![Vec3::ZERO; n * n];
+        for p in &skin.patches {
+            let control: [Vec3; 16] =
+                std::array::from_fn(|k| bones.get(p.bones[k] as usize).map_or(p.control[k], |m| m.transform_point3(p.control[k])));
+            for (k, g) in grid.iter_mut().enumerate() {
+                let (bu, bv) = (weights[k % n], weights[k / n]);
+                *g = (0..16).map(|c| control[c] * bu[c % 4] * bv[c / 4]).sum();
+            }
+            pos.extend(grid.iter().map(|g| g.to_array()));
+            // Flipped space: the cross product changes sign.
+            normal.extend((0..grid.len()).map(|k| (-grid_normal(&grid, k)).to_array()));
+        }
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normal);
+    }
 }
 
 /// Vehicle textures whose alpha is a gloss mask rather than coverage: each
@@ -610,7 +670,7 @@ impl<'a> Loader<'a> {
     /// (`GEN_quadmud_01`, `CH_quadmud_01`, `UNI_TyreOverlay`); the track's
     /// ground picks the variant. Each layer gets its own material so its
     /// quad's dirt can fade it in.
-    fn spawn_dirt(&mut self, commands: &mut Commands, batch: Batch, name: &str, parent: Entity, owner: Entity, skin: Option<SkinnedMesh>) {
+    fn spawn_dirt(&mut self, commands: &mut Commands, mut batch: Batch, name: &str, parent: Entity, owner: Entity, skin: Option<Skin>) {
         if batch.idx.is_empty() || self.ghost.is_some() {
             return;
         }
@@ -630,17 +690,27 @@ impl<'a> Loader<'a> {
         dirt.uniform.opacity = 0.0;
         dirt.depth_bias = 2.0;
         let material = self.lit.add(dirt);
+        let bent = std::mem::take(&mut batch.bent);
         let mut mesh = batch.into_mesh();
-        if skin.is_some() {
+        if let Some(Skin::Joints(_)) = skin {
             mesh = match mesh.with_generated_skinned_mesh_bounds() {
                 Ok(m) => m,
                 Err(_) => return,
             };
         }
+        if let Some(Skin::Patches(_)) = skin {
+            mesh.asset_usage = RenderAssetUsages::default();
+        }
         let layer = MudLayer { owner, material: material.clone(), shown: 0.0 };
         let mut e = commands.spawn((Mesh3d(self.meshes.add(mesh)), MeshMaterial3d(material), layer));
-        if let Some(skin) = skin {
-            e.insert((skin, DynamicSkinnedMeshBounds));
+        match skin {
+            Some(Skin::Joints(skin)) => {
+                e.insert((skin, DynamicSkinnedMeshBounds));
+            }
+            Some(Skin::Patches(rig)) => {
+                e.insert((PatchSkin { rig, patches: bent }, NoFrustumCulling));
+            }
+            None => {}
         }
         let child = e.id();
         commands.entity(parent).add_child(child);
@@ -970,39 +1040,69 @@ impl<'a> Loader<'a> {
         }
         let inverse = bindposes.add(bind.iter().map(|p| Mat4::from_translation(-*p)).collect::<Vec<_>>());
 
-        let mut batches: HashMap<(Option<usize>, bool), Batch> = HashMap::new();
+        let rig = std::sync::Arc::new(PatchRig {
+            joints: joints.clone(),
+            parents: skeleton.bones.iter().map(|b| b.parent).collect(),
+            bind: bind.clone(),
+        });
+
+        // Triangles and patches go in separate meshes: triangles skin on
+        // the GPU, patches on the CPU (see `PatchSkin`).
+        let mut batches: HashMap<(Option<usize>, bool, bool), Batch> = HashMap::new();
         for node in &model.nodes {
-            batches.entry((node.material(), node.header[2] >= 0)).or_default().add_skinned(node, Look::Rider, false);
+            let key = (node.material(), node.header[2] >= 0);
+            batches.entry((key.0, key.1, false)).or_default().add_skinned(node, Look::Rider, false);
+            batches.entry((key.0, key.1, true)).or_default().add_bent(node, Look::Rider, false);
         }
-        for ((mat, shiny), batch) in batches {
+        for ((mat, shiny, patches), mut batch) in batches {
             if batch.idx.is_empty() {
                 continue;
             }
             let name = mat.and_then(|i| model.materials.get(i)).map(|m| m.name.clone());
             let material = self.lit_material(name.as_deref(), Look::Rider, shiny);
-            let mesh = batch.into_mesh().with_generated_skinned_mesh_bounds()?;
-            let child = commands
-                .spawn((
-                    Mesh3d(self.meshes.add(mesh)),
-                    MeshMaterial3d(material),
-                    SkinnedMesh { inverse_bindposes: inverse.clone(), joints: joints.clone() },
-                    DynamicSkinnedMeshBounds,
-                ))
-                .id();
+            let child = if patches {
+                let bent = std::mem::take(&mut batch.bent);
+                let mut mesh = batch.into_mesh();
+                mesh.asset_usage = RenderAssetUsages::default();
+                commands
+                    .spawn((
+                        Mesh3d(self.meshes.add(mesh)),
+                        MeshMaterial3d(material),
+                        Transform::default(),
+                        PatchSkin { rig: rig.clone(), patches: bent },
+                        NoFrustumCulling,
+                    ))
+                    .id()
+            } else {
+                let mesh = batch.into_mesh().with_generated_skinned_mesh_bounds()?;
+                commands
+                    .spawn((
+                        Mesh3d(self.meshes.add(mesh)),
+                        MeshMaterial3d(material),
+                        SkinnedMesh { inverse_bindposes: inverse.clone(), joints: joints.clone() },
+                        DynamicSkinnedMeshBounds,
+                    ))
+                    .id()
+            };
             commands.entity(parent).add_child(child);
         }
         if let (Some(_), Some(owner)) = (self.dirt, self.last_quad) {
-            let mut dirt: HashMap<usize, Batch> = HashMap::new();
+            let mut dirt: HashMap<(usize, bool), Batch> = HashMap::new();
             for node in &model.nodes {
                 if let Ok(ov) = usize::try_from(node.header[2]) {
-                    dirt.entry(ov).or_default().add_skinned(node, Look::Dirt, true);
+                    dirt.entry((ov, false)).or_default().add_skinned(node, Look::Dirt, true);
+                    dirt.entry((ov, true)).or_default().add_bent(node, Look::Dirt, true);
                 }
             }
-            for (ov, mut batch) in dirt {
+            for ((ov, patches), mut batch) in dirt {
                 let Some(name) = model.materials.get(ov).map(|m| m.name.clone()) else { continue };
                 // Rider vertex alpha is all zero: the mask is in the texture.
                 batch.color.iter_mut().for_each(|c| c[3] = 1.0);
-                let skin = SkinnedMesh { inverse_bindposes: inverse.clone(), joints: joints.clone() };
+                let skin = if patches {
+                    Skin::Patches(rig.clone())
+                } else {
+                    Skin::Joints(SkinnedMesh { inverse_bindposes: inverse.clone(), joints: joints.clone() })
+                };
                 self.spawn_dirt(commands, batch, &name, parent, owner, Some(skin));
             }
         }
