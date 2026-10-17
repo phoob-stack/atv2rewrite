@@ -26,9 +26,7 @@
 //! a spline through those points (0x77e00, 0x77fb0); here a Catmull-Rom
 //! curve through the nodes stands in for it.
 
-use bevy::camera::visibility::VisibilitySystems;
 use bevy::prelude::*;
-use bevy::transform::TransformSystems;
 
 use atv_sim::track as trk;
 
@@ -286,8 +284,7 @@ impl Plugin for IntroPlugin {
             .add_systems(FixedUpdate, hold.before(crate::drive).run_if(resource_exists::<Intro>).run_if(in_state(AppState::Race)))
             .add_systems(
                 PostUpdate,
-                fly.before(TransformSystems::Propagate)
-                    .before(VisibilitySystems::VisibilityPropagate)
+                fly.in_set(crate::CameraTakeover)
                     .before(TextLayout)
                     .run_if(resource_exists::<Intro>)
                     .run_if(in_state(AppState::Race)),

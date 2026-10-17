@@ -326,6 +326,15 @@ struct ChaseCam {
     facing: Quat,
 }
 
+/// The `PostUpdate` systems that take the race camera from the follow
+/// camera (the intro, the director behind the results, replays). They go
+/// before the camera's matrices are worked out: the follow camera has
+/// already set its own zoom in `Update`, and a camera placed after that
+/// work drew some frames at the follow camera's zoom and some at the
+/// director's, which flickered between a wide and a tight shot.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct CameraTakeover;
+
 #[derive(Component)]
 struct FlyCam {
     yaw: f32,
@@ -666,6 +675,13 @@ fn main() -> anyhow::Result<()> {
                 .run_if(in_state(AppState::Race)),
         )
         .add_systems(Update, auto_screenshot)
+        .configure_sets(
+            PostUpdate,
+            CameraTakeover
+                .before(bevy::transform::TransformSystems::Propagate)
+                .before(bevy::camera::CameraUpdateSystems)
+                .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+        )
         // After everything that poses joints, replays included.
         .add_systems(PostUpdate, convert::bend_patches.after(bevy::transform::TransformSystems::Propagate));
     #[cfg(windows)]

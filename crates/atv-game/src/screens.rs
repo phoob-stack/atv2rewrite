@@ -15,7 +15,7 @@ pub struct ScreensPlugin;
 
 impl Plugin for ScreensPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, follow_view.before(TransformSystems::Propagate));
+        app.add_systems(PostUpdate, follow_view.after(crate::CameraTakeover).before(TransformSystems::Propagate));
     }
 }
 
