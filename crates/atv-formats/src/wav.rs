@@ -3,8 +3,11 @@
 //! The music is Xbox IMA ADPCM (format tag 0x69): 36-byte blocks per
 //! channel, each a 4-byte header (i16 first sample, u8 step index, u8 0)
 //! and 32 bytes of 4-bit codes. Stereo blocks interleave the channels in
-//! 4-byte runs (8 codes each), low nibble first. A block decodes to 65
-//! samples per channel: the header sample, then the 64 codes.
+//! 4-byte runs (8 codes each), low nibble first. A block decodes to 64
+//! samples per channel, as the files' own header says: the header sample,
+//! then 63 codes. The 64th code is padding (always 0 on both discs);
+//! decoding it as a sample, as ffmpeg does, slips in a stray sample every
+//! 64, which plays everything 1.6% slow with a buzz at a 64th of the rate.
 
 use crate::bin::Reader;
 use crate::{Error, Result};
@@ -113,7 +116,7 @@ impl Stream {
     /// Samples (all channels) not yet played.
     pub fn remaining(&self) -> usize {
         let blocks = (self.data.end.saturating_sub(self.next)) / self.block_align;
-        let per_block = if self.adpcm { 65 } else { 1 } * self.channels as usize;
+        let per_block = if self.adpcm { ADPCM_BLOCK } else { 1 } * self.channels as usize;
         blocks * per_block + self.frame.len() - self.at
     }
 }
@@ -126,7 +129,7 @@ impl Iterator for Stream {
             let block = self.bytes.get(self.next..self.next + self.block_align).filter(|_| self.next + self.block_align <= self.data.end)?;
             self.frame.clear();
             if self.adpcm {
-                self.frame.resize(65 * self.channels as usize, 0);
+                self.frame.resize(ADPCM_BLOCK * self.channels as usize, 0);
                 adpcm_block(block, self.channels as usize, &mut self.frame);
             } else {
                 self.frame.extend(block.as_chunks::<2>().0.iter().map(|&b| i16::from_le_bytes(b)));
@@ -162,11 +165,14 @@ impl Ima {
     }
 }
 
+/// Samples per channel in an Xbox ADPCM block.
+const ADPCM_BLOCK: usize = 64;
+
 pub(crate) fn xbox_adpcm(data: &[u8], channels: usize, block_align: usize) -> Result<Vec<i16>> {
     if block_align != 36 * channels {
         return Err(Error::Format(format!("Xbox ADPCM block of {block_align} bytes for {channels} channels")));
     }
-    let per_block = 65;
+    let per_block = ADPCM_BLOCK;
     let mut out = Vec::with_capacity(data.len() / block_align * per_block * channels);
     let mut frame = vec![0i16; per_block * channels];
     for block in data.chunks_exact(block_align) {
@@ -176,7 +182,8 @@ pub(crate) fn xbox_adpcm(data: &[u8], channels: usize, block_align: usize) -> Re
     Ok(out)
 }
 
-/// One block's 65 samples per channel, interleaved, into `frame`.
+/// One block's 64 samples per channel, interleaved, into `frame` (the
+/// last code, padding, is left out).
 fn adpcm_block(block: &[u8], channels: usize, frame: &mut [i16]) {
     let mut state: Vec<Ima> = (0..channels)
         .map(|c| {
@@ -193,7 +200,9 @@ fn adpcm_block(block: &[u8], channels: usize, frame: &mut [i16]) {
         for (k, &b) in bytes.iter().enumerate() {
             let i = 1 + round * 8 + k * 2;
             frame[i * channels + c] = state[c].next(b & 0x0F);
-            frame[(i + 1) * channels + c] = state[c].next(b >> 4);
+            if i + 1 < ADPCM_BLOCK {
+                frame[(i + 1) * channels + c] = state[c].next(b >> 4);
+            }
         }
     }
 }
@@ -239,7 +248,7 @@ mod tests {
         block[0..2].copy_from_slice(&1000i16.to_le_bytes());
         block[4] = 0x07; // codes 7, then 0
         let out = xbox_adpcm(&block, 1, 36).unwrap();
-        assert_eq!(out.len(), 65);
+        assert_eq!(out.len(), 64);
         assert_eq!(out[0], 1000);
         // Code 7 at step 7: diff = (2*7 + 1) * 7 / 8 = 13.
         assert_eq!(out[1], 1013);
