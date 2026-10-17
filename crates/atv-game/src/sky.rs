@@ -27,7 +27,11 @@ pub struct SkyPlugin;
 
 impl Plugin for SkyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (layer_sky, add_sky_cams)).add_systems(PostUpdate, sync_sky_cams.before(TransformSystems::Propagate));
+        app.add_systems(Update, (layer_sky, add_sky_cams)).add_systems(
+            PostUpdate,
+            // From the view as it will be drawn this frame.
+            sync_sky_cams.after(crate::CameraTakeover).before(TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems),
+        );
     }
 }
 

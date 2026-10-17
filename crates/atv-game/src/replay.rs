@@ -19,9 +19,6 @@
 use std::collections::HashMap;
 
 use bevy::prelude::*;
-use bevy::transform::TransformSystems;
-
-use bevy::camera::visibility::VisibilitySystems;
 
 use crate::convert::WheelVisual;
 use crate::crash::Wreck;
@@ -173,8 +170,7 @@ impl Plugin for ReplayPlugin {
                 (record, broadcast).run_if(not(resource_exists::<Playback>)).run_if(not(resource_exists::<crate::intro::Intro>)),
                 (play, captions).chain().run_if(resource_exists::<Playback>),
             )
-                .before(TransformSystems::Propagate)
-                .before(VisibilitySystems::VisibilityPropagate)
+                .in_set(crate::CameraTakeover)
                 .before(TextLayout)
                 .run_if(in_state(AppState::Race)),
         );
