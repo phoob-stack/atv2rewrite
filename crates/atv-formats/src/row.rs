@@ -18,9 +18,10 @@
 //!      sprites[sprite_count]       0x68 bytes (same as ROM sprites)
 //!      ...effects and a spatial tree interleaved with mesh blocks...
 //! mesh block: u32 flags, i32 material, i32 material2, i32, u32 tri_count,
-//!             u32 vertex_count, u32 patch_count, u32 patch_count2, i32 x3,
+//!             u32 vertex_count, u32 patch_count, u32 strip_count, i32 x3,
 //!             u32 indices[tri_count*3], Vertex[vertex_count] (52 bytes),
-//!             Patch[patch_count] (604 bytes)
+//!             Patch[patch_count + strip_count] (604 bytes; strips are
+//!             straight across u, see `Mesh::tessellated_patches`)
 //! vertex:     pos, normal, uv, uv2 (overlay layer), 2 floats, u32 ARGB
 //! patch:      u32 uv_full, uv2_full, uv3_full; X[16], Y[16], Z[16];
 //!             uv net, uv2 net, uv3 net (16 pairs each, see `rom::NET_ORDER`;
@@ -38,7 +39,7 @@
 //! (95-99% of each file is accounted for) is 48-byte tree nodes.
 
 use crate::bin::Reader;
-use crate::rom::{patch_uvs, Locator, Patch, Sprite, Vertex};
+use crate::rom::{patch_uvs, Locator, Patch, Sprite, Tessellation, Vertex};
 use crate::{Error, Result};
 
 #[derive(Debug, Clone)]
@@ -88,6 +89,10 @@ pub struct Mesh {
     pub indices: Vec<u32>,
     pub vertices: Vec<Vertex>,
     pub patches: Vec<Patch>,
+    /// How many of `patches`, at the end, are strips: the original draws
+    /// only their first and last control columns, joined straight across
+    /// (0x1258d0).
+    pub strips: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +107,25 @@ pub struct World {
     pub instances: Vec<Instance>,
     pub sprites: Vec<Sprite>,
     pub meshes: Vec<Mesh>,
+}
+
+/// The original cuts every track patch into 5 x 5 quads (0x102620 sets
+/// the world's level; 0x1026c0 sizes the vertex buffer from it). Track
+/// meshes that meet a patch have their vertices at those steps, so any
+/// other count leaves cracks along the seams.
+pub const PATCH_STEPS: usize = 5;
+
+impl Mesh {
+    /// The mesh's patches cut up as the original draws them: full patches
+    /// into `PATCH_STEPS` x `PATCH_STEPS` quads, strips into `PATCH_STEPS`
+    /// quads along v, one across (0x125820 / 0x1258d0).
+    pub fn tessellated_patches(&self) -> impl Iterator<Item = (&Patch, Tessellation)> {
+        let full = self.patches.len() - self.strips;
+        self.patches.iter().enumerate().map(move |(k, p)| {
+            let nu = if k < full { PATCH_STEPS } else { 1 };
+            (p, p.tessellate_grid(nu, PATCH_STEPS))
+        })
+    }
 }
 
 const VERTEX_SIZE: usize = 52;
@@ -207,9 +231,9 @@ fn try_mesh(
     if !plausible {
         return Ok(None);
     }
-    // Two patch counts; both use the same record (the second kind's
-    // meaning is not known yet).
-    let (ntri, nv, npatch) = (ntri as usize, nv as usize, (npatch + npatch2) as usize);
+    // Two patch counts sharing one record: full patches, then strips.
+    let (ntri, nv, strips) = (ntri as usize, nv as usize, npatch2 as usize);
+    let npatch = npatch as usize + strips;
     let idx_start = (i + 11) * 4;
     let end = idx_start + ntri * 12 + nv * VERTEX_SIZE + npatch * PATCH_SIZE;
     if end > b.len() {
@@ -261,7 +285,7 @@ fn try_mesh(
         });
     }
     Ok(Some((
-        Mesh { offset: i * 4, flags: flags as u32, material: mat, material2: mat2, indices, vertices, patches },
+        Mesh { offset: i * 4, flags: flags as u32, material: mat, material2: mat2, indices, vertices, patches, strips },
         end,
     )))
 }
