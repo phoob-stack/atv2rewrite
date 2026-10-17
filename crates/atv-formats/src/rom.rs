@@ -64,8 +64,9 @@ pub struct Patch {
     pub bones: [i32; 16],
 }
 
-/// A tessellated patch: an (n+1) x (n+1) vertex grid, row-major.
+/// A tessellated patch: a `cols` x rows vertex grid, row-major.
 pub struct Tessellation {
+    pub cols: usize,
     pub pos: Vec<[f32; 3]>,
     pub uv: Vec<[f32; 2]>,
     pub uv2: Vec<[f32; 2]>,
@@ -278,6 +279,12 @@ impl Patch {
     /// Evaluates the patch on an (n+1) x (n+1) grid (u along control-point
     /// columns, v along rows).
     pub fn tessellate(&self, n: usize) -> Tessellation {
+        self.tessellate_grid(n, n)
+    }
+
+    /// Evaluates the patch on an (nu+1) x (nv+1) grid. `nu` = 1 gives a
+    /// strip: the first and last control columns, joined straight across.
+    pub fn tessellate_grid(&self, nu: usize, nv: usize) -> Tessellation {
         fn bern(t: f32) -> [f32; 4] {
             let s = 1.0 - t;
             [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t]
@@ -294,19 +301,19 @@ impl Patch {
             }
             p
         }
-        let mut t = Tessellation { pos: Vec::new(), uv: Vec::new(), uv2: Vec::new(), indices: Vec::new() };
-        for j in 0..=n {
-            let bv = bern(j as f32 / n as f32);
-            for i in 0..=n {
-                let bu = bern(i as f32 / n as f32);
+        let mut t = Tessellation { cols: nu + 1, pos: Vec::new(), uv: Vec::new(), uv2: Vec::new(), indices: Vec::new() };
+        for j in 0..=nv {
+            let bv = bern(j as f32 / nv as f32);
+            for i in 0..=nu {
+                let bu = bern(i as f32 / nu as f32);
                 t.pos.push(eval(&self.control, &bu, &bv));
                 t.uv.push(eval(&self.uv, &bu, &bv));
                 t.uv2.push(eval(&self.uv2, &bu, &bv));
             }
         }
-        let w = (n + 1) as u32;
-        for j in 0..n as u32 {
-            for i in 0..n as u32 {
+        let w = (nu + 1) as u32;
+        for j in 0..nv as u32 {
+            for i in 0..nu as u32 {
                 let a = j * w + i;
                 t.indices.extend_from_slice(&[a, a + 1, a + w, a + 1, a + w + 1, a + w]);
             }

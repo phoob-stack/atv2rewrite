@@ -16,12 +16,14 @@ use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use atv_formats::bog::{TexFormat, Texture};
 use atv_formats::anim::Skeleton;
-use atv_formats::rom::{Model, Node, Patch, Vertex};
+use atv_formats::rom::{Model, Node, Patch, Tessellation, Vertex};
 use atv_formats::row::World;
 use atv_formats::GameSource;
 
 use crate::lit::{self, LitMaterial};
 
+/// Model (quad, rider, prop) patches; track patches follow the original's
+/// own steps (`row::Mesh::tessellated_patches`).
 const PATCH_STEPS: usize = 6;
 
 /// Radius the unit sky-dome models are scaled to. Inside the camera's far
@@ -278,17 +280,20 @@ impl Batch {
     }
 
     fn add_patch(&mut self, p: &Patch, look: Look, overlay: bool) {
-        let tess = p.tessellate(PATCH_STEPS);
+        self.add_tessellated(p, &p.tessellate(PATCH_STEPS), look, overlay);
+    }
+
+    fn add_tessellated(&mut self, p: &Patch, tess: &Tessellation, look: Look, overlay: bool) {
         let (pos, idx) = (&tess.pos, &tess.indices);
         let uv = if overlay { &tess.uv2 } else { &tess.uv };
         let base = self.pos.len() as u32;
-        let n = PATCH_STEPS + 1;
+        let (n, rows) = (tess.cols, pos.len() / tess.cols);
         let cols = p.corner_color.map(|c| look.color(c));
         let grid: Vec<Vec3> = pos.iter().map(|p| Vec3::from(*p)).collect();
         for (k, (pp, tt)) in pos.iter().zip(uv).enumerate() {
-            let (u, v) = ((k % n) as f32 / PATCH_STEPS as f32, (k / n) as f32 / PATCH_STEPS as f32);
+            let (u, v) = ((k % n) as f32 / (n - 1) as f32, (k / n) as f32 / (rows - 1) as f32);
             self.pos.push(flip(*pp));
-            self.normal.push(flip(grid_normal(&grid, k).into()));
+            self.normal.push(flip(grid_normal(&grid, n, k).into()));
             self.uv.push(*tt);
             let mut c = [0.0; 4];
             for ch in 0..4 {
@@ -345,9 +350,9 @@ fn bernstein(t: f32) -> [f32; 4] {
 /// Normal at grid vertex `k` of a tessellated patch, from finite
 /// differences across the grid (unflipped: callers flip it with the
 /// positions).
-fn grid_normal(grid: &[Vec3], k: usize) -> Vec3 {
-    let n = PATCH_STEPS + 1;
-    let at = |i: usize, j: usize| grid[j.min(n - 1) * n + i.min(n - 1)];
+fn grid_normal(grid: &[Vec3], n: usize, k: usize) -> Vec3 {
+    let rows = grid.len() / n;
+    let at = |i: usize, j: usize| grid[j.min(rows - 1) * n + i.min(n - 1)];
     let (i, j) = (k % n, k / n);
     let du = at(i + 1, j) - at(i.saturating_sub(1), j);
     let dv = at(i, j + 1) - at(i, j.saturating_sub(1));
@@ -417,7 +422,7 @@ pub fn bend_patches(skins: Query<(&PatchSkin, &Mesh3d)>, joints: Query<&Transfor
             }
             pos.extend(grid.iter().map(|g| g.to_array()));
             // Flipped space: the cross product changes sign.
-            normal.extend((0..grid.len()).map(|k| (-grid_normal(&grid, k)).to_array()));
+            normal.extend((0..grid.len()).map(|k| (-grid_normal(&grid, PATCH_STEPS + 1, k)).to_array()));
         }
         mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
         mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normal);
@@ -885,8 +890,8 @@ impl<'a> Loader<'a> {
             for (mat, look, overlay) in layers {
                 let b = batches.entry((mat, look)).or_default();
                 b.add_tris(&m.vertices, &m.indices, look, overlay);
-                for p in &m.patches {
-                    b.add_patch(p, look, overlay);
+                for (p, tess) in m.tessellated_patches() {
+                    b.add_tessellated(p, &tess, look, overlay);
                 }
             }
         }
